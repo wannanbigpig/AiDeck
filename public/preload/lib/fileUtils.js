@@ -15,6 +15,29 @@ function getHomeDir () {
 }
 
 /**
+ * 原子写入文本文件（先写 tmp 再 rename）
+ * @param {string} filePath
+ * @param {string} content
+ * @returns {boolean}
+ */
+function writeTextFileAtomic (filePath, content) {
+  try {
+    const dir = path.dirname(filePath)
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+
+    const tmpPath = filePath + '.tmp-' + process.pid + '-' + Date.now()
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf-8' })
+    fs.renameSync(tmpPath, filePath)
+    return true
+  } catch (err) {
+    console.error('[fileUtils] writeTextFileAtomic failed:', filePath, err.message)
+    return false
+  }
+}
+
+/**
  * 安全读取 JSON 文件
  * @param {string} filePath 文件绝对路径
  * @returns {object|null} 解析后的对象，失败返回 null
@@ -40,13 +63,8 @@ function readJsonFile (filePath) {
  */
 function writeJsonFile (filePath, data) {
   try {
-    const dir = path.dirname(filePath)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
     const content = JSON.stringify(data, null, 2)
-    fs.writeFileSync(filePath, content, { encoding: 'utf-8' })
-    return true
+    return writeTextFileAtomic(filePath, content)
   } catch (err) {
     console.error('[fileUtils] writeJsonFile failed:', filePath, err.message)
     return false
@@ -77,17 +95,7 @@ function readTextFile (filePath) {
  * @returns {boolean}
  */
 function writeTextFile (filePath, content) {
-  try {
-    const dir = path.dirname(filePath)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
-    fs.writeFileSync(filePath, content, { encoding: 'utf-8' })
-    return true
-  } catch (err) {
-    console.error('[fileUtils] writeTextFile failed:', filePath, err.message)
-    return false
-  }
+  return writeTextFileAtomic(filePath, content)
 }
 
 /**
@@ -134,7 +142,23 @@ function ensureDir (dirPath) {
 }
 
 /**
- * 列出目录下的文件
+ * 删除文件
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+function deleteFile (filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return true
+    fs.unlinkSync(filePath)
+    return true
+  } catch (err) {
+    console.error('[fileUtils] deleteFile failed:', filePath, err.message)
+    return false
+  }
+}
+
+/**
+ * 列出目录下的文件名
  * @param {string} dirPath
  * @returns {string[]}
  */
@@ -142,6 +166,25 @@ function listFiles (dirPath) {
   try {
     if (!dirExists(dirPath)) return []
     return fs.readdirSync(dirPath)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 列出目录下文件绝对路径
+ * @param {string} dirPath
+ * @returns {string[]}
+ */
+function listFilePaths (dirPath) {
+  try {
+    if (!dirExists(dirPath)) return []
+    const names = fs.readdirSync(dirPath)
+    const out = []
+    for (let i = 0; i < names.length; i++) {
+      out.push(path.join(dirPath, names[i]))
+    }
+    return out
   } catch {
     return []
   }
@@ -163,9 +206,12 @@ module.exports = {
   writeJsonFile,
   readTextFile,
   writeTextFile,
+  writeTextFileAtomic,
   fileExists,
   dirExists,
   ensureDir,
+  deleteFile,
   listFiles,
+  listFilePaths,
   generateId
 }

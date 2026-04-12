@@ -1,8 +1,10 @@
 {
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.cjs\""
   },
   "dependencies": {
     "react": "^19.0.0",

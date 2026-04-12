@@ -13,7 +13,7 @@ export default function QuotaBar ({ percentage = 0, label, resetTime, requestsLe
   const level = getQuotaLevel(percentage)
 
   return (
-    <div className='quota-wrapper' style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div className='quota-wrapper' style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <div className='quota-info' style={{ marginTop: 0 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{label}</span>
         <span className={`quota-percentage ${level}`}>{Math.round(percentage)}%</span>
@@ -24,11 +24,11 @@ export default function QuotaBar ({ percentage = 0, label, resetTime, requestsLe
           style={{ width: Math.max(percentage, 2) + '%' }}
         />
       </div>
-      <div className='quota-meta'>
-        {(typeof requestsLeft === 'number' && typeof requestsLimit === 'number') && (
-          <span style={{ marginRight: resetTime ? 12 : 0 }}>{requestsLeft} / {requestsLimit} 次</span>
-        )}
-        {resetTime ? <span>{resetTime}</span> : null}
+      <div className='quota-meta' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--text-muted)'}}>
+        <span>
+          {(typeof requestsLeft === 'number' && typeof requestsLimit === 'number') && `${requestsLeft} / ${requestsLimit} 次`}
+        </span>
+        {resetTime && <span>{resetTime}</span>}
       </div>
     </div>
   )

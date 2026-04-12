@@ -3,8 +3,8 @@
  * SVG 数据来源：lobehub/lobe-icons
  * 三个彩色图标在深/浅主题下均无需切换颜色
  */
-import codexSvg from '../assets/icons/codex.svg'
-import geminiSvg from '../assets/icons/gemini.svg'
+import codexSvg from '../../assets/icons/codex.svg'
+import geminiSvg from '../../assets/icons/gemini.svg'
 
 /**
  * Antigravity — 多色品牌标志（内联 SVG，滤镜需要内联才能正确渲染）

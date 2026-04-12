@@ -8,6 +8,10 @@ import Antigravity from './pages/Antigravity'
 import Codex from './pages/Codex'
 import Gemini from './pages/Gemini'
 import Settings from './pages/Settings'
+import { PrivacyProvider } from './components/PrivacyMode'
+import RequestLogModal from './components/RequestLogModal'
+import { readGlobalSettings, writeGlobalSettings } from './utils/globalSettings'
+import { setRequestLogEnabled } from './utils/requestLogClient'
 
 /**
  * App — 主布局
@@ -30,27 +34,15 @@ function AppInner () {
   })
   const [lastActivity, setLastActivity] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [globalSettings, setGlobalSettings] = useState(() => readGlobalSettings())
+  const [showRequestLogModal, setShowRequestLogModal] = useState(false)
   const toast = useToast()
 
-  useEffect(() => {
-    // uTools 插件入口事件
-    if (window.utools) {
-      window.utools.onPluginEnter((action) => {
-        window.utools.setSubInput(({ text }) => {
-          setSearchQuery(text)
-        }, '搜索账号或配置...')
-
-        const codeMap = {
-          AiDeck: 'dashboard',
-          'AiDeck-antigravity': 'antigravity',
-          'AiDeck-codex': 'codex',
-          'AiDeck-gemini': 'gemini',
-          aideck: 'dashboard'
-        }
-        setActivePlatform(codeMap[action.code] || 'dashboard')
-      })
-    }
-    refreshAll()
+  const applyGlobalSettings = useCallback((patch) => {
+    const next = writeGlobalSettings(patch)
+    setGlobalSettings(next)
+    setRequestLogEnabled(next.requestLogEnabled === true)
+    return next
   }, [])
 
   const refreshAll = useCallback(() => {
@@ -76,6 +68,132 @@ function AppInner () {
       }
     })
   }, [])
+
+  useEffect(() => {
+    // uTools 插件入口事件
+    if (window.utools) {
+      const bindSubInput = () => {
+        if (typeof window.utools.setSubInput !== 'function') return
+        window.utools.setSubInput(({ text }) => {
+          setSearchQuery(String(text || ''))
+        }, '搜索账号或配置...')
+      }
+
+      // 双保险：初始化时即绑定一次，避免 onPluginEnter 未触发导致搜索失效
+      bindSubInput()
+
+      window.utools.onPluginEnter((action) => {
+        bindSubInput()
+
+        const codeMap = {
+          AiDeck: 'dashboard',
+          'AiDeck-antigravity': 'antigravity',
+          'AiDeck-codex': 'codex',
+          'AiDeck-gemini': 'gemini',
+          aideck: 'dashboard'
+        }
+        setActivePlatform(codeMap[action.code] || 'dashboard')
+      })
+    }
+    refreshAll()
+  }, [])
+
+  useEffect(() => {
+    setRequestLogEnabled(globalSettings.requestLogEnabled === true)
+    if (!globalSettings.requestLogEnabled) {
+      setShowRequestLogModal(false)
+    }
+  }, [globalSettings.requestLogEnabled])
+
+  useEffect(() => {
+    const s = window.services
+    if (!s) return
+    let disposed = false
+    let syncing = false
+
+    const syncCurrentFromLocalAll = async (platformHint) => {
+      if (disposed || syncing) return
+      syncing = true
+      try {
+        const autoImport = false
+        const platform = String(platformHint || '').trim().toLowerCase()
+        const shouldSyncAg = !platform || platform === 'all' || platform === 'antigravity'
+        const shouldSyncCx = !platform || platform === 'all' || platform === 'codex'
+        const shouldSyncGm = !platform || platform === 'all' || platform === 'gemini'
+        const [agRes, cxRes, gmRes] = await Promise.all([
+          shouldSyncAg && (s.antigravity && typeof s.antigravity.syncCurrentFromLocal === 'function')
+            ? Promise.resolve(s.antigravity.syncCurrentFromLocal({ autoImport }))
+            : Promise.resolve(null),
+          shouldSyncCx && (s.codex && typeof s.codex.syncCurrentFromLocal === 'function')
+            ? Promise.resolve(s.codex.syncCurrentFromLocal({ autoImport }))
+            : Promise.resolve(null),
+          shouldSyncGm && (s.gemini && typeof s.gemini.syncCurrentFromLocal === 'function')
+            ? Promise.resolve(s.gemini.syncCurrentFromLocal({ autoImport }))
+            : Promise.resolve(null)
+        ])
+
+        if (disposed) return
+        const results = [agRes, cxRes, gmRes]
+        const changed = results.some(res => res && res.success && res.changed)
+        if (changed) {
+          refreshAll()
+        }
+
+        setPlatformData(prev => {
+          let next = prev
+          let mutated = false
+
+          const patchCurrent = (key, res) => {
+            if (!res || !res.success) return
+            const cur = typeof res.currentId === 'string' && res.currentId.trim()
+              ? res.currentId.trim()
+              : null
+            const prevPlatform = prev[key] || { accounts: [], currentId: null }
+            const shouldReloadAccounts = !!res.changed
+            const nextAccounts = shouldReloadAccounts ? (s[key]?.list?.() || prevPlatform.accounts || []) : (prevPlatform.accounts || [])
+            const currentChanged = (prevPlatform.currentId || null) !== cur
+            const accountsChanged = shouldReloadAccounts
+            if (!currentChanged && !accountsChanged) return
+            if (!mutated) {
+              next = { ...prev }
+              mutated = true
+            }
+            next[key] = {
+              accounts: nextAccounts,
+              currentId: cur
+            }
+          }
+
+          patchCurrent('antigravity', agRes)
+          patchCurrent('codex', cxRes)
+          patchCurrent('gemini', gmRes)
+
+          return mutated ? next : prev
+        })
+      } catch (e) {
+      } finally {
+        syncing = false
+      }
+    }
+
+    const onLocalStateChange = (event) => {
+      const platform = String(event?.detail?.platform || '').trim().toLowerCase()
+      void syncCurrentFromLocalAll(platform || 'all')
+    }
+
+    if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
+      window.addEventListener('aideck:local-state-change', onLocalStateChange)
+    }
+
+    void syncCurrentFromLocalAll('all')
+
+    return () => {
+      disposed = true
+      if (typeof window !== 'undefined' && window && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('aideck:local-state-change', onLocalStateChange)
+      }
+    }
+  }, [refreshAll])
 
   function handleSelectPlatform (id) {
     setActivePlatform(id)
@@ -112,7 +230,11 @@ function AppInner () {
   return (
     <div className='app-root'>
       {activePlatform === 'settings' ? (
-        <Settings onNavigate={handleSelectPlatform} />
+        <Settings
+          onNavigate={handleSelectPlatform}
+          globalSettings={globalSettings}
+          onGlobalSettingsChange={applyGlobalSettings}
+        />
       ) : (
         <>
           <div className='app-layout'>
@@ -120,6 +242,9 @@ function AppInner () {
               activePlatform={activePlatform}
               onSelectPlatform={handleSelectPlatform}
               platformData={platformData}
+              searchQuery={searchQuery}
+              showRequestLog={globalSettings.requestLogEnabled === true}
+              onOpenRequestLog={() => setShowRequestLogModal(true)}
             />
             <main className='main-content'>
               {renderPage(activePlatform, refreshAll, handleActivityLog, handleSelectPlatform, searchQuery, platformData)}
@@ -131,6 +256,11 @@ function AppInner () {
           />
         </>
       )}
+      <RequestLogModal
+        open={showRequestLogModal && globalSettings.requestLogEnabled === true}
+        onClose={() => setShowRequestLogModal(false)}
+        toast={toast}
+      />
     </div>
   )
 }
@@ -138,14 +268,30 @@ function AppInner () {
 function renderPage (page, onRefresh, onActivity, onNavigate, searchQuery, platformData) {
   switch (page) {
     case 'antigravity':
-      return <Antigravity onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+      return (
+        <PrivacyProvider key="antigravity" namespace="antigravity">
+          <Antigravity onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+        </PrivacyProvider>
+      )
     case 'codex':
-      return <Codex onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+      return (
+        <PrivacyProvider key="codex" namespace="codex">
+          <Codex onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+        </PrivacyProvider>
+      )
     case 'gemini':
-      return <Gemini onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+      return (
+        <PrivacyProvider key="gemini" namespace="gemini">
+          <Gemini onRefresh={onRefresh} onActivity={onActivity} searchQuery={searchQuery} />
+        </PrivacyProvider>
+      )
     case 'dashboard':
     default:
-      return <Dashboard onNavigate={onNavigate} onRefresh={onRefresh} searchQuery={searchQuery} platformData={platformData} />
+      return (
+        <PrivacyProvider key="dashboard" namespace="dashboard">
+          <Dashboard onNavigate={onNavigate} onRefresh={onRefresh} searchQuery={searchQuery} platformData={platformData} />
+        </PrivacyProvider>
+      )
   }
 }
 

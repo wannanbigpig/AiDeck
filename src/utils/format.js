@@ -3,14 +3,61 @@
  */
 
 /**
+ * 统一把时间值转成 Unix 秒（支持秒/毫秒/ISO 字符串）
+ * @param {number|string|object} value
+ * @returns {number}
+ */
+function normalizeTimestampSeconds (value) {
+  if (value === null || value === undefined || value === '') return 0
+
+  if (typeof value === 'object') {
+    const candidates = [
+      value.seconds,
+      value.sec,
+      value.value,
+      value.timestamp,
+      value.ts,
+      value.reset_at,
+      value.resetAt,
+      value.reset_time,
+      value.resetTime
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+      const normalized = normalizeTimestampSeconds(candidates[i])
+      if (normalized > 0) return normalized
+    }
+    return 0
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value > 1000000000000) return Math.floor(value / 1000)
+    if (value > 10000000000) return Math.floor(value / 1000)
+    return Math.floor(value)
+  }
+
+  const raw = String(value).trim()
+  if (!raw) return 0
+
+  const numeric = Number(raw)
+  if (Number.isFinite(numeric)) {
+    return normalizeTimestampSeconds(numeric)
+  }
+
+  const parsedMs = Date.parse(raw)
+  if (!Number.isFinite(parsedMs)) return 0
+  return Math.floor(parsedMs / 1000)
+}
+
+/**
  * 格式化相对时间
  * @param {number} timestamp - Unix 时间戳（秒）
  * @returns {string}
  */
 export function formatRelativeTime (timestamp) {
-  if (!timestamp) return ''
+  const ts = normalizeTimestampSeconds(timestamp)
+  if (!ts) return ''
   const now = Math.floor(Date.now() / 1000)
-  const diff = timestamp - now
+  const diff = ts - now
 
   if (diff <= 0) return '已重置'
 
@@ -33,8 +80,10 @@ export function formatRelativeTime (timestamp) {
  * @returns {string}
  */
 export function formatAbsoluteTime (timestamp) {
-  if (!timestamp) return ''
-  const date = new Date(timestamp * 1000)
+  const ts = normalizeTimestampSeconds(timestamp)
+  if (!ts) return ''
+  const date = new Date(ts * 1000)
+  if (Number.isNaN(date.getTime())) return ''
   const pad = (v) => String(v).padStart(2, '0')
   return pad(date.getMonth() + 1) + '/' + pad(date.getDate()) + ' ' +
          pad(date.getHours()) + ':' + pad(date.getMinutes())
@@ -46,9 +95,10 @@ export function formatAbsoluteTime (timestamp) {
  * @returns {string}
  */
 export function formatResetTime (resetTime) {
-  if (!resetTime) return ''
-  const relative = formatRelativeTime(resetTime)
-  const absolute = formatAbsoluteTime(resetTime)
+  const ts = normalizeTimestampSeconds(resetTime)
+  if (!ts) return ''
+  const relative = formatRelativeTime(ts)
+  const absolute = formatAbsoluteTime(ts)
   return relative + ' (' + absolute + ')'
 }
 
@@ -102,9 +152,41 @@ export function truncateEmail (email, maxLen = 24) {
  * @returns {string}
  */
 export function formatDate (ts) {
-  if (!ts) return ''
-  const d = new Date(ts)
+  const seconds = normalizeTimestampSeconds(ts)
+  if (!seconds) return ''
+  const d = new Date(seconds * 1000)
   const pad = (v) => String(v).padStart(2, '0')
-  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
-         pad(d.getHours()) + ':' + pad(d.getMinutes())
+  return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' +
+         pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+}
+
+/**
+ * 脱敏显示处理
+ * @param {string} text - 原文本
+ * @param {'email'|'id'|'text'} [type='text'] - 脱敏类型
+ * @returns {string}
+ */
+export function maskText (text, type = 'text') {
+  if (!text || typeof text !== 'string') return text
+
+  if (type === 'email') {
+    const [local, domain] = text.split('@')
+    if (!domain) return maskText(text, 'text')
+    if (local.length <= 2) return local + '***' + '@' + domain
+    return local[0] + '***' + local[local.length - 1] + '@' + domain
+  }
+
+  if (type === 'id') {
+    // 针对 acc_xxx, proj_xxx 等格式保留前缀
+    if (text.includes('_')) {
+      const parts = text.split('_')
+      return parts[0] + '_***'
+    }
+    if (text.length <= 6) return text.slice(0, 2) + '***'
+    return text.slice(0, 4) + '***'
+  }
+
+  // 通用脱敏
+  if (text.length <= 2) return text[0] + '*'
+  return text[0] + '***' + text[text.length - 1]
 }

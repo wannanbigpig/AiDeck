@@ -1,0 +1,111 @@
+.usage-guide-container {
+  margin: 12px 0;
+  border: 1px solid rgba(0, 122, 255, 0.15);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.03) 0%, rgba(0, 122, 255, 0.08) 100%);
+  color: var(--text-primary);
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.usage-guide-container.is-expanded {
+  background: linear-gradient(135deg, rgba(0, 122, 255, 0.05) 0%, rgba(0, 122, 255, 0.1) 100%);
+  border-color: rgba(0, 122, 255, 0.25);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+.usage-guide-header {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  font-size: 14px;
+}
+
+.usage-guide-header:hover {
+  background: rgba(0, 122, 255, 0.03);
+}
+
+.usage-guide-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-guide-info-icon-new {
+  color: var(--accent-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.usage-guide-title {
+  font-weight: 600;
+  color: var(--accent-blue);
+}
+
+.usage-guide-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.usage-guide-chevron {
+  color: var(--accent-blue);
+  transition: transform 0.3s;
+}
+
+.rotate-180 {
+  transform: rotate(180deg);
+}
+
+.usage-guide-content {
+  padding: 0 16px 16px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.usage-guide-desc {
+  margin: 0 0 12px 0;
+  color: var(--text-secondary);
+}
+
+.usage-guide-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usage-guide-list > li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--text-secondary);
+}
+
+.usage-guide-list > li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--accent-blue);
+  font-weight: bold;
+}
+
+.usage-guide-list strong {
+  color: var(--text-primary);
+  margin-right: 4px;
+}
+
+.usage-guide-sublist {
+  margin: 4px 0 4px 0;
+  padding-left: 18px;
+  list-style: disc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
