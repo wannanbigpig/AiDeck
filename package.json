@@ -1,21 +1,25 @@
 {
+  "name": "aideck-workspace",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "npm run dev -w @aideck/utools",
+    "dev:utools": "npm run dev -w @aideck/utools",
+    "dev:desktop": "npm run dev -w @aideck/desktop",
+    "build": "npm run build -w @aideck/utools && npm run build -w @aideck/desktop",
+    "build:utools": "npm run build -w @aideck/utools",
+    "build:desktop": "npm run build -w @aideck/desktop",
+    "build:desktop:mac": "npm run build:mac -w @aideck/desktop",
+    "build:desktop:win": "npm run build:win -w @aideck/desktop",
+    "build:desktop:linux": "npm run build:linux -w @aideck/desktop",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.cjs\""
   },
-  "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
-  },
   "devDependencies": {
-    "@types/react": "^19.0.8",
-    "@types/react-dom": "^19.0.3",
-    "@vitejs/plugin-react": "^4.3.1",
-    "standard": "^17.1.0",
-    "utools-api-types": "^7.5.1",
-    "vite": "^6.0.11"
+    "standard": "^17.1.0"
   }
 }

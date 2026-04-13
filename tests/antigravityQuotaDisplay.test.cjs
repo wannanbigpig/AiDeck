@@ -4,7 +4,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 async function loadAntigravityUtils () {
-  const filePath = path.join(process.cwd(), 'src/utils/antigravity.js')
+  const filePath = path.join(process.cwd(), 'packages/app-shell/src/utils/antigravity.js')
   return import(pathToFileURL(filePath).href)
 }
 

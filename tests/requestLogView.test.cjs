@@ -4,7 +4,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 async function loadRequestLogViewUtils () {
-  const filePath = path.join(process.cwd(), 'src/utils/requestLogView.js')
+  const filePath = path.join(process.cwd(), 'packages/app-shell/src/utils/requestLogView.js')
   return import(pathToFileURL(filePath).href)
 }
 

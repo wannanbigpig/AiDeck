@@ -1,0 +1,7 @@
+{
+  "name": "@aideck/platforms",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/index.cjs"
+}

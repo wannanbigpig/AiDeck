@@ -1,23 +1,33 @@
 import { useEffect } from 'react'
+import { exitPlugin, showItemInFolder, showNotification, writeImageFile, writeTextFile } from '../utils/hostBridge.js'
 
 export default function Write ({ enterAction }) {
   useEffect(() => {
-    let outputPath
-    try {
-      if (enterAction.type === 'over') {
-        outputPath = window.services.writeTextFile(enterAction.payload)
-      } else if (enterAction.type === 'img') {
-        outputPath = window.services.writeImageFile(enterAction.payload)
+    let disposed = false
+
+    async function run () {
+      let outputPath = ''
+      try {
+        if (enterAction.type === 'over') {
+          outputPath = await writeTextFile(enterAction.payload)
+        } else if (enterAction.type === 'img') {
+          outputPath = await writeImageFile(enterAction.payload)
+        }
+      } catch (err) {
+        await showNotification('文件保存出错了！')
       }
-    } catch {
-      // 写入错误弹出通知
-      window.utools.showNotification('文件保存出错了！')
+
+      if (disposed) return
+      if (outputPath) {
+        await showItemInFolder(outputPath)
+      }
+      await exitPlugin()
     }
-    if (outputPath) {
-      // 在资源管理器中显示
-      window.utools.shellShowItemInFolder(outputPath)
+
+    void run()
+
+    return () => {
+      disposed = true
     }
-    // 退出插件应用
-    window.utools.outPlugin()
   }, [enterAction])
 }

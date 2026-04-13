@@ -1,0 +1,48 @@
+{
+  "main": "index.html",
+  "preload": "preload/services.js",
+  "logo": "logo.png",
+  "development": {
+    "main": "http://localhost:5173"
+  },
+  "pluginSetting": {
+    "height": 600
+  },
+  "features": [
+    {
+      "code": "AiDeck",
+      "explain": "AI IDE 多账号管理 - 支持 Antigravity / Codex / Gemini CLI",
+      "cmds": [
+        "AiDeck",
+        "AI账号管理",
+        "Antigravity",
+        "Codex",
+        "Gemini"
+      ]
+    },
+    {
+      "code": "AiDeck-antigravity",
+      "explain": "Antigravity 账号管理 - 切号 / 配额监控",
+      "cmds": [
+        "Antigravity 管理",
+        "AG管理"
+      ]
+    },
+    {
+      "code": "AiDeck-codex",
+      "explain": "Codex 账号管理 - 切号 / 配额监控",
+      "cmds": [
+        "Codex 管理",
+        "Codex账号"
+      ]
+    },
+    {
+      "code": "AiDeck-gemini",
+      "explain": "Gemini CLI 账号管理 - 注入 / Token 刷新",
+      "cmds": [
+        "Gemini 管理",
+        "Gemini CLI"
+      ]
+    }
+  ]
+}

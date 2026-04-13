@@ -1,22 +1,17 @@
 import { useEffect, useState } from 'react'
 import './index.css'
+import { readLocalFile, showOpenDialog } from '../utils/hostBridge.js'
 
 export default function Read ({ enterAction }) {
   const [filePath, setFilePath] = useState('')
   const [fileContent, setFileContent] = useState('')
   const [error, setError] = useState('')
 
-  const handleOpenDialog = () => {
-    // 通过 uTools 的 api 打开文件选择窗口
-    const files = window.utools.showOpenDialog({
-      title: '选择文件',
-      properties: ['openFile']
-    })
-    if (!files) return
-    const filePath = files[0]
-    setFilePath(filePath)
+  const loadFile = (nextFilePath) => {
+    setError('')
+    setFilePath(nextFilePath)
     try {
-      const content = window.services.readFile(filePath)
+      const content = readLocalFile(nextFilePath)
       setFileContent(content)
     } catch (err) {
       setError(err.message)
@@ -24,18 +19,21 @@ export default function Read ({ enterAction }) {
     }
   }
 
+  const handleOpenDialog = async () => {
+    const files = await showOpenDialog({
+      title: '选择文件',
+      properties: ['openFile']
+    })
+    if (!files) return
+    const nextFilePath = files[0]
+    if (!nextFilePath) return
+    loadFile(nextFilePath)
+  }
+
   useEffect(() => {
     if (enterAction.type === 'files') {
-      // 匹配文件进入，直接读取文件
-      const filePath = enterAction.payload[0].path
-      setFilePath(filePath)
-      try {
-        const content = window.services.readFile(filePath)
-        setFileContent(content)
-      } catch (err) {
-        setError(err.message)
-        setFileContent('')
-      }
+      const nextFilePath = enterAction.payload[0].path
+      loadFile(nextFilePath)
     }
   }, [enterAction])
 
