@@ -31,12 +31,12 @@ const CLOUD_CODE_BASE_URL = 'https://cloudcode-pa.googleapis.com'
 const LOAD_CODE_ASSIST_PATH = 'v1internal:loadCodeAssist'
 const FETCH_MODELS_PATH = 'v1internal:fetchAvailableModels'
 
-// Antigravity OAuth2 凭证（提取自 cockpit-tools）
+// Antigravity OAuth2 凭证
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo'
-const ANTIGRAVITY_CLIENT_ID = process.env.ANTIGRAVITY_CLIENT_ID || '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
-const ANTIGRAVITY_CLIENT_SECRET = process.env.ANTIGRAVITY_CLIENT_SECRET || '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'
+const ANTIGRAVITY_CLIENT_ID = String(process.env.ANTIGRAVITY_CLIENT_ID || '').trim()
+const ANTIGRAVITY_CLIENT_SECRET = String(process.env.ANTIGRAVITY_CLIENT_SECRET || '').trim()
 const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',

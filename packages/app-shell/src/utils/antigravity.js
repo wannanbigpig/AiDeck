@@ -49,7 +49,7 @@ export function normalizeAntigravityAdvancedSettings (raw) {
 
 /**
  * Antigravity 配额展示辅助方法
- * 参考 cockpit-tools 的固定展示分组策略：Claude / Gemini 3.1 Pro / Gemini 3 Flash
+ * 采用固定展示分组策略：Claude / Gemini 3.1 Pro / Gemini 3 Flash
  */
 
 const DISPLAY_GROUPS = [

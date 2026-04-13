@@ -22,11 +22,9 @@ const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo'
 const CODE_ASSIST_LOAD_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
 const CODE_ASSIST_QUOTA_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
 
-// 来自 cockpit-tools，可被环境变量覆盖
-const GEMINI_CLIENT_ID = process.env.GEMINI_CLIENT_ID ||
-  '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com'
-const GEMINI_CLIENT_SECRET = process.env.GEMINI_CLIENT_SECRET ||
-  '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'
+// 仅从环境变量读取，避免将 OAuth 凭证硬编码进仓库
+const GEMINI_CLIENT_ID = String(process.env.GEMINI_CLIENT_ID || '').trim()
+const GEMINI_CLIENT_SECRET = String(process.env.GEMINI_CLIENT_SECRET || '').trim()
 
 const GEMINI_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
@@ -642,6 +640,12 @@ function _triggerGeminiOAuthAutoComplete (session) {
  */
 async function prepareOAuthSession (port) {
   try {
+    if (!GEMINI_CLIENT_ID) {
+      return { success: false, error: '未配置 GEMINI_CLIENT_ID，无法发起 OAuth' }
+    }
+    if (!GEMINI_CLIENT_SECRET) {
+      return { success: false, error: '未配置 GEMINI_CLIENT_SECRET，无法发起 OAuth' }
+    }
     storage.cleanupOAuthPending(PLATFORM, GEMINI_OAUTH_SESSION_TTL_MS)
     _cleanupActiveOAuthSessions()
     const callbackPort = await _resolveAvailableOAuthPort(port)
