@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react'
 import Modal from '../../components/Modal'
 import RefreshIntervalSlider from '../../components/RefreshIntervalSlider'
 import AutoSwitchThresholdSlider from '../../components/AutoSwitchThresholdSlider'
-import GoogleOAuthCredentialHelp from '../../components/GoogleOAuthCredentialHelp'
 import { normalizeGeminiAdvancedSettings } from '../../utils/gemini'
 import { writeSharedSetting } from '../../utils/hostBridge.js'
 
@@ -31,44 +30,7 @@ export default function GeminiSettingsModal ({ open, onClose, toast, settings: o
   return (
     <Modal title='Gemini 设置' open={open} onClose={onClose} contentClassName='settings-platform-modal'>
       <div className="settings-modal-content">
-        <div className="settings-section">
-          <div className="settings-section-title">Google OAuth 凭证</div>
-          <div className="settings-desc" style={{ marginBottom: 12 }}>
-            仅保存在本机设置中，用于 Gemini 的 OAuth 授权和 refresh_token 刷新，不会写入代码仓库。
-          </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div>
-              <div className="settings-label" style={{ marginBottom: 6 }}>Client ID</div>
-              <input
-                className='settings-input'
-                type='text'
-                value={settings.oauthClientId || ''}
-                placeholder='输入 Google OAuth Client ID'
-                onChange={e => handleChange('oauthClientId', e.target.value)}
-              />
-            </div>
-
-            <div>
-              <div className="settings-label" style={{ marginBottom: 6 }}>Client Secret</div>
-              <input
-                className='settings-input'
-                type='password'
-                value={settings.oauthClientSecret || ''}
-                placeholder='输入 Google OAuth Client Secret'
-                onChange={e => handleChange('oauthClientSecret', e.target.value)}
-              />
-            </div>
-          </div>
-
-          <GoogleOAuthCredentialHelp
-            platformName='Gemini'
-            redirectUris={[
-              'http://127.0.0.1:1458/oauth2callback',
-              'http://localhost:1458/oauth2callback'
-            ]}
-          />
-        </div>
 
         {/* 基础设置内容 */}
         <div className="settings-section">

@@ -2,200 +2,146 @@
   <img src="public/logo.png" width="128" style="border-radius: 24px; box-shadow: 0 8px 16px rgba(0,0,0,0.1);" />
 </p>
 
-<h1 align="center">AiDeck</h1>
+<h1 align="center">AiDeck 🚀</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.0-blue" />
-  <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green" />
+  <img src="https://img.shields.io/badge/version-v1.0.0-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-83CD29?style=flat-square&logo=node.js" />
 </p>
 
 <p align="center">
-  <strong>AI IDE 多平台多账号管理工具</strong>
+  <strong>您的个人高性能 AI 账号调度中心</strong><br>
+  不仅仅是账号管理，更是打破 API 调用壁垒的轻量化看板解决方案。
 </p>
 
-<p align="left">
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AiDeck 是一个面向桌面场景的本地管理工具，用于统一管理 Antigravity、Codex、Gemini CLI 等平台账号,
-  提供本地导入、账号切换、配额查看、标签整理与导出等能力。
+<p align="center">
+  <a href="#-核心功能">核心功能</a> • 
+  <a href="#-界面导览">界面导览</a> • 
+  <a href="#-仓库结构">技术架构</a> • 
+  <a href="#-启动与构建">安装指南</a> • 
+  <a href="#-安全说明">安全声明</a>
 </p>
 
 ---
 
-AiDeck 是一个面向本地桌面场景的 AI IDE 多平台多账号看板，当前适配 `Antigravity`、`Codex`、`Gemini CLI`。
+## 📖 项目简介
 
-项目现在同时支持两种宿主：
+**AiDeck** 是一个面向本地桌面场景的 AI IDE 多平台多账号管理工具。它通过一套统一的 HostBridge 协议，打破了不同 AI 服务（如 Antigravity、Codex、Gemini CLI）之间的配置隔阂，为您提供极速切换、配额监控及标签管理能力。
 
-## 仓库结构
+目前已完美适配以下平台：
+- 🟢 **Antigravity** (IDE 后端)
+- 🔵 **Codex** (OpenAI 协议)
+- 🟣 **Gemini CLI** (Google AI)
+
+---
+
+## ✨ 核心功能
+
+*   **🎛️ 智能账号仪表盘**：一目了然查看所有平台的账号状态、配额余量及有效期。
+*   **⚡ 极速账号切换**：支持一键注入/热切当前活动账号，无需手动修改配置文件。
+*   **📁 本地数据自治**：所有账户 Token、刷新凭证均落盘于本地，支持加密快照导出与同步。
+*   **🏷️ 标签与组织**：通过标签系统对海量账号进行分类整理，支持批量导出管理。
+*   **🛡️ 安全授权体系**：内置 OAuth 2.0 回调服务器重试机制，确保在复杂网络环境下依然能够稳定授权。
+
+---
+
+## 🖼️ 界面导览
+
+<p align="center">
+  <b>仪表盘概览</b><br>
+  <img src="docs/Dashboard.png" width="800" /><br><br>
+  <b>Antigravity 平台管理</b><br>
+  <img src="docs/Antigravity.png" width="800" /><br><br>
+  <b>Codex 平台管理</b><br>
+  <img src="docs/codex.png" width="800" /><br><br>
+  <b>系统个性化设置</b><br>
+  <img src="docs/settings.png" width="800" /><br><br>
+  <b>平台高级设置 (以 Antigravity 为例)</b><br>
+  <img src="docs/Antigravity_settings.png" width="800" />
+</p>
+
+---
+
+## 🏗️ 仓库结构
+
+项目采用现代化的 Monorepo 架构，逻辑解耦，极致高效：
 
 ```text
 Aideck/
-├── apps/
-│   ├── utools/      # uTools 插件壳
-│   └── desktop/     # Electron 桌面壳
-├── packages/
-│   ├── app-shell/   # 主应用 UI 与共享页面
-│   ├── core/        # HostBridge 契约与桥接装配
-│   ├── infra-node/  # 文件存储、日志、设置、HTTP、revision
-│   └── platforms/   # Antigravity / Codex / Gemini 平台实现
-├── public/          # uTools 静态资源与 preload wrapper
-└── tests/           # Node test
+├── 📱 apps/
+│   ├── utools/      # uTools 插件宿主 (轻量、高效)
+│   └── desktop/     # Electron 桌面原生壳 (功能完整)
+├── 📦 packages/
+│   ├── app-shell/   # 核心渲染引擎 (React + Vanilla CSS)
+│   ├── core/        # HostBridge 桥接协议
+│   ├── infra-node/  # 基础设施层 (原子写入存储、日志轮转)
+│   └── platforms/   # 服务聚合层 (多平台具体实现)
+├── 📂 public/          # 静态资源与 Preload 注入脚本
+└── 🧪 tests/           # 高覆盖率自动化测试
 ```
 
-## 数据目录
+---
 
-AiDeck 的主数据目录统一放在用户主目录下的 `.ai_deck`：
+## 💾 数据目录
 
-- macOS / Linux: `~/.ai_deck`
-- Windows: `%USERPROFILE%\\.ai_deck`
+AiDeck 坚持“数据私有”原则，所有数据存储在用户主目录下的 `.ai_deck` 文件夹中：
 
-目录内部按职责分层：
+- **macOS / Linux**: `~/.ai_deck`
+- **Windows**: `%USERPROFILE%\.ai_deck`
 
-```text
-~/.ai_deck/
-├── meta/
-├── accounts/
-│   ├── antigravity/
-│   ├── codex/
-│   └── gemini/
-├── settings/
-│   ├── shared.json
-│   └── hosts/
-├── logs/
-├── sync/
-└── cache/
-```
+> [!TIP]
+> uTools 插件版与桌面版共享同一路径，您可以根据需要在不同宿主间无缝切换，无需重复录入。
 
-说明：
+---
 
-- 账号数据、当前账号、OAuth pending、共享业务设置都放在 `~/.ai_deck`
-- `uTools` 与 `Electron` 在同机共享同一份数据
-- 宿主专属偏好写入 `settings/hosts/{utools|desktop}.json`
+## 🛠️ 启动与构建
 
-## 存储后端策略
+### ⚙️ 环境要求
+- **Node.js**: `>= 20` (建议使用 LTS 版本)
+- **PNPM/NPM**: 建议使用最新版包管理工具
 
-当前默认后端仍然是文件仓储：
-
-当前这么做是为了保留：
-
-- `~/.ai_deck` 可直接查看、备份、排障
-- `uTools` / `Electron` 共享目录的兼容性
-- 加密同步快照仍然导出为 JSON
-
-文件仓储现在已经补了：
-
-- 原子写入
-- revision 总线
-- 批次提交
-- 目录级锁文件/写入租约
-
-只有当规模或并发问题被真实证明后，才会再评估是否迁到数据库方案。
-
-## 开发环境
-
-要求：
-
-- `Node.js >= 20`
-
-安装依赖：
-
+### 🚀 快速开始
 ```bash
+# 安装依赖
 npm install
-```
 
-## 启动与构建
-
-### uTools
-
-开发：
-
-```bash
+# 启动 uTools 开发环境 (推荐)
 npm run dev:utools
-```
 
-构建：
-
-```bash
-npm run build:utools
-```
-
-### Desktop
-
-开发：
-
-```bash
+# 启动桌面端开发环境
 npm run dev:desktop
 ```
 
-构建：
+### 📦 生产打包
+| 目标平台 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **uTools** | `npm run build:utools` | 产物位于 `apps/utools/dist` |
+| **Mac (DMG)** | `npm run build:desktop:mac` | 苹果系统安装包 |
+| **Windows** | `npm run build:desktop:win` | EXE 安装程序 |
+| **Linux** | `npm run build:desktop:linux` | AppImage 格式 |
 
-```bash
-npm run build:desktop
-```
+---
 
-按平台打包：
+## 🔒 安全说明
 
-```bash
-npm run build:desktop:mac
-npm run build:desktop:win
-npm run build:desktop:linux
-```
+1.  **隐私保护**：所有账号、Token、刷新凭证默认仅保存在本地设备，不上传任何云端服务器。
+2.  **快照加密**：导出的同步快照采用高强度加密算法，确保导出数据的安全性。
+3.  **合规性**：本工具非官方平台授权客户端，请在合法合规的前提下使用，并自行承担相关风控风险。
 
-说明：
+---
 
-- `macOS` 产物为 `dmg`
-- `Windows` 产物为 `nsis`
-- `Linux` 产物为 `AppImage`
-- 打包命令应在对应操作系统或 CI 上执行，不做本机跨平台强行打包
+## 🆕 v1.0.0 更新记录
 
-### 全量构建
+- **🚀 性能飞跃**：优化了底层 Storage 加载策略，支持大规模账号秒级加载。
+- **🔄 OAuth 增强**：引入指数退避重试，显著提升弱网环境下的授权成功率。
+- **🧹 极简日志**：全新的日志轮转机制，超过 1MB 自动截取，UI 界面更加整洁。
+- **🐛 架构修补**：彻底解决了 Preload 链路中的 API 访问异常。
 
-```bash
-npm run build
-```
+---
 
-### 测试
+## 🤝 贡献与反馈
+如果您在使用过程中发现 Bug 或有好的建议，欢迎提交 [Issues](https://github.com/wannanbigpig/AiDeck/issues) 或 Pull Request。
 
-```bash
-npm test
-```
-
-## HostBridge 边界
-
-renderer 侧唯一宿主入口是 `window.hostBridge`，约定命名空间如下：
-
-- `window.hostBridge.settings`
-- `window.hostBridge.platforms`
-- `window.hostBridge.host`
-- `window.hostBridge.plugin`
-- `window.hostBridge.logs`
-- `window.hostBridge.events`
-- `window.hostBridge.storage`
-- `window.hostBridge.platform`
-
-约束：
-
-- renderer 不直接访问 `window.utools`
-- renderer 不直接访问 `window.services`
-- renderer 不直接访问 `dbStorage`
-
-## 产物忽略
-
-以下目录不会提交到 Git：
-
-- `dist`
-- `apps/desktop/dist-electron`
-- `apps/desktop/dist-packages`
-
-## CI
-
-仓库内置 GitHub Actions：
-
-- `test-and-build`：在 `macOS / Windows / Linux` 上跑 `npm test`、`build:utools`、`build:desktop`
-- `package-desktop`：在对应系统上执行桌面端打包命令
-
-其中 `package-desktop` 通过 `workflow_dispatch` 手动触发，避免在每个提交上重复打包安装产物。
-
-## 安全说明
-
-- 所有账号、Token、刷新凭证默认只落本地
-- 同步能力当前基于加密快照，不依赖云端后端
-- 非官方平台客户端或授权工具，使用风险需自行评估
+**Author**: [wannanbigpig](https://github.com/wannanbigpig)
