@@ -50,16 +50,13 @@
 ## 🖼️ 界面导览
 
 <p align="center">
-  <b>仪表盘概览</b><br>
-  <img src="docs/Dashboard.png" width="800" /><br><br>
-  <b>Antigravity 平台管理</b><br>
-  <img src="docs/Antigravity.png" width="800" /><br><br>
-  <b>Codex 平台管理</b><br>
-  <img src="docs/codex.png" width="800" /><br><br>
-  <b>系统个性化设置</b><br>
-  <img src="docs/settings.png" width="800" /><br><br>
-  <b>平台高级设置 (以 Antigravity 为例)</b><br>
-  <img src="docs/Antigravity_settings.png" width="800" />
+  <img src="docs/Dashboard.png" width="32%" />
+  <img src="docs/Antigravity.png" width="32%" />
+  <img src="docs/codex.png" width="32%" />
+</p>
+<p align="center">
+  <img src="docs/settings.png" width="32%" />
+  <img src="docs/Antigravity_settings.png" width="32%" />
 </p>
 
 ---
