@@ -8,7 +8,7 @@ function createSharedSettingsRepository ({
 }) {
   function filePath () {
     dataRoot.ensureDataRootLayout()
-    return require('node:path').join(dataRoot.getSettingsDir(), 'shared.json')
+    return require('path').join(dataRoot.getSettingsDir(), 'shared.json')
   }
 
   function readAll () {
@@ -66,7 +66,7 @@ function createHostSettingsRepository ({
 
   function filePath (hostId) {
     dataRoot.ensureDataRootLayout()
-    return require('node:path').join(dataRoot.getHostSettingsDir(), normalizeHostId(hostId) + '.json')
+    return require('path').join(dataRoot.getHostSettingsDir(), normalizeHostId(hostId) + '.json')
   }
 
   function readAll (hostId) {

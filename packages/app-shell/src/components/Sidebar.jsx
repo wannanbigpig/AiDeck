@@ -50,7 +50,7 @@ export default function Sidebar ({
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
         <div className='sidebar-header'>
           <div className='sidebar-brand'>
-            <img src='./logo.png' alt='AiDeck' style={{ width: '28px', height: '28px', flexShrink: 0, borderRadius: '6px' }} />
+            <img src='/logo.png' alt='AiDeck' style={{ width: '28px', height: '28px', flexShrink: 0, borderRadius: '6px' }} />
             <span className='sidebar-brand-text'>AiDeck</span>
           </div>
         </div>

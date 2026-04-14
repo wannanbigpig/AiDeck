@@ -3,9 +3,9 @@
  * 提供安全的文件读写、目录操作等能力
  */
 
-const fs = require('node:fs')
-const path = require('node:path')
-const os = require('node:os')
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
 
 /**
  * 获取用户主目录

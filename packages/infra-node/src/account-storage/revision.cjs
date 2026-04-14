@@ -7,7 +7,7 @@ function createRevisionHelpers ({
   nowMs
 }) {
   function metaPath () {
-    return require('node:path').join(dataRoot.getMetaDir(), metaFile)
+    return require('path').join(dataRoot.getMetaDir(), metaFile)
   }
 
   function ensureMetaFile () {

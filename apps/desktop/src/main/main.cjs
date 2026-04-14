@@ -1,11 +1,15 @@
-const path = require('node:path')
+const path = require('path')
+const os = require('os')
 const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron')
+
+console.log('[AiDeck] Electron main process started')
+console.log('[AiDeck] Home directory:', os.homedir())
+console.log('[AiDeck] Data directory would be:', path.join(os.homedir(), '.ai_deck'))
 
 let mainWindow = null
 
 function createWindow () {
   const preload = path.join(__dirname, 'preload.cjs')
-  const renderer = path.join(__dirname, '..', 'renderer', 'index.html')
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -15,11 +19,13 @@ function createWindow () {
     webPreferences: {
       preload,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false
     }
   })
 
-  win.loadFile(renderer)
+  const vitePort = process.env.VITE_PORT || '5173'
+  win.loadURL(`http://localhost:${vitePort}`)
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null

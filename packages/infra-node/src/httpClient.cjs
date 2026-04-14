@@ -5,9 +5,9 @@
  * 供 antigravityService / codexService / geminiService 共用。
  */
 
-const https = require('node:https')
-const http = require('node:http')
-const zlib = require('node:zlib')
+const https = require('https')
+const http = require('http')
+const zlib = require('zlib')
 const requestLogger = require('./requestLogStore')
 
 const DEFAULT_TIMEOUT_MS = 15000

@@ -11,10 +11,10 @@
  *   - 配额查询
  */
 
-const cp = require('node:child_process')
-const crypto = require('node:crypto')
-const path = require('node:path')
-const http = require('node:http')
+const cp = require('child_process')
+const crypto = require('crypto')
+const path = require('path')
+const http = require('http')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
@@ -2799,7 +2799,7 @@ async function refreshQuotasBatch (accountIds, options = {}) {
     onProgress = null
   } = options
 
-  const { Semaphore } = require('../utils/semaphore')
+  const { Semaphore } = require('./utils/semaphore.cjs')
   const semaphore = new Semaphore(concurrency)
   const results = []
   let completed = 0
@@ -3114,7 +3114,7 @@ function _startOAuthCallbackServer (session) {
     const port = Number(redirect.port || ANTIGRAVITY_OAUTH_CALLBACK_PORT)
     const expectedPath = redirect.pathname || ANTIGRAVITY_OAUTH_CALLBACK_PATH
 
-    const server = require('node:http').createServer(function (req, res) {
+    const server = require('http').createServer(function (req, res) {
       try {
         const reqUrl = req.url || '/'
         const url = new URL(reqUrl, session.redirectUri)

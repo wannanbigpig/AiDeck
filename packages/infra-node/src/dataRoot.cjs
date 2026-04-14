@@ -1,4 +1,4 @@
-const path = require('node:path')
+const path = require('path')
 const fileUtils = require('./fileUtils.cjs')
 
 const DATA_ROOT_NAME = '.ai_deck'

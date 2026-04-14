@@ -4,9 +4,9 @@ const ROTATION_SIZE_THRESHOLD = 1024 * 1024 // 1MB
 const ROTATION_RETAIN_LINES = 100
 const MAX_STRING_LENGTH = 600
 const MAX_OBJECT_DEPTH = 4
-const fs = require('node:fs')
-const path = require('node:path')
-const cp = require('node:child_process')
+const fs = require('fs')
+const path = require('path')
+const cp = require('child_process')
 const dataRoot = require('./dataRoot.cjs')
 const SENSITIVE_KEYS = new Set([
   'authorization',

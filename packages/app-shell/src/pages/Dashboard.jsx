@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { usePrivacy } from '../components/PrivacyMode'
 import { 
-  GroupCollapseIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   Squares2x2Icon,
   UserGroupIcon,
   ServerIcon,
@@ -253,10 +254,11 @@ export default function Dashboard({ onNavigate, onRefresh, searchQuery = '', pla
                       data-tip={collapsedGroups[platformId] ? '展开' : '折叠'}
                       aria-label={collapsedGroups[platformId] ? `展开 ${platformId}` : `折叠 ${platformId}`}
                     >
-                      <GroupCollapseIcon
-                        size={14}
-                        style={{ transform: collapsedGroups[platformId] ? 'rotate(-180deg)' : 'rotate(0deg)', transition: 'transform .18s ease' }}
-                      />
+                      {collapsedGroups[platformId] ? (
+                        <ChevronDownIcon size={14} />
+                      ) : (
+                        <ChevronUpIcon size={14} />
+                      )}
                     </button>
                   </div>
                   {!collapsedGroups[platformId] && (

@@ -20,6 +20,7 @@
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.cjs\""
   },
   "devDependencies": {
+    "electron": "^36.2.1",
     "standard": "^17.1.0"
   }
 }

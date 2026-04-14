@@ -13,12 +13,12 @@
  * }
  */
 
-const fs = require('node:fs')
-const os = require('node:os')
-const path = require('node:path')
-const cp = require('node:child_process')
-const crypto = require('node:crypto')
-const http = require('node:http')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const cp = require('child_process')
+const crypto = require('crypto')
+const http = require('http')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
@@ -1596,7 +1596,7 @@ function _startOAuthCallbackServer (session) {
     const port = Number(new URL(session.redirectUri).port || CODEX_OAUTH_CALLBACK_PORT)
     const expected = new URL(session.redirectUri)
 
-    const server = require('node:http').createServer(function (req, res) {
+    const server = require('http').createServer(function (req, res) {
       try {
         if (req.method === 'OPTIONS') {
           res.writeHead(204)

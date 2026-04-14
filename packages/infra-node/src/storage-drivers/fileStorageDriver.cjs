@@ -1,5 +1,5 @@
-const fs = require('node:fs')
-const path = require('node:path')
+const fs = require('fs')
+const path = require('path')
 
 function sleepMs (ms) {
   const timeout = Math.max(1, Number(ms || 0))

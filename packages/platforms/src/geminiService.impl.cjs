@@ -7,10 +7,10 @@
  *   - settings.json        (配置)
  */
 
-const path = require('node:path')
-const cp = require('node:child_process')
-const crypto = require('node:crypto')
-const http = require('node:http')
+const path = require('path')
+const cp = require('child_process')
+const crypto = require('crypto')
+const http = require('http')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
@@ -454,7 +454,7 @@ function _startOAuthCallbackServer (session) {
     const port = Number(redirect.port || GEMINI_OAUTH_CALLBACK_PORT)
     const expectedPath = redirect.pathname || GEMINI_OAUTH_CALLBACK_PATH
 
-    const server = require('node:http').createServer(function (req, res) {
+    const server = require('http').createServer(function (req, res) {
       try {
         if (req.method === 'OPTIONS') {
           res.writeHead(204)
@@ -1418,7 +1418,7 @@ async function _resolveAvailableOAuthPort (port) {
 
 function _probeLoopbackPort (port) {
   return new Promise((resolve) => {
-    const net = require('node:net')
+    const net = require('net')
     const server = net.createServer()
 
     server.once('error', function () {
@@ -2182,7 +2182,7 @@ async function refreshQuotasBatch (accountIds, options = {}) {
     onProgress = null
   } = options
 
-  const { Semaphore } = require('../utils/semaphore')
+  const { Semaphore } = require('./utils/semaphore.cjs')
   const semaphore = new Semaphore(concurrency)
   const results = []
   let completed = 0
