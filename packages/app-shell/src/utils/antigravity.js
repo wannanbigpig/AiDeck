@@ -1,16 +1,25 @@
 import { coerceBooleanSetting } from './globalSettings.js'
+import { readSharedSetting } from './hostBridge.js'
 import { normalizeRefreshIntervalMinutes } from './refreshInterval.js'
+
+export const ANTIGRAVITY_SETTINGS_KEY = 'antigravity_advanced_settings'
 
 export const DEFAULT_ANTIGRAVITY_SETTINGS = {
   autoRefreshMinutes: 10,
   startupPath: '',
+  oauthClientId: '',
+  oauthClientSecret: '',
   autoRestartAntigravityApp: false,
   autoStartAntigravityAppWhenClosed: false,
   quotaAggregatedDisplay: true,
   switchDeviceIdentity: true,
   autoSwitch: false,
   autoSwitchThreshold: 30, // 30%
-  autoSwitchModelGroup: 'any'
+  autoSwitchModelGroup: 'any',
+  quotaWarningEnabled: false,
+  quotaWarningClaudeThreshold: 10,
+  quotaWarningGeminiProThreshold: 10,
+  quotaWarningGeminiFlashThreshold: 10
 }
 
 const AUTO_SWITCH_THRESHOLD_MAX = 30
@@ -20,7 +29,8 @@ export const ANTIGRAVITY_BOOLEAN_SETTING_KEYS = [
   'autoStartAntigravityAppWhenClosed',
   'quotaAggregatedDisplay',
   'switchDeviceIdentity',
-  'autoSwitch'
+  'autoSwitch',
+  'quotaWarningEnabled'
 ]
 export const ANTIGRAVITY_MODEL_GROUPS = ['claude', 'gemini_pro', 'gemini_flash']
 
@@ -39,12 +49,21 @@ export function normalizeAntigravityAdvancedSettings (raw) {
     DEFAULT_ANTIGRAVITY_SETTINGS.autoRefreshMinutes
   )
   next.autoSwitchThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.autoSwitchThreshold) || 0))
+  next.quotaWarningClaudeThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningClaudeThreshold) || 0))
+  next.quotaWarningGeminiProThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningGeminiProThreshold) || 0))
+  next.quotaWarningGeminiFlashThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningGeminiFlashThreshold) || 0))
   next.startupPath = typeof merged.startupPath === 'string' ? merged.startupPath : DEFAULT_ANTIGRAVITY_SETTINGS.startupPath
+  next.oauthClientId = typeof merged.oauthClientId === 'string' ? merged.oauthClientId.trim() : DEFAULT_ANTIGRAVITY_SETTINGS.oauthClientId
+  next.oauthClientSecret = typeof merged.oauthClientSecret === 'string' ? merged.oauthClientSecret.trim() : DEFAULT_ANTIGRAVITY_SETTINGS.oauthClientSecret
   const modelGroup = String(merged.autoSwitchModelGroup || '').trim()
   next.autoSwitchModelGroup = modelGroup && (modelGroup === 'any' || ANTIGRAVITY_MODEL_GROUPS.includes(modelGroup))
     ? modelGroup
     : DEFAULT_ANTIGRAVITY_SETTINGS.autoSwitchModelGroup
   return next
+}
+
+export function readAntigravityAdvancedSettings () {
+  return normalizeAntigravityAdvancedSettings(readSharedSetting(ANTIGRAVITY_SETTINGS_KEY, null))
 }
 
 /**

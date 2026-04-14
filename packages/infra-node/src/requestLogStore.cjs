@@ -1,5 +1,7 @@
 const MAX_LOGS = 800
 const MAX_FILE_LINES = 2000
+const ROTATION_SIZE_THRESHOLD = 1024 * 1024 // 1MB
+const ROTATION_RETAIN_LINES = 100
 const MAX_STRING_LENGTH = 600
 const MAX_OBJECT_DEPTH = 4
 const fs = require('node:fs')
@@ -109,7 +111,17 @@ function appendLogLine (entry) {
     entry.detail ? stringifyLogDetail(entry.detail) : ''
   ].filter(Boolean).join(' ') + '\n'
   try {
-    fs.appendFileSync(getLogFilePath(), line, { encoding: 'utf-8' })
+    const filePath = getLogFilePath()
+    fs.appendFileSync(filePath, line, { encoding: 'utf-8' })
+
+    // 日志轮转逻辑：如果超过 1MB，则保留最后 100 条
+    const stats = fs.statSync(filePath)
+    if (stats.size > ROTATION_SIZE_THRESHOLD) {
+      const content = fs.readFileSync(filePath, { encoding: 'utf-8' })
+      const lines = content.split(/\r?\n/).filter(Boolean)
+      const keptLines = lines.slice(-ROTATION_RETAIN_LINES).join('\n') + '\n'
+      fs.writeFileSync(filePath, keptLines, { encoding: 'utf-8' })
+    }
   } catch (e) {}
 }
 

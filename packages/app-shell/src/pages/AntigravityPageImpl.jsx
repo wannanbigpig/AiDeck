@@ -20,7 +20,7 @@ import {
   PlusIcon,
   SettingsIcon
 } from '../components/Icons/ActionIcons'
-import { ANTIGRAVITY_MODEL_GROUPS } from '../utils/antigravity'
+import { ANTIGRAVITY_MODEL_GROUPS, getAntigravityQuotaDisplayItems } from '../utils/antigravity'
 import { resolveQuotaErrorMeta } from '../utils/codex'
 import { logRequestEvent } from '../utils/requestLogClient'
 import { coerceBooleanSetting } from '../utils/globalSettings'
@@ -140,6 +140,7 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
     prepareOAuthSession,
     handleCopyOAuthUrl,
     handleOpenOAuthInBrowser,
+    handleCancelOAuthInBrowser,
     handleSubmitOAuthCallback,
     ensureOAuthReady,
     resetOAuthFlow
@@ -381,8 +382,19 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
     }
   }
 
+  function getQuotaDisplayItemsSafe(quota) {
+    if (typeof getAntigravityQuotaDisplayItems !== 'function') {
+      return []
+    }
+    try {
+      return getAntigravityQuotaDisplayItems(quota, { aggregated: true })
+    } catch {
+      return []
+    }
+  }
+
   function getQuotaPercentageMap(account) {
-    const items = getAntigravityQuotaDisplayItems(account?.quota, { aggregated: true })
+    const items = getQuotaDisplayItemsSafe(account?.quota)
     const percentageMap = {}
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
@@ -511,7 +523,15 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
       resolveIssue: (item) => item.ok ? getQuotaRefreshIssueMessage(item.value) : (item.error?.message || String(item.error || '刷新失败')),
       onCompleted: async ({ total, failures }) => {
         refresh()
-        await maybeAutoSwitchAfterQuotaRefresh(source)
+        try {
+          await maybeAutoSwitchAfterQuotaRefresh(source)
+        } catch (error) {
+          logRequestEvent('antigravity.auto-switch', '自动切号流程异常', {
+            source,
+            error: error?.message || String(error)
+          }, 'error')
+          toast.warning('批量刷新已完成，但自动切号流程异常: ' + (error?.message || String(error)))
+        }
         logRequestEvent('antigravity.batch-refresh', '批量刷新配额完成', {
           source,
           silent,
@@ -717,6 +737,7 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
         oauthUrlCopied={oauthUrlCopied}
         onCopyOAuthUrl={handleCopyOAuthUrl}
         onOpenOAuthInBrowser={handleOpenOAuthInBrowser}
+        onCancelOAuthInBrowser={handleCancelOAuthInBrowser}
         onPrepareOAuthSession={prepareOAuthSession}
         oauthCallbackInput={oauthCallbackInput}
         onOAuthCallbackInputChange={setOauthCallbackInput}
@@ -736,6 +757,7 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
         onImportJson={handleImportJson}
         importingLocal={importingLocal}
         onImportLocal={() => handleImportLocal({ closeAfter: true })}
+        toast={toast}
       />
 
       <AntigravityTagModals

@@ -16,6 +16,7 @@ const WATCH_DEBOUNCE_MS = 180
 const watchHandles = []
 const emitTimerMap = new Map()
 const localStateListeners = new Set()
+const hostNavigationListeners = new Set()
 
 function emitLocalStateChange (platform, reason, extra = {}) {
   const key = String(platform || 'all')
@@ -50,6 +51,24 @@ function subscribeLocalState (listener) {
     localStateListeners.delete(listener)
   }
 }
+
+function subscribeHostNavigation (listener) {
+  if (typeof listener !== 'function') {
+    return function unsubscribe () {}
+  }
+  hostNavigationListeners.add(listener)
+  return function unsubscribe () {
+    hostNavigationListeners.delete(listener)
+  }
+}
+
+ipcRenderer.on('host:navigate-platform', (_event, detail) => {
+  for (const listener of hostNavigationListeners) {
+    try {
+      listener(detail)
+    } catch (err) {}
+  }
+})
 
 function trackWatchHandle (handle) {
   if (handle && typeof handle.close === 'function') {
@@ -417,6 +436,9 @@ const host = {
   },
   showNotification: async function (message, title = 'AiDeck') {
     try {
+      if (message && typeof message === 'object') {
+        return await ipcRenderer.invoke('host:show-notification', message)
+      }
       return await ipcRenderer.invoke('host:show-notification', { title, message })
     } catch (err) {
       return false
@@ -431,6 +453,52 @@ const host = {
     } catch (err) {
       return false
     }
+  },
+  writeConfigFile: function (filePath, content) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+
+    const dir = path.dirname(resolvedPath)
+    if (!fileUtils.dirExists(dir)) {
+      throw new Error(`配置目录不存在：${dir}`)
+    }
+
+    if (fileUtils.fileExists(resolvedPath)) {
+      const existingContent = fileUtils.readTextFile(resolvedPath)
+      const backupPath = resolvedPath + '.aideck.bak'
+      fileUtils.writeTextFile(backupPath, existingContent)
+    }
+
+    const ok = fileUtils.writeTextFile(resolvedPath, content)
+    if (!ok) {
+      throw new Error('写入文件失败')
+    }
+    return resolvedPath
+  },
+  readConfigFile: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.readTextFile(resolvedPath)
+  },
+  fileExists: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.fileExists(resolvedPath)
+  },
+  dirExists: function (dirPath) {
+    const resolvedPath = dirPath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), dirPath.slice(1))
+      : dirPath
+    return fileUtils.dirExists(resolvedPath)
+  },
+  deleteFile: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.deleteFile(resolvedPath)
   }
 }
 
@@ -457,7 +525,8 @@ const hostBridge = createHostBridge({
   sharedSettingsStore,
   hostSettingsStore,
   subscribeLocalState,
-  subscribeStorageRevision: revisionBus.subscribe
+  subscribeStorageRevision: revisionBus.subscribe,
+  subscribeHostNavigation
 })
 
 contextBridge.exposeInMainWorld('hostBridge', hostBridge)

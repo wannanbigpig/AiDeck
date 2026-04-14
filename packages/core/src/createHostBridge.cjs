@@ -180,6 +180,9 @@ function createHostBridge (options) {
       subscribeStorageRevision: typeof options.subscribeStorageRevision === 'function'
         ? options.subscribeStorageRevision
         : function subscribeStorageRevision () { return function unsubscribe () {} },
+      subscribeHostNavigation: typeof options.subscribeHostNavigation === 'function'
+        ? options.subscribeHostNavigation
+        : function subscribeHostNavigation () { return function unsubscribe () {} },
       subscribeLogs: options.logs && typeof options.logs.subscribe === 'function'
         ? options.logs.subscribe
         : function subscribeLogs () { return function unsubscribe () {} }

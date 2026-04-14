@@ -134,3 +134,25 @@ test('createHostBridge 应正确读写 shared settings 和 host settings', () =>
   assert.equal(bridge.settings.getHost('theme', 'light'), 'dark')
   assert.deepEqual(bridge.settings.mergeShared({ autoImportLocalAccounts: false }), { autoImportLocalAccounts: false })
 })
+
+test('createHostBridge 应暴露宿主通知导航订阅入口', () => {
+  const { sharedSettingsStore, hostSettingsStore } = createMemorySettingsStore()
+  let handled = null
+  const bridge = createHostBridge({
+    hostId: 'desktop',
+    services: {},
+    sharedSettingsStore,
+    hostSettingsStore,
+    subscribeHostNavigation (listener) {
+      listener({ platform: 'codex' })
+      return function unsubscribe () {}
+    }
+  })
+
+  const unsubscribe = bridge.events.subscribeHostNavigation((detail) => {
+    handled = detail
+  })
+
+  assert.equal(typeof unsubscribe, 'function')
+  assert.deepEqual(handled, { platform: 'codex' })
+})

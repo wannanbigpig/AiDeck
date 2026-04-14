@@ -11,7 +11,7 @@ import {
   ArrowPathIcon
 } from '../../components/Icons/ActionIcons'
 
-export default function CodexAddAccountModal ({
+export default function GeminiAddAccountModal ({
   open,
   onClose,
   addTab,
@@ -22,22 +22,31 @@ export default function CodexAddAccountModal ({
   oauthUrlCopied,
   onCopyOAuthUrl,
   onOpenOAuthInBrowser,
+  onCancelOAuthInBrowser,
   onPrepareOAuthSession,
   oauthCallbackInput,
   onOAuthCallbackInputChange,
   oauthRedirectUri,
   oauthBusy,
   oauthSessionId,
-  onSubmitOAuthCallback,
   oauthRecovered,
   oauthPolling,
+  onSubmitOAuthCallback,
+  idTokenInput,
+  onIdTokenInputChange,
+  accessTokenInput,
+  onAccessTokenInputChange,
+  refreshTokenInput,
+  onRefreshTokenInputChange,
+  onAddWithToken,
   importJson,
   onImportJsonChange,
   jsonImportRequiredText,
   jsonImportExample,
   onImportJson,
   importingLocal,
-  onImportLocal
+  onImportLocal,
+  toast
 }) {
   useOAuthAutoPrepareOnOpen({
     open,
@@ -52,7 +61,8 @@ export default function CodexAddAccountModal ({
     <Modal title='添加 Codex 账号' open={open} onClose={onClose}>
       <div className='oauth-tab-switch'>
         <button className={`oauth-tab-btn ${addTab === 'oauth' ? 'active' : ''}`} onClick={() => onSwitchTab('oauth')}>
-          <GlobeIcon size={14} style={{ marginRight: 6 }} /> OAuth 授权
+          {oauthPolling ? <ArrowPathIcon size={14} style={{ marginRight: 6 }} spinning /> : <GlobeIcon size={14} style={{ marginRight: 6 }} />}
+          {oauthPolling ? '授权中...' : 'OAuth 授权'}
         </button>
         <button className={`oauth-tab-btn ${addTab === 'token' ? 'active' : ''}`} onClick={() => onSwitchTab('token')}>
           <KeyIcon size={14} style={{ marginRight: 6 }} /> Token / JSON
@@ -71,7 +81,7 @@ export default function CodexAddAccountModal ({
                 className='form-input'
                 readOnly
                 value={oauthAuthUrl}
-                placeholder={oauthPreparing ? '正在准备授权链接...' : '弹窗打开后会自动生成 OAuth 授权地址'}
+                placeholder={oauthPreparing ? '正在生成授权链接...' : '弹窗打开后会自动生成 OAuth 授权地址'}
               />
               <button className='btn btn-icon' onClick={onCopyOAuthUrl} disabled={oauthBusy || !oauthAuthUrl}>
                 {oauthUrlCopied ? <CheckIcon size={14} stroke='#10b981' /> : <CopyIcon size={14} />}
@@ -83,12 +93,32 @@ export default function CodexAddAccountModal ({
           <OAuthBusyNotice busy={oauthBusy} />
 
           <div className='oauth-action-row'>
-            <button className='btn btn-primary' disabled={oauthBusy || oauthPreparing || !oauthAuthUrl} onClick={onOpenOAuthInBrowser}>
-              <GlobeIcon size={14} style={{ marginRight: 6 }} /> 在浏览器中打开
-            </button>
-            <button className='btn' disabled={oauthBusy || oauthPreparing} onClick={() => void onPrepareOAuthSession()}>
+            {oauthPolling ? (
+              oauthBusy ? (
+                // 正在处理回调，显示"回调处理中..."
+                <button className='btn btn-primary' disabled>
+                  <ArrowPathIcon size={14} style={{ marginRight: 6 }} spinning />
+                  回调处理中...
+                </button>
+              ) : (
+                // 等待回调，显示"取消授权"
+                <button className='btn btn-danger' onClick={onCancelOAuthInBrowser}>
+                  <ArrowPathIcon size={14} style={{ marginRight: 6 }} />
+                  取消授权
+                </button>
+              )
+            ) : (
+              <button className='btn btn-primary' disabled={oauthBusy || oauthPreparing || !oauthAuthUrl} onClick={onOpenOAuthInBrowser}>
+                <GlobeIcon size={14} style={{ marginRight: 6 }} />
+                开始授权
+              </button>
+            )}
+            <button className='btn' disabled={oauthBusy || oauthPreparing || oauthPolling} onClick={() => {
+              void onPrepareOAuthSession()
+              toast?.info?.('已生成新的授权链接，旧的链接已失效。请使用最新的链接进行授权。')
+            }}>
               <ArrowPathIcon size={14} style={{ marginRight: 6 }} spinning={oauthPreparing} />
-              {oauthPreparing ? '准备中...' : '重新生成授权链接'}
+              {oauthPreparing ? '生成链接中...' : '重新生成授权链接'}
             </button>
           </div>
 
@@ -100,7 +130,7 @@ export default function CodexAddAccountModal ({
                 value={oauthCallbackInput}
                 onChange={(e) => onOAuthCallbackInputChange(e.target.value)}
                 disabled={oauthBusy}
-                placeholder={oauthRedirectUri ? `粘贴完整回调地址，例如：${oauthRedirectUri}?code=...&state=...` : '粘贴完整回调地址，例如：http://localhost:1455/auth/callback?...'}
+                placeholder={oauthRedirectUri ? `粘贴完整回调地址，例如：${oauthRedirectUri}?code=...&state=...` : '粘贴完整回调地址，例如：http://127.0.0.1:1458/oauth2callback?...'}
               />
               <button
                 className='btn btn-primary'
@@ -125,30 +155,44 @@ export default function CodexAddAccountModal ({
       )}
 
       {addTab === 'token' && (
-        <div className='form-group' style={{ marginBottom: 0 }}>
-          <label className='form-label'>粘贴 JSON 导入账号</label>
-          <textarea
-            className='form-textarea'
-            placeholder='[{\"email\":\"...\",\"tokens\":{\"id_token\":\"...\",\"access_token\":\"...\",\"refresh_token\":\"...\"}}]'
-            value={importJson}
-            onChange={(e) => onImportJsonChange(e.target.value)}
-          />
-          <JsonImportHelp requiredText={jsonImportRequiredText} example={jsonImportExample} />
-          <div className='oauth-action-row' style={{ marginTop: 10 }}>
-            <button className='btn btn-primary' onClick={onImportJson}>导入 JSON</button>
+        <>
+          <div className='form-group'>
+            <label className='form-label'>手动添加 Token</label>
+            <input className='form-input' placeholder='id_token（可选）' value={idTokenInput} onChange={(e) => onIdTokenInputChange(e.target.value)} />
+            <input className='form-input' style={{ marginTop: 8 }} placeholder='access_token（至少填写 id_token/access_token 之一）' value={accessTokenInput} onChange={(e) => onAccessTokenInputChange(e.target.value)} />
+            <input className='form-input' style={{ marginTop: 8 }} placeholder='refresh_token（可选）' value={refreshTokenInput} onChange={(e) => onRefreshTokenInputChange(e.target.value)} />
+            <div className='oauth-action-row' style={{ marginTop: 10 }}>
+              <button className='btn btn-primary' onClick={onAddWithToken}>添加 Token 账号</button>
+            </div>
           </div>
-        </div>
+
+          <div className='oauth-divider'>或粘贴 JSON 导入</div>
+
+          <div className='form-group' style={{ marginBottom: 0 }}>
+            <label className='form-label'>账号 JSON 数据</label>
+            <textarea
+              className='form-textarea'
+              placeholder='[{\"email\":\"...\",\"access_token\":\"...\",\"refresh_token\":\"...\"}]'
+              value={importJson}
+              onChange={(e) => onImportJsonChange(e.target.value)}
+            />
+            <JsonImportHelp requiredText={jsonImportRequiredText} example={jsonImportExample} />
+            <div className='oauth-action-row' style={{ marginTop: 10 }}>
+              <button className='btn btn-primary' onClick={onImportJson}>导入 JSON</button>
+            </div>
+          </div>
+        </>
       )}
 
       {addTab === 'local' && (
         <div className='form-group' style={{ marginBottom: 0 }}>
           <label className='form-label'>从本机导入</label>
           <div className='oauth-hint' style={{ marginBottom: 10 }}>
-            支持从当前系统默认配置目录中自动探测并导入本机账号。
+            支持从当前系统默认 Codex 配置目录中自动探测并导入当前登录账号。
           </div>
           <div className='oauth-action-row'>
             <button className='btn btn-primary' onClick={onImportLocal} disabled={importingLocal}>
-              {importingLocal ? '导入中...' : <><DatabaseIcon size={14} style={{ marginRight: 6 }} /> 从本地 Codex 导入</>}
+              {importingLocal ? '导入中...' : <><DatabaseIcon size={14} style={{ marginRight: 6 }} /> 从本机 Gemini 导入</>}
             </button>
           </div>
         </div>

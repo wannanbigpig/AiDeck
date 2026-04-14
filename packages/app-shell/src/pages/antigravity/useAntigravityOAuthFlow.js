@@ -28,10 +28,31 @@ export function useAntigravityOAuthFlow ({
     const sid = String(pollingSessionId || '').trim()
     if (!sid || !svc || typeof svc.getOAuthSessionStatus !== 'function') return
     const status = await Promise.resolve(svc.getOAuthSessionStatus(sid))
-    if (!status || !status.success) {
-      if (status && status.status === 'missing') stopOAuthPolling()
+    
+    // 避免幽灵轮询覆盖新会话状态
+    const pending = readPendingOAuthSession('antigravity')
+    if (pending && pending.sessionId && pending.sessionId !== sid) {
       return
     }
+
+    if (!status || !status.success) {
+      if (status && status.status === 'missing') {
+        stopOAuthPolling()
+      }
+      return
+    }
+    if (status.status === 'processing') {
+      setOauthBusy(true)
+      setOauthPrepareError('')
+      return
+    }
+    if (status.status === 'failed') {
+      stopOAuthPolling()
+      setOauthBusy(false)
+      setOauthPrepareError(status.error || '自动处理 OAuth 回调失败，请手动提交回调地址重试')
+      return
+    }
+    setOauthBusy(false)
     if (status.status === 'completed') {
       stopOAuthPolling()
       await completeOAuthBySession(sid, '', 'auto')
@@ -86,13 +107,15 @@ export function useAntigravityOAuthFlow ({
     setOauthSessionId(sid)
     setOauthAuthUrl(pending.authUrl || '')
     setOauthRedirectUri(pending.redirectUri || '')
+    setOauthPrepareError('')
     setOauthRecovered(true)
-    startOAuthPolling(sid)
+    // 恢复会话时不自动开始轮询，等待用户点击"开始授权"
     onRecovered?.()
     return true
   }
 
   async function prepareOAuthSession () {
+    stopOAuthPolling()
     if (!svc || typeof svc.prepareOAuthSession !== 'function') {
       setOauthPrepareError('当前版本不支持 OAuth 授权')
       return null
@@ -116,13 +139,16 @@ export function useAntigravityOAuthFlow ({
       setOauthCallbackInput('')
       setOauthUrlCopied(false)
       setOauthRecovered(false)
-      startOAuthPolling(session.sessionId || '')
+      // 准备阶段不启动轮询，等待用户点击"开始授权"
       writePendingOAuthSession('antigravity', {
         sessionId: session.sessionId || '',
         authUrl: session.authUrl || '',
         redirectUri: session.redirectUri || '',
         createdAt: Date.now()
       })
+      if (result.warning) {
+        setOauthPrepareError(result.warning)
+      }
       return session
     } catch (e) {
       const msg = e?.message || String(e)
@@ -142,7 +168,7 @@ export function useAntigravityOAuthFlow ({
     if (!oauthAuthUrl) return false
     const ok = await copyText(oauthAuthUrl)
     if (!ok) {
-      toast?.warning?.('复制失败，请手动复制链接')
+      toast?.warning?.('复制失败，请手动复制')
       return false
     }
     setOauthUrlCopied(true)
@@ -166,6 +192,7 @@ export function useAntigravityOAuthFlow ({
           setOauthSessionId('')
           setOauthAuthUrl('')
           setOauthRedirectUri('')
+          setOauthBusy(false)
           setOauthRecovered(false)
           const prepared = await prepareOAuthSession()
           authUrl = prepared?.authUrl || ''
@@ -173,16 +200,35 @@ export function useAntigravityOAuthFlow ({
         } else if (status.status === 'completed') {
           await completeOAuthBySession(sid, '', 'auto')
           return
-        } else {
+        } else if (status.status === 'processing') {
+          setOauthBusy(true)
           startOAuthPolling(sid)
+          return
+        } else if (status.status === 'failed') {
+          setOauthBusy(false)
+          setOauthPrepareError(status.error || '自动处理 OAuth 回调失败，请手动提交回调地址重试')
+          startOAuthPolling(sid)
+          return
         }
-      } catch {}
+        // 其他状态（ready）不自动开始轮询，等待用户操作
+      } catch {
+        clearPendingOAuthSession('antigravity')
+        stopOAuthPolling()
+        setOauthSessionId('')
+        setOauthAuthUrl('')
+        setOauthRedirectUri('')
+        setOauthBusy(false)
+        setOauthRecovered(false)
+        const prepared = await prepareOAuthSession()
+        authUrl = prepared?.authUrl || ''
+        sid = prepared?.sessionId || ''
+      }
     }
 
     if (!authUrl) {
       const prepared = await prepareOAuthSession()
       authUrl = prepared?.authUrl || ''
-      sid = prepared?.sessionId || ''
+      sid = prepared?.sessionId || sid
     }
 
     if (!authUrl) {
@@ -210,8 +256,41 @@ export function useAntigravityOAuthFlow ({
       }
       return
     }
+
+    // 用户点击"开始授权"后才启动轮询
     if (sid) startOAuthPolling(sid)
     toast?.success?.('已在浏览器打开 Antigravity OAuth 页面')
+  }
+
+  async function handleCancelOAuthInBrowser () {
+    const sid = String(oauthSessionId || '').trim()
+    if (!sid || !svc || typeof svc.cancelOAuthSession !== 'function') {
+      toast?.warning?.('OAuth 会话不存在')
+      return false
+    }
+
+    try {
+      const result = await svc.cancelOAuthSession(sid)
+      if (!result || !result.success) {
+        toast?.error?.((result && result.error) || '取消授权失败')
+        return false
+      }
+
+      stopOAuthPolling()
+      clearPendingOAuthSession('antigravity')
+      setOauthSessionId('')
+      setOauthAuthUrl('')
+      setOauthRedirectUri('')
+      setOauthBusy(false)
+      setOauthRecovered(false)
+      setOauthPrepareError('')
+      
+      toast?.success?.('已取消授权会话')
+      return true
+    } catch (e) {
+      toast?.error?.('取消授权失败：' + (e?.message || String(e)))
+      return false
+    }
   }
 
   async function completeOAuthBySession (sessionId, callbackUrl, source = 'manual') {
@@ -238,10 +317,14 @@ export function useAntigravityOAuthFlow ({
       if (!result || !result.success || !result.account) {
         const err = (result && result.error) || 'OAuth 授权失败'
         if (err.includes('会话不存在') || err.includes('已过期')) {
-          stopOAuthPolling()
-          clearPendingOAuthSession('antigravity')
-          setOauthSessionId('')
-          setOauthRecovered(false)
+          const pending = readPendingOAuthSession('antigravity')
+          if (!pending || pending.sessionId === sid) {
+            stopOAuthPolling()
+            clearPendingOAuthSession('antigravity')
+            setOauthSessionId('')
+            setOauthRecovered(false)
+          }
+          if (source === 'auto') return false
         }
         if (source === 'auto') {
           setOauthPrepareError(err)
@@ -276,11 +359,60 @@ export function useAntigravityOAuthFlow ({
   }
 
   async function handleSubmitOAuthCallback () {
-    await completeOAuthBySession(oauthSessionId, oauthCallbackInput, 'manual')
+    await completeOAuthBySession(oauthSessionId, oauthCallbackInput.trim(), 'manual')
   }
 
   async function ensureOAuthReady () {
     await restorePendingOAuthSession()
+  }
+
+  async function reconcileOAuthSession () {
+    const sid = String(oauthSessionId || '').trim()
+    if (!sid || !svc || typeof svc.getOAuthSessionStatus !== 'function') return false
+
+    try {
+      const status = await Promise.resolve(svc.getOAuthSessionStatus(sid))
+      if (!status || !status.success) {
+        if (status && status.status === 'missing') {
+          stopOAuthPolling()
+          clearPendingOAuthSession('antigravity')
+          setOauthSessionId('')
+          setOauthAuthUrl('')
+          setOauthRedirectUri('')
+          setOauthBusy(false)
+          setOauthRecovered(false)
+          setOauthPrepareError((status && status.error) || 'OAuth 会话不存在或已过期，请重新生成授权链接')
+        }
+        return false
+      }
+
+      if (status.status === 'processing') {
+        setOauthBusy(true)
+        setOauthPrepareError('')
+        // 不自动启动轮询，等待用户点击"开始授权"
+        return true
+      }
+
+      if (status.status === 'failed') {
+        stopOAuthPolling()
+        setOauthBusy(false)
+        setOauthPrepareError(status.error || '自动处理 OAuth 回调失败，请手动提交回调地址重试')
+        return false
+      }
+
+      setOauthBusy(false)
+
+      if (status.status === 'completed') {
+        await completeOAuthBySession(sid, '', 'auto')
+        return true
+      }
+
+      // 其他状态（ready）不自动开始轮询，等待用户操作
+      return true
+    } catch (e) {
+      setOauthPrepareError(e?.message || String(e))
+      return false
+    }
   }
 
   function resetOAuthFlow () {
@@ -304,6 +436,8 @@ export function useAntigravityOAuthFlow ({
 
   useEffect(() => {
     return () => {
+      // 组件卸载时清理 OAuth 会话
+      resetOAuthFlow()
       stopOAuthPolling()
     }
   }, [])
@@ -323,8 +457,10 @@ export function useAntigravityOAuthFlow ({
     prepareOAuthSession,
     handleCopyOAuthUrl,
     handleOpenOAuthInBrowser,
+    handleCancelOAuthInBrowser,
     handleSubmitOAuthCallback,
     ensureOAuthReady,
+    reconcileOAuthSession,
     resetOAuthFlow
   }
 }

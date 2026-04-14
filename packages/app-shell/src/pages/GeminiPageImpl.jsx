@@ -151,6 +151,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
     prepareOAuthSession,
     handleCopyOAuthUrl,
     handleOpenOAuthInBrowser,
+    handleCancelOAuthInBrowser,
     handleSubmitOAuthCallback,
     ensureOAuthReady,
     reconcileOAuthSession,
@@ -185,11 +186,13 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
 
     async function syncOAuthSession () {
       if (cancelled) return
-      await reconcileOAuthSession()
-      if (cancelled) return
-      if (!oauthSessionId && !oauthAuthUrl && !oauthPreparing) {
-        await ensureOAuthReady()
-      }
+      // 弹窗打开时不自动检查或恢复会话，等待用户操作
+      // 注释掉自动恢复逻辑，避免一打开弹窗就显示"授权中..."
+      // await reconcileOAuthSession()
+      // if (cancelled) return
+      // if (!oauthSessionId && !oauthAuthUrl && !oauthPreparing) {
+      //   await ensureOAuthReady()
+      // }
     }
 
     void syncOAuthSession()
@@ -563,6 +566,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
         oauthUrlCopied={oauthUrlCopied}
         onCopyOAuthUrl={handleCopyOAuthUrl}
         onOpenOAuthInBrowser={handleOpenOAuthInBrowser}
+        onCancelOAuthInBrowser={handleCancelOAuthInBrowser}
         onPrepareOAuthSession={prepareOAuthSession}
         oauthCallbackInput={oauthCallbackInput}
         onOAuthCallbackInputChange={setOauthCallbackInput}
@@ -586,6 +590,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
         onImportJson={handleImportJson}
         importingLocal={importingLocal}
         onImportLocal={() => handleImportLocal({ closeAfter: true })}
+        toast={toast}
       />
 
       <GeminiTagModals

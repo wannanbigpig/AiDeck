@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import Modal from '../../components/Modal'
 import { 
-  ArrowPathIcon,
-  ChevronDownIcon,
-  ChevronUpIcon 
+  ArrowPathIcon
 } from '../../components/Icons/ActionIcons'
 import RefreshIntervalSlider from '../../components/RefreshIntervalSlider'
 import AutoSwitchThresholdSlider from '../../components/AutoSwitchThresholdSlider'
@@ -52,12 +50,15 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
   }, [open])
 
   const handleChange = (key, val) => {
-    setSettings(prev => {
-      const next = normalizeCodexAdvancedSettings({ ...prev, [key]: val })
-      writeSharedSetting('codex_advanced_settings', next)
-      onSettingsChange?.(next)
-      return next
-    })
+    // 1. 立即计算出下一个状态快照
+    const next = normalizeCodexAdvancedSettings({ ...settings, [key]: val })
+    
+    // 2. 先更新本地预览状态
+    setSettings(next)
+    
+    // 3. 将副作用（持久化和同步父组件）放在外面按序执行
+    writeSharedSetting('codex_advanced_settings', next)
+    onSettingsChange?.(next)
   }
 
   const handlePickAppPath = async ({ key, title }) => {
@@ -293,14 +294,66 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
                 ]}
               />
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>触发模型</span>
-                <select className='settings-input' style={{ width: 140, background: 'var(--bg-surface)' }} value={settings.autoSwitchModelGroup} onChange={e => handleChange('autoSwitchModelGroup', e.target.value)}>
-                  <option value='any'>任一模型</option>
-                  <option value='codex'>Codex</option>
-                  <option value='opencode'>OpenCode</option>
-                </select>
+              <div className="settings-row" style={{ marginTop: 0, padding: '4px 0 0' }}>
+                <div className="settings-info">
+                  <div className="settings-label" style={{ fontSize: 13 }}>优先切同邮箱账号</div>
+                  <div className="settings-desc">参考 codex-tools 的切号习惯，优先切到与当前账号邮箱一致的候选账号，再按剩余配额排序。</div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.autoSwitchPreferSameEmail}
+                  onChange={e => handleChange('autoSwitchPreferSameEmail', e.target.checked)}
+                />
               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="settings-section" style={{ borderBottom: 'none' }}>
+          <div className="settings-section-title">系统级配额预警通知</div>
+          <div className="settings-row">
+            <div className="settings-info">
+              <div className="settings-label">启用系统级预警</div>
+              <div className="settings-desc">仅监控当前激活账号。命中阈值后发送宿主系统通知，点击可跳到 Codex 页面。</div>
+            </div>
+            <ToggleSwitch
+              checked={settings.quotaWarningEnabled}
+              onChange={e => handleChange('quotaWarningEnabled', e.target.checked)}
+            />
+          </div>
+
+          {settings.quotaWarningEnabled && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 14, paddingLeft: 4 }}>
+              <AutoSwitchThresholdSlider
+                title='5小时配额预警阈值'
+                description='当前激活账号的 5 小时剩余配额低于或等于该阈值时发送系统通知。'
+                value={settings.quotaWarningHourlyThreshold}
+                onChange={(nextValue) => handleChange('quotaWarningHourlyThreshold', nextValue)}
+                min={0}
+                max={30}
+                step={1}
+                accent='purple'
+                marks={[
+                  { value: 0, label: '0%' },
+                  { value: 15, label: '15%' },
+                  { value: 30, label: '30%' }
+                ]}
+              />
+
+              <AutoSwitchThresholdSlider
+                title='周配额预警阈值'
+                description='当前激活账号的每周剩余配额低于或等于该阈值时发送系统通知。'
+                value={settings.quotaWarningWeeklyThreshold}
+                onChange={(nextValue) => handleChange('quotaWarningWeeklyThreshold', nextValue)}
+                min={0}
+                max={30}
+                step={1}
+                accent='blue'
+                marks={[
+                  { value: 0, label: '0%' },
+                  { value: 15, label: '15%' },
+                  { value: 30, label: '30%' }
+                ]}
+              />
             </div>
           )}
         </div>

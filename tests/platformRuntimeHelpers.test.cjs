@@ -125,6 +125,167 @@ test('normalizePlatformService 应为旧 service 补齐共享契约 fallback', a
   })
 })
 
+test('normalizeCodexAdvancedSettings 应清理旧触发模型配置并保留优先切同邮箱开关', async () => {
+  const codexUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/codex.js')).href)
+  const normalized = codexUtils.normalizeCodexAdvancedSettings({
+    autoSwitch: true,
+    autoSwitchModelGroup: 'codex',
+    autoSwitchPreferSameEmail: false
+  })
+
+  assert.equal(normalized.autoSwitch, true)
+  assert.equal(normalized.autoSwitchPreferSameEmail, false)
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'autoSwitchModelGroup'), false)
+})
+
+test('三平台预警设置归一化应补齐默认值并限制阈值范围', async () => {
+  const antigravityUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/antigravity.js')).href)
+  const codexUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/codex.js')).href)
+  const geminiUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/gemini.js')).href)
+
+  const antigravity = antigravityUtils.normalizeAntigravityAdvancedSettings({
+    quotaWarningEnabled: true,
+    quotaWarningClaudeThreshold: 99,
+    quotaWarningGeminiProThreshold: -3
+  })
+  assert.equal(antigravity.quotaWarningEnabled, true)
+  assert.equal(antigravity.quotaWarningClaudeThreshold, 30)
+  assert.equal(antigravity.quotaWarningGeminiProThreshold, 0)
+  assert.equal(antigravity.quotaWarningGeminiFlashThreshold, 10)
+
+  const codex = codexUtils.normalizeCodexAdvancedSettings({
+    quotaWarningEnabled: true,
+    quotaWarningHourlyThreshold: 42,
+    quotaWarningWeeklyThreshold: -1
+  })
+  assert.equal(codex.quotaWarningEnabled, true)
+  assert.equal(codex.quotaWarningHourlyThreshold, 30)
+  assert.equal(codex.quotaWarningWeeklyThreshold, 0)
+
+  const gemini = geminiUtils.normalizeGeminiAdvancedSettings({
+    quotaWarningEnabled: true,
+    quotaWarningProThreshold: 31,
+    quotaWarningFlashThreshold: -2
+  })
+  assert.equal(gemini.quotaWarningEnabled, true)
+  assert.equal(gemini.quotaWarningProThreshold, 30)
+  assert.equal(gemini.quotaWarningFlashThreshold, 0)
+})
+
+test('evaluateQuotaWarningPlatform 应按账号与阈值做去重并在恢复后重新触发', async () => {
+  const warningHelpers = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/runtime/useQuotaWarningNotifications.js')).href)
+
+  const first = warningHelpers.evaluateQuotaWarningPlatform({
+    platform: 'codex',
+    account: {
+      id: 'cx-1',
+      email: 'one@example.com',
+      quota: {
+        hourly_percentage: 4,
+        weekly_percentage: 12
+      }
+    },
+    settings: {
+      quotaWarningEnabled: true,
+      quotaWarningHourlyThreshold: 10,
+      quotaWarningWeeklyThreshold: 10
+    },
+    previousState: {},
+    skipNotify: false
+  })
+
+  assert.equal(first.notification.title, 'Codex 配额预警')
+  assert.match(first.notification.message, /5小时配额 4%/)
+
+  const repeated = warningHelpers.evaluateQuotaWarningPlatform({
+    platform: 'codex',
+    account: {
+      id: 'cx-1',
+      email: 'one@example.com',
+      quota: {
+        hourly_percentage: 3,
+        weekly_percentage: 12
+      }
+    },
+    settings: {
+      quotaWarningEnabled: true,
+      quotaWarningHourlyThreshold: 10,
+      quotaWarningWeeklyThreshold: 10
+    },
+    previousState: first.nextState,
+    skipNotify: false
+  })
+
+  assert.equal(repeated.notification, null)
+
+  const recovered = warningHelpers.evaluateQuotaWarningPlatform({
+    platform: 'codex',
+    account: {
+      id: 'cx-1',
+      email: 'one@example.com',
+      quota: {
+        hourly_percentage: 18,
+        weekly_percentage: 12
+      }
+    },
+    settings: {
+      quotaWarningEnabled: true,
+      quotaWarningHourlyThreshold: 10,
+      quotaWarningWeeklyThreshold: 10
+    },
+    previousState: repeated.nextState,
+    skipNotify: false
+  })
+
+  assert.equal(recovered.notification, null)
+  assert.equal(recovered.nextState.hourly.active, false)
+
+  const retriggered = warningHelpers.evaluateQuotaWarningPlatform({
+    platform: 'codex',
+    account: {
+      id: 'cx-1',
+      email: 'one@example.com',
+      quota: {
+        hourly_percentage: 6,
+        weekly_percentage: 12
+      }
+    },
+    settings: {
+      quotaWarningEnabled: true,
+      quotaWarningHourlyThreshold: 10,
+      quotaWarningWeeklyThreshold: 10
+    },
+    previousState: recovered.nextState,
+    skipNotify: false
+  })
+
+  assert.ok(retriggered.notification)
+
+  const switchedAccount = warningHelpers.evaluateQuotaWarningPlatform({
+    platform: 'codex',
+    account: {
+      id: 'cx-2',
+      email: 'two@example.com',
+      quota: {
+        hourly_percentage: 5,
+        weekly_percentage: 9
+      }
+    },
+    settings: {
+      quotaWarningEnabled: true,
+      quotaWarningHourlyThreshold: 10,
+      quotaWarningWeeklyThreshold: 10
+    },
+    previousState: retriggered.nextState,
+    skipNotify: false
+  })
+
+  assert.ok(switchedAccount.notification)
+  assert.match(switchedAccount.notification.message, /two@example.com/)
+  assert.match(switchedAccount.notification.message, /5小时配额 5%/)
+  assert.match(switchedAccount.notification.message, /周配额 9%/)
+})
+
 test('三平台服务应暴露统一共享契约入口', () => {
   const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
   const antigravity = require(path.join(process.cwd(), 'packages/platforms/src/antigravityService.impl.cjs'))

@@ -6,6 +6,7 @@ import {
 } from '../../components/Icons/ActionIcons'
 import RefreshIntervalSlider from '../../components/RefreshIntervalSlider'
 import AutoSwitchThresholdSlider from '../../components/AutoSwitchThresholdSlider'
+import GoogleOAuthCredentialHelp from '../../components/GoogleOAuthCredentialHelp'
 import { normalizeAntigravityAdvancedSettings } from '../../utils/antigravity'
 import { showOpenDialog, writeSharedSetting } from '../../utils/hostBridge.js'
 
@@ -147,6 +148,45 @@ export default function AntigravitySettingsModal({ open, onClose, toast, setting
     <Modal title='Antigravity 设置' open={open} onClose={onClose} contentClassName='settings-platform-modal'>
       <div className="settings-modal-content">
         <div className="settings-section">
+          <div className="settings-section-title">Google OAuth 凭证</div>
+          <div className="settings-desc" style={{ marginBottom: 12 }}>
+            仅保存在本机设置中，用于 Antigravity 的 OAuth 授权和 refresh_token 刷新，不会写入代码仓库。
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <div className="settings-label" style={{ marginBottom: 6 }}>Client ID</div>
+              <input
+                className='settings-input'
+                type='text'
+                value={settings.oauthClientId || ''}
+                placeholder='输入 Google OAuth Client ID'
+                onChange={e => handleChange('oauthClientId', e.target.value)}
+              />
+            </div>
+
+            <div>
+              <div className="settings-label" style={{ marginBottom: 6 }}>Client Secret</div>
+              <input
+                className='settings-input'
+                type='password'
+                value={settings.oauthClientSecret || ''}
+                placeholder='输入 Google OAuth Client Secret'
+                onChange={e => handleChange('oauthClientSecret', e.target.value)}
+              />
+            </div>
+          </div>
+
+          <GoogleOAuthCredentialHelp
+            platformName='Antigravity'
+            redirectUris={[
+              'http://localhost:1456/auth/callback',
+              'http://127.0.0.1:1456/auth/callback'
+            ]}
+          />
+        </div>
+
+        <div className="settings-section">
 
 
           <div className="settings-row">
@@ -286,6 +326,72 @@ export default function AntigravitySettingsModal({ open, onClose, toast, setting
                   <option value='gemini_flash'>Gemini 3 Flash</option>
                 </select>
               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="settings-section" style={{ borderBottom: 'none' }}>
+          <div className="settings-section-title">系统级配额预警通知</div>
+          <div className="settings-row">
+            <div className="settings-info">
+              <div className="settings-label">启用系统级预警</div>
+              <div className="settings-desc">仅监控当前激活账号。命中阈值后发送宿主系统通知，点击可跳到 Antigravity 页面。</div>
+            </div>
+            <ToggleSwitch
+              checked={settings.quotaWarningEnabled}
+              onChange={e => handleChange('quotaWarningEnabled', e.target.checked)}
+            />
+          </div>
+
+          {settings.quotaWarningEnabled && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 14, paddingLeft: 4 }}>
+              <AutoSwitchThresholdSlider
+                title='Claude 预警阈值'
+                description='当前激活账号的 Claude 聚合分组剩余配额低于或等于该阈值时发送系统通知。'
+                value={settings.quotaWarningClaudeThreshold}
+                onChange={(nextValue) => handleChange('quotaWarningClaudeThreshold', nextValue)}
+                min={0}
+                max={30}
+                step={1}
+                accent='blue'
+                marks={[
+                  { value: 0, label: '0%' },
+                  { value: 15, label: '15%' },
+                  { value: 30, label: '30%' }
+                ]}
+              />
+
+              <AutoSwitchThresholdSlider
+                title='Gemini 3.1 Pro 预警阈值'
+                description='当前激活账号的 Gemini 3.1 Pro 聚合分组剩余配额低于或等于该阈值时发送系统通知。'
+                value={settings.quotaWarningGeminiProThreshold}
+                onChange={(nextValue) => handleChange('quotaWarningGeminiProThreshold', nextValue)}
+                min={0}
+                max={30}
+                step={1}
+                accent='purple'
+                marks={[
+                  { value: 0, label: '0%' },
+                  { value: 15, label: '15%' },
+                  { value: 30, label: '30%' }
+                ]}
+              />
+
+              <AutoSwitchThresholdSlider
+                title='Gemini 3 Flash 预警阈值'
+                description='当前激活账号的 Gemini 3 Flash 聚合分组剩余配额低于或等于该阈值时发送系统通知。'
+                value={settings.quotaWarningGeminiFlashThreshold}
+                onChange={(nextValue) => handleChange('quotaWarningGeminiFlashThreshold', nextValue)}
+                min={0}
+                max={30}
+                step={1}
+                accent='blue'
+                marks={[
+                  { value: 0, label: '0%' },
+                  { value: 15, label: '15%' },
+                  { value: 30, label: '30%' }
+                ]}
+              />
             </div>
           )}
         </div>

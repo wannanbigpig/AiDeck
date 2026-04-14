@@ -18,7 +18,7 @@ export function useTheme () {
  */
 export function ThemeProvider ({ children }) {
   const [theme, setThemeState] = useState(() => {
-    return readHostSetting('aideck:theme', 'dark') || 'dark'
+    return readHostSetting('aideck:theme', 'auto') || 'auto'
   })
 
   const [resolvedTheme, setResolvedTheme] = useState('dark')

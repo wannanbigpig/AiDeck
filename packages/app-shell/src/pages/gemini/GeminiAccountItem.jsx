@@ -10,7 +10,7 @@ import SpinnerBtnIcon from '../../components/SpinnerIcon'
 import {
   ChevronDownIcon,
   ChevronUpIcon,
-  SyncIcon,
+  SwitchIcon,
   RefreshIcon,
   TagIcon,
   TrashIcon,
@@ -229,8 +229,8 @@ export default function GeminiAccountItem ({
           <div className='account-card-divider' />
           <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
             <button className={`action-icon-btn primary ${injecting ? 'is-loading' : ''}`} onClick={handleInjectWrap}>
-              <span className='action-icon-tip'>{isCurrent ? '重新设为当前' : '设为当前'}</span>
-              {injecting ? <SpinnerBtnIcon /> : <SyncIcon size={16} />}
+              <span className='action-icon-tip'>{isCurrent ? '重新切换账号' : '切换账号'}</span>
+              {injecting ? <SpinnerBtnIcon /> : <SwitchIcon size={16} />}
             </button>
 
             <button className={`action-icon-btn ${isRefreshBusy ? 'is-loading' : ''}`} disabled={isRefreshBusy} onClick={handleRefreshWrap}>

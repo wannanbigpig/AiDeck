@@ -20,7 +20,7 @@ import CodexTagModals from './codex/CodexTagModals'
 import { useCodexOAuthFlow } from './codex/useCodexOAuthFlow'
 import { logRequestEvent } from '../utils/requestLogClient'
 import { coerceBooleanSetting } from '../utils/globalSettings'
-import { copyText, readSharedSetting } from '../utils/hostBridge.js'
+import { copyText } from '../utils/hostBridge.js'
 import { usePlatformSnapshot } from '../runtime/usePlatformSnapshot.js'
 import { usePlatformActions } from '../runtime/usePlatformActions.js'
 import { usePlatformAutoRefresh } from '../runtime/usePlatformAutoRefresh.js'
@@ -30,12 +30,11 @@ import { useSelectionSet } from '../runtime/useSelectionSet.js'
 import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
-
-const CODEX_SETTINGS_KEY = 'codex_advanced_settings'
 import {
   resolveQuotaErrorMeta,
   shouldOfferReauthorizeAction,
-  normalizeCodexAdvancedSettings
+  normalizeCodexAdvancedSettings,
+  readCodexAdvancedSettings
 } from '../utils/codex'
 
 const CODEX_JSON_IMPORT_REQUIRED_TEXT = '必填字段：tokens.access_token 或 tokens.refresh_token 至少一个（也支持顶层 access_token / refresh_token）。建议补充 id、email、tokens.id_token、tokens.access_token、tokens.refresh_token、created_at、last_used。'
@@ -61,12 +60,6 @@ const CODEX_JSON_IMPORT_EXAMPLE = `[
     "last_used": 1770003600000
   }
 ]`
-
-function readCodexAdvancedSettings () {
-  return normalizeCodexAdvancedSettings(readSharedSetting(CODEX_SETTINGS_KEY, null))
-}
-
-
 
 /**
  * Codex 账号管理页
@@ -147,6 +140,7 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
     prepareOAuthSession,
     handleCopyOAuthUrl,
     handleOpenOAuthInBrowser,
+    handleCancelOAuthInBrowser,
     handleSubmitOAuthCallback,
     ensureOAuthReady,
     resetOAuthFlow
@@ -625,6 +619,7 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
         oauthUrlCopied={oauthUrlCopied}
         onCopyOAuthUrl={handleCopyOAuthUrl}
         onOpenOAuthInBrowser={handleOpenOAuthInBrowser}
+        onCancelOAuthInBrowser={handleCancelOAuthInBrowser}
         onPrepareOAuthSession={prepareOAuthSession}
         oauthCallbackInput={oauthCallbackInput}
         onOAuthCallbackInputChange={setOauthCallbackInput}
@@ -641,6 +636,7 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
         onImportJson={handleImportJson}
         importingLocal={importingLocal}
         onImportLocal={() => handleImportLocal({ closeAfter: true })}
+        toast={toast}
       />
 
       <CodexTagModals

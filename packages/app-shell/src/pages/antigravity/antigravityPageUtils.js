@@ -1,8 +1,7 @@
 import { maskText } from '../../utils/format'
-import { normalizeAntigravityAdvancedSettings } from '../../utils/antigravity'
-import { readSharedSetting } from '../../utils/hostBridge.js'
+import { ANTIGRAVITY_SETTINGS_KEY, readAntigravityAdvancedSettings as readAntigravitySettingsFromStore } from '../../utils/antigravity'
 
-export const ANTIGRAVITY_SETTINGS_KEY = 'antigravity_advanced_settings'
+export { ANTIGRAVITY_SETTINGS_KEY }
 
 function truncateMiddleText (value, head = 14, tail = 8) {
   const text = String(value || '').trim()
@@ -56,5 +55,5 @@ export function getAntigravityDeviceIdentityDisplay (account, isPrivacyMode) {
 }
 
 export function readAntigravityAdvancedSettings () {
-  return normalizeAntigravityAdvancedSettings(readSharedSetting(ANTIGRAVITY_SETTINGS_KEY, null))
+  return readAntigravitySettingsFromStore()
 }

@@ -18,6 +18,8 @@ const os = require('node:os')
 const path = require('node:path')
 const cp = require('node:child_process')
 const crypto = require('node:crypto')
+const http = require('node:http')
+const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
@@ -1638,20 +1640,42 @@ function _startOAuthCallbackServer (session) {
       }
     })
 
-    server.once('error', function (err) {
+    // 使用重试机制监听端口，处理网络不稳定问题
+    retryOAuthRequest(
+      () => new Promise((resolveListen, rejectListen) => {
+        server.once('error', function (err) {
+          rejectListen(err)
+        })
+
+        // 不指定 host，兼容 localhost 在不同系统下的 IPv4/IPv6 解析策略
+        server.listen(port, function () {
+          session.server = server
+          resolveListen()
+        })
+      }),
+      {
+        maxAttempts: 5,
+        initialDelayMs: 1000,
+        maxDelayMs: 10000, // 10 秒最大延迟
+        operationName: 'OAuth callback server listen',
+        onRetry: (attempt, err, delayMs) => {
+          requestLogger.info('codex.oauth', `启动 OAuth 回调服务器失败，正在重试 (${attempt}/5)`, {
+            error: err.message,
+            delayMs
+          })
+        }
+      }
+    ).then(() => {
+      resolve({ success: true })
+    }).catch((err) => {
       resolve({
         success: false,
-        error: '回调端口监听失败: ' + (err && err.message ? err.message : String(err))
+        error: '回调端口监听失败：' + (err && err.message ? err.message : String(err))
       })
-    })
-
-    // 不指定 host，兼容 localhost 在不同系统下的 IPv4/IPv6 解析策略
-    server.listen(port, function () {
-      session.server = server
-      resolve({ success: true })
     })
   })
 }
+
 
 function _closeOAuthSessionServer (session) {
   if (!session || !session.server) return

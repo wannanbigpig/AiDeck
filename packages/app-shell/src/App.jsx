@@ -6,8 +6,9 @@ import { ThemeProvider } from './components/ThemeToggle'
 import { PrivacyProvider } from './components/PrivacyMode'
 import { readGlobalSettings, writeGlobalSettings } from './utils/globalSettings'
 import { setRequestLogEnabled } from './utils/requestLogClient'
-import { bindPluginSubInput, subscribePluginEnter } from './utils/hostBridge.js'
+import { bindPluginSubInput, subscribeHostNavigation, subscribePluginEnter } from './utils/hostBridge.js'
 import { useDashboardPlatformData } from './runtime/useDashboardPlatformData.js'
+import { useQuotaWarningNotifications } from './runtime/useQuotaWarningNotifications.js'
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
 const Antigravity = lazy(() => import('./pages/Antigravity.jsx'))
@@ -37,6 +38,8 @@ function AppInner () {
   const toast = useToast()
   const { platformData } = useDashboardPlatformData(activePlatform)
 
+  useQuotaWarningNotifications(platformData)
+
   const applyGlobalSettings = useCallback((patch) => {
     const next = writeGlobalSettings(patch)
     setGlobalSettings(next)
@@ -65,8 +68,14 @@ function AppInner () {
       }
       setActivePlatform(codeMap[action.code] || 'dashboard')
     })
+    const unsubscribeHostNavigation = subscribeHostNavigation((detail) => {
+      const platform = String(detail?.platform || '').trim()
+      if (!platform) return
+      setActivePlatform(platform)
+    })
     return () => {
       unsubscribePluginEnter()
+      unsubscribeHostNavigation()
     }
   }, [])
 

@@ -1,5 +1,8 @@
-import { coerceBooleanSetting } from './globalSettings'
-import { normalizeRefreshIntervalMinutes } from './refreshInterval'
+import { coerceBooleanSetting } from './globalSettings.js'
+import { readSharedSetting } from './hostBridge.js'
+import { normalizeRefreshIntervalMinutes } from './refreshInterval.js'
+
+export const CODEX_SETTINGS_KEY = 'codex_advanced_settings'
 
 export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   autoRefreshMinutes: 10,
@@ -14,7 +17,10 @@ export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   autoSwitch: true,
   autoSwitchHourlyThreshold: 20,
   autoSwitchWeeklyThreshold: 1,
-  autoSwitchPreferSameEmail: true
+  autoSwitchPreferSameEmail: true,
+  quotaWarningEnabled: false,
+  quotaWarningHourlyThreshold: 10,
+  quotaWarningWeeklyThreshold: 10
 }
 
 const AUTO_SWITCH_THRESHOLD_MAX = 30
@@ -27,7 +33,8 @@ export const CODEX_BOOLEAN_SETTING_KEYS = [
   'autoStartOpenCodeWhenClosed',
   'showCodeReviewQuota',
   'autoSwitch',
-  'autoSwitchPreferSameEmail'
+  'autoSwitchPreferSameEmail',
+  'quotaWarningEnabled'
 ]
 
 export function normalizeCodexAdvancedSettings (raw) {
@@ -50,6 +57,8 @@ export function normalizeCodexAdvancedSettings (raw) {
     
   next.autoSwitchHourlyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.autoSwitchHourlyThreshold) || 0))
   next.autoSwitchWeeklyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.autoSwitchWeeklyThreshold) || 0))
+  next.quotaWarningHourlyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningHourlyThreshold) || 0))
+  next.quotaWarningWeeklyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningWeeklyThreshold) || 0))
 
   const codexPathRaw = typeof merged.codexStartupPath === 'string' && merged.codexStartupPath.trim()
     ? merged.codexStartupPath
@@ -64,8 +73,13 @@ export function normalizeCodexAdvancedSettings (raw) {
   delete next.openCodePath
 
   delete next.autoSwitchLockMinutes
+  delete next.autoSwitchModelGroup
 
   return next
+}
+
+export function readCodexAdvancedSettings () {
+  return normalizeCodexAdvancedSettings(readSharedSetting(CODEX_SETTINGS_KEY, null))
 }
 
 export function resolveQuotaErrorMeta(quotaError, fallbackMessage = '') {

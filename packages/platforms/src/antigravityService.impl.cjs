@@ -14,6 +14,8 @@
 const cp = require('node:child_process')
 const crypto = require('node:crypto')
 const path = require('node:path')
+const http = require('node:http')
+const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
@@ -22,6 +24,8 @@ const sharedSettingsStore = require('../../infra-node/src/sharedSettingsStore.cj
 const PLATFORM = 'antigravity'
 const DEFAULT_ADVANCED_SETTINGS = {
   startupPath: '',
+  oauthClientId: '',
+  oauthClientSecret: '',
   autoRestartAntigravityApp: false,
   autoStartAntigravityAppWhenClosed: false
 }
@@ -35,8 +39,14 @@ const FETCH_MODELS_PATH = 'v1internal:fetchAvailableModels'
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo'
-const ANTIGRAVITY_CLIENT_ID = String(process.env.ANTIGRAVITY_CLIENT_ID || '').trim()
-const ANTIGRAVITY_CLIENT_SECRET = String(process.env.ANTIGRAVITY_CLIENT_SECRET || '').trim()
+const ANTIGRAVITY_CLIENT_ID = String(
+  process.env.ANTIGRAVITY_CLIENT_ID ||
+  '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
+).trim()
+const ANTIGRAVITY_CLIENT_SECRET = String(
+  process.env.ANTIGRAVITY_CLIENT_SECRET ||
+  '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'
+).trim()
 const ANTIGRAVITY_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
@@ -1476,11 +1486,12 @@ async function addWithToken (refreshToken) {
  */
 async function prepareOAuthSession (port) {
   try {
-    if (!ANTIGRAVITY_CLIENT_ID) {
-      return { success: false, error: '未配置 ANTIGRAVITY_CLIENT_ID，无法发起 OAuth' }
+    const { clientId, clientSecret } = _resolveAntigravityOAuthCredentials()
+    if (!clientId) {
+      return { success: false, error: _getAntigravityOAuthCredentialError('发起 OAuth') }
     }
-    if (!ANTIGRAVITY_CLIENT_SECRET) {
-      return { success: false, error: '未配置 ANTIGRAVITY_CLIENT_SECRET，无法发起 OAuth' }
+    if (!clientSecret) {
+      return { success: false, error: _getAntigravityOAuthCredentialError('发起 OAuth') }
     }
 
     storage.cleanupOAuthPending(PLATFORM, ANTIGRAVITY_OAUTH_SESSION_TTL_MS)
@@ -1488,7 +1499,7 @@ async function prepareOAuthSession (port) {
     const callbackPort = _resolveOAuthPort(port)
     const redirectUri = 'http://localhost:' + callbackPort + ANTIGRAVITY_OAUTH_CALLBACK_PATH
     const state = _randomBase64Url()
-    const authUrl = _buildAntigravityAuthorizeUrl(redirectUri, state)
+    const authUrl = _buildAntigravityAuthorizeUrl(redirectUri, state, clientId)
     const sessionId = 'antigravity-oauth-' + fileUtils.generateId()
 
     _cleanupExpiredOAuthSessions()
@@ -1497,7 +1508,8 @@ async function prepareOAuthSession (port) {
       state,
       redirectUri,
       authUrl,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      expiresAt: Date.now() + ANTIGRAVITY_OAUTH_SESSION_TTL_MS // 10 分钟后过期
     }
     oauthSessions.set(sessionId, session)
 
@@ -1509,12 +1521,22 @@ async function prepareOAuthSession (port) {
     }
     _saveOAuthSession(session)
 
+    // 设置超时自动关闭定时器
+    session.timeoutTimer = setTimeout(() => {
+      requestLogger.info('antigravity.oauth', 'OAuth 会话超时，自动关闭', {
+        sessionId,
+        timeoutMinutes: ANTIGRAVITY_OAUTH_SESSION_TTL_MS / 60 / 1000
+      })
+      cancelOAuthSession(sessionId)
+    }, ANTIGRAVITY_OAUTH_SESSION_TTL_MS)
+
     return {
       success: true,
       session: {
         sessionId,
         authUrl,
-        redirectUri
+        redirectUri,
+        expiresAt: session.expiresAt
       }
     }
   } catch (err) {
@@ -1532,6 +1554,11 @@ function cancelOAuthSession (sessionId) {
     return { success: true }
   }
   const session = oauthSessions.get(sessionId)
+  // 清除超时定时器
+  if (session && session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer)
+    session.timeoutTimer = null
+  }
   _closeOAuthSessionServer(session)
   oauthSessions.delete(sessionId)
   storage.clearOAuthPending(PLATFORM, sessionId)
@@ -1767,9 +1794,60 @@ function _resolveAdvancedSettings (options) {
     merged.autoRestartAntigravityApp = Boolean(merged.autoStartAntigravityApp)
   }
   merged.startupPath = typeof merged.startupPath === 'string' ? merged.startupPath.trim() : ''
+  merged.oauthClientId = typeof merged.oauthClientId === 'string' ? merged.oauthClientId.trim() : ''
+  merged.oauthClientSecret = typeof merged.oauthClientSecret === 'string' ? merged.oauthClientSecret.trim() : ''
   merged.autoRestartAntigravityApp = Boolean(merged.autoRestartAntigravityApp)
   merged.autoStartAntigravityAppWhenClosed = Boolean(merged.autoStartAntigravityAppWhenClosed)
   return merged
+}
+
+function _buildAntigravityOAuthClientRegistry () {
+  const clients = [{
+    key: 'antigravity_enterprise',
+    label: 'Antigravity Enterprise',
+    clientId: ANTIGRAVITY_CLIENT_ID,
+    clientSecret: ANTIGRAVITY_CLIENT_SECRET,
+    isBuiltin: true
+  }]
+
+  // 从环境变量加载额外 Client
+  const OAUTH_CLIENTS_ENV = process.env.ANTIGRAVITY_OAUTH_CLIENTS || ''
+  if (OAUTH_CLIENTS_ENV) {
+    const entries = OAUTH_CLIENTS_ENV.split(';')
+    for (const entry of entries) {
+      const [key, clientId, clientSecret, label] = entry.split('|').map(v => v.trim())
+      if (key && clientId && clientSecret) {
+        clients.push({
+          key,
+          label: label || key,
+          clientId,
+          clientSecret,
+          isBuiltin: false
+        })
+      }
+    }
+  }
+
+  return clients
+}
+
+function _resolveAntigravityOAuthCredentials () {
+  const settings = _readAdvancedSettingsFromStorage()
+  const activeKey = process.env.ANTIGRAVITY_OAUTH_CLIENT_KEY || 'antigravity_enterprise'
+  
+  const registry = _buildAntigravityOAuthClientRegistry()
+  const activeClient = registry.find(c => c.key === activeKey)
+  
+  return {
+    clientId: String(activeClient?.clientId || ANTIGRAVITY_CLIENT_ID || settings.oauthClientId || '').trim(),
+    clientSecret: String(activeClient?.clientSecret || ANTIGRAVITY_CLIENT_SECRET || settings.oauthClientSecret || '').trim(),
+    clientKey: activeClient?.key || 'antigravity_enterprise'
+  }
+}
+
+function _getAntigravityOAuthCredentialError (action) {
+  const actionText = String(action || '执行操作').trim() || '执行操作'
+  return `未配置 Antigravity 的 Google OAuth 凭证，无法${actionText}。请先到 Antigravity 设置中填写 Client ID 和 Client Secret。`
 }
 
 function _isAntigravityAppRunning () {
@@ -2309,12 +2387,39 @@ async function _refreshQuotaAsync (account, accountId) {
       token = account.token || token
     }
 
+    const persistTokenUpdate = (nextAccessToken, expiresIn, extraTokenPatch = {}) => {
+      const tokenUpdate = {
+        token: Object.assign({}, token, {
+          access_token: nextAccessToken,
+          expires_in: expiresIn,
+          expiry_timestamp: now + (expiresIn || 3600)
+        }, extraTokenPatch)
+      }
+      storage.updateAccount(PLATFORM, accountId, tokenUpdate)
+      account = Object.assign({}, account, tokenUpdate)
+      token = account.token || token
+    }
+
+    const fetchQuotaResponse = async (requestAccessToken, requestProjectId) => {
+      const payload = requestProjectId ? { project: requestProjectId } : {}
+      return http.postJSON(
+        CLOUD_CODE_BASE_URL + '/' + FETCH_MODELS_PATH,
+        {
+          Authorization: 'Bearer ' + requestAccessToken,
+          'User-Agent': 'antigravity/1.20.5 windows/amd64',
+          'Accept-Encoding': 'gzip'
+        },
+        payload
+      )
+    }
+
     // 1. 确保 access_token 有效
     let accessToken = token.access_token
 
-    // 检查是否过期（预留 5 分钟缓冲）
+    // 检查是否过期（预留 15 分钟缓冲，避免配额刷新过程中 Token 过期）
     const now = Math.floor(Date.now() / 1000)
-    if (!accessToken || (token.expiry_timestamp && token.expiry_timestamp < now + 300)) {
+    const TOKEN_REFRESH_SKEW_SECONDS = 900 // 15 分钟
+    if (!accessToken || (token.expiry_timestamp && token.expiry_timestamp < now + TOKEN_REFRESH_SKEW_SECONDS)) {
       if (!token.refresh_token) {
         const quotaError = _extractAntigravityQuotaError(0, 'Token 已过期且无 refresh_token')
         const fallback = _tryApplyLocalQuotaFallback(account, accountId, quotaError)
@@ -2330,6 +2435,18 @@ async function _refreshQuotaAsync (account, accountId) {
         source: 'quota-refresh'
       })
       if (!refreshed.ok) {
+        // 检查是否需要禁用账号
+        if (refreshed.should_disable_account) {
+          requestLogger.warn('antigravity.quota', '禁用账号（Token 失效）', {
+            account: account.email || account.id
+          })
+          storage.updateAccount(PLATFORM, accountId, {
+            disabled: true,
+            disabled_at: Date.now(),
+            disabled_reason: refreshed.error
+          })
+        }
+        
         const quotaError = _extractAntigravityQuotaError(0, '刷新 Token 失败: ' + refreshed.error)
         const fallback = _tryApplyLocalQuotaFallback(account, accountId, quotaError)
         if (fallback) return fallback
@@ -2342,14 +2459,7 @@ async function _refreshQuotaAsync (account, accountId) {
       }
       // 更新 token 信息
       accessToken = refreshed.access_token
-      const tokenUpdate = {
-        token: Object.assign({}, token, {
-          access_token: refreshed.access_token,
-          expires_in: refreshed.expires_in,
-          expiry_timestamp: now + (refreshed.expires_in || 3600)
-        })
-      }
-      storage.updateAccount(PLATFORM, accountId, tokenUpdate)
+      persistTokenUpdate(refreshed.access_token, refreshed.expires_in)
     }
 
     // 2. 尝试补全 project_id，再调用 fetchAvailableModels API
@@ -2367,16 +2477,22 @@ async function _refreshQuotaAsync (account, accountId) {
         token = account.token || token
       }
     }
-    const payload = projectId ? { project: projectId } : {}
-    const res = await http.postJSON(
-      CLOUD_CODE_BASE_URL + '/' + FETCH_MODELS_PATH,
-      {
-        Authorization: 'Bearer ' + accessToken,
-        'User-Agent': 'antigravity/1.20.5 windows/amd64',
-        'Accept-Encoding': 'gzip'
-      },
-      payload
-    )
+    let res = await fetchQuotaResponse(accessToken, projectId)
+
+    if ((!res || !res.ok) && Number(res && res.status) === 401 && token.refresh_token) {
+      requestLogger.warn('antigravity.quota', '配额接口返回 401，尝试强制刷新 Token 后重试一次', {
+        account: account.email || account.id
+      })
+      const refreshed = await _refreshAntigravityToken(token.refresh_token, {
+        account: account.email || account.id,
+        source: 'quota-refresh-reauth'
+      })
+      if (refreshed.ok && refreshed.access_token) {
+        accessToken = refreshed.access_token
+        persistTokenUpdate(refreshed.access_token, refreshed.expires_in)
+        res = await fetchQuotaResponse(accessToken, projectId)
+      }
+    }
 
     if (!res.ok) {
       const quotaError = _extractAntigravityQuotaError(res.status, res.raw || ('API 返回 ' + res.status))
@@ -2560,14 +2676,32 @@ function _tryApplyLocalQuotaFallback (account, accountId, quotaErrorOrReason) {
     return null
   }
 
+  // 检查缓存是否"新鲜"（24 小时内）
+  const cacheAge = Date.now() - (localDetail.quota?.last_updated || 0)
+  const isCacheStale = cacheAge > 24 * 60 * 60 * 1000 // 24 小时
+
+  if (isCacheStale) {
+    requestLogger.warn('antigravity.quota', '缓存配额已过时，降级使用', {
+      account: account.email,
+      cacheAge: Math.round(cacheAge / 1000 / 60) + '分钟'
+    })
+  }
+
   const currentQuota = _normalizeQuotaShape(account && account.quota ? account.quota : null) || {}
   const mergedQuotaBase = _normalizeQuotaShape(Object.assign({}, currentQuota, normalizedQuota)) || Object.assign({}, currentQuota, normalizedQuota)
-  const persisted = _persistAntigravityQuotaError(accountId, quotaError, mergedQuotaBase, { fallback: true })
+  const persisted = _persistAntigravityQuotaError(accountId, quotaError, mergedQuotaBase, { 
+    fallback: true,
+    cache_age_ms: cacheAge
+  })
   return {
     success: true,
     quota: persisted.quota,
     error: null,
-    warning: '网络异常，已回退使用本地缓存配额: ' + String(quotaError.message || '未知原因'),
+    warning: isCacheStale
+      ? '网络异常，已回退使用本地缓存配额（缓存已过时）'
+      : '网络异常，已回退使用本地缓存配额',
+    is_fallback: true,
+    cache_age_ms: cacheAge,
     quota_error: persisted.quotaError
   }
 }
@@ -2647,6 +2781,60 @@ function _persistAntigravityQuotaError (accountId, quotaError, quotaOverride, op
     quota: nextQuota,
     quotaError: nextQuotaError
   }
+}
+
+/**
+ * 批量刷新配额 (带并发控制)
+ * @param {string[]} accountIds - 账号 ID 列表
+ * @param {object} options - 选项
+ * @param {number} options.concurrency - 并发数 (默认 5)
+ * @param {number} options.delayMs - 请求间隔 (默认 200ms，避免触发限流)
+ * @param {function} options.onProgress - 进度回调
+ * @returns {Promise<Array<{id: string, success: boolean, error?: string}>>}
+ */
+async function refreshQuotasBatch (accountIds, options = {}) {
+  const {
+    concurrency = 5,
+    delayMs = 200,
+    onProgress = null
+  } = options
+
+  const { Semaphore } = require('../utils/semaphore')
+  const semaphore = new Semaphore(concurrency)
+  const results = []
+  let completed = 0
+  
+  const tasks = accountIds.map(async (accountId) => {
+    await semaphore.acquire()
+    
+    try {
+      const account = storage.getAccount(PLATFORM, accountId)
+      if (!account) {
+        return { id: accountId, success: false, error: '账号不存在' }
+      }
+      
+      const result = await _refreshQuotaAsync(account, accountId)
+      completed++
+      
+      onProgress?.({ completed, total: accountIds.length, accountId, result })
+      
+      // 添加延迟，避免触发 Google API 限流
+      if (delayMs > 0 && completed < accountIds.length) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+      
+      return { id: accountId, success: result.success, ...result }
+    } catch (err) {
+      completed++
+      onProgress?.({ completed, total: accountIds.length, accountId, error: err.message })
+      return { id: accountId, success: false, error: err.message }
+    } finally {
+      semaphore.release()
+    }
+  })
+  
+  await Promise.all(tasks)
+  return results
 }
 
 function _clearAntigravityQuotaError (accountId, quotaOverride) {
@@ -2771,47 +2959,105 @@ function _countImportedArray (arr) {
  */
 async function _refreshAntigravityToken (refreshToken, context = {}) {
   const http = require('./httpClient')
-  try {
-    requestLogger.info('antigravity.token', '开始刷新 Token', context)
-    const res = await http.postForm(GOOGLE_TOKEN_URL, {
-      client_id: ANTIGRAVITY_CLIENT_ID,
-      client_secret: ANTIGRAVITY_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token'
-    })
+  const clients = _buildAntigravityOAuthClientRegistry()
+  const activeKey = process.env.ANTIGRAVITY_OAUTH_CLIENT_KEY || 'antigravity_enterprise'
 
-    if (!res.ok || !res.data || !res.data.access_token) {
-      requestLogger.warn('antigravity.token', '刷新 Token 失败', {
-        ...context,
-        error: (res.raw || '').slice(0, 200)
+  let attemptErrors = []
+
+  // 优先使用活跃 Client
+  const preferredClient = clients.find(c => c.key === activeKey)
+  const candidates = preferredClient
+    ? [preferredClient, ...clients.filter(c => c.key !== activeKey)]
+    : clients
+
+  for (const client of candidates) {
+    try {
+      requestLogger.info('antigravity.token', `开始刷新 Token (Client: ${client.key})`, context)
+      const res = await http.postForm(GOOGLE_TOKEN_URL, {
+        client_id: client.clientId,
+        client_secret: client.clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token'
       })
-      return { ok: false, error: (res.raw || '').slice(0, 200) }
-    }
 
-    requestLogger.info('antigravity.token', '刷新 Token 成功', context)
+      if (res.ok && res.data && res.data.access_token) {
+        if (client.key !== 'antigravity_enterprise') {
+          requestLogger.info('antigravity.token', `降级 Client 刷新成功：${client.key}`, context)
+        }
+        return {
+          ok: true,
+          access_token: res.data.access_token,
+          expires_in: res.data.expires_in || 3600,
+          oauth_client_key: client.key
+        }
+      }
 
-    return {
-      ok: true,
-      access_token: res.data.access_token,
-      expires_in: res.data.expires_in || 3600
+      const rawError = res.raw || ''
+      attemptErrors.push(`${client.key}: ${rawError}`)
+
+      // 检测 invalid_grant 错误（Token 已失效）
+      if (rawError.includes('invalid_grant')) {
+        requestLogger.error('antigravity.token', 'Token 已失效（invalid_grant），建议禁用账号', {
+          ...context,
+          should_disable_account: true
+        })
+        
+        return {
+          ok: false,
+          error: 'invalid_grant: Token 已失效或已被撤销',
+          should_disable_account: true  // 新增标记
+        }
+      }
+
+      // 检查是否是 Client 不匹配错误
+      const isClientMismatch = 
+        rawError.includes('unauthorized_client') ||
+        rawError.includes('invalid_client')
+      
+      // 如果不是 Client 问题，直接返回错误
+      if (!isClientMismatch) {
+        requestLogger.warn('antigravity.token', '刷新 Token 失败', {
+          ...context,
+          error: rawError.slice(0, 200)
+        })
+        return { ok: false, error: rawError.slice(0, 200) }
+      }
+      // 否则尝试下一个 Client
+    } catch (err) {
+      const errorMsg = err.message || String(err)
+      const isClientMismatch = 
+        errorMsg.includes('unauthorized_client') ||
+        errorMsg.includes('invalid_client')
+      
+      attemptErrors.push(`${client.key}: ${errorMsg}`)
+      
+      // 如果不是 Client 问题，直接返回错误
+      if (!isClientMismatch) {
+        requestLogger.error('antigravity.token', '刷新 Token 异常', {
+          ...context,
+          error: errorMsg
+        })
+        return {
+          ok: false,
+          error: errorMsg
+        }
+      }
+      // 否则尝试下一个 Client
     }
-  } catch (err) {
-    requestLogger.error('antigravity.token', '刷新 Token 异常', {
-      ...context,
-      error: err && err.message ? err.message : String(err)
-    })
-    return {
-      ok: false,
-      error: err && err.message ? err.message : String(err)
-    }
+  }
+
+  return {
+    ok: false,
+    error: `所有 Client 刷新失败：${attemptErrors.join(' | ')}`
   }
 }
 
-function _buildAntigravityAuthorizeUrl (redirectUri, state) {
+function _buildAntigravityAuthorizeUrl (redirectUri, state, clientId) {
+  const resolvedClientId = String(clientId || _resolveAntigravityOAuthCredentials().clientId || '').trim()
   return (
     GOOGLE_AUTH_URL +
     '?response_type=code' +
-    '&client_id=' + encodeURIComponent(ANTIGRAVITY_CLIENT_ID) +
+    '&client_id=' + encodeURIComponent(resolvedClientId) +
     '&redirect_uri=' + encodeURIComponent(redirectUri) +
     '&scope=' + encodeURIComponent(ANTIGRAVITY_OAUTH_SCOPES) +
     '&access_type=offline' +
@@ -2905,19 +3151,41 @@ function _startOAuthCallbackServer (session) {
       }
     })
 
-    server.once('error', function (err) {
+    // 使用重试机制监听端口，处理网络不稳定问题
+    retryOAuthRequest(
+      () => new Promise((resolveListen, rejectListen) => {
+        server.once('error', function (err) {
+          rejectListen(err)
+        })
+
+        server.listen(port, function () {
+          session.server = server
+          resolveListen()
+        })
+      }),
+      {
+        maxAttempts: 5,
+        initialDelayMs: 1000,
+        maxDelayMs: 10000, // 10 秒最大延迟
+        operationName: 'OAuth callback server listen',
+        onRetry: (attempt, err, delayMs) => {
+          requestLogger.info('antigravity.oauth', `启动 OAuth 回调服务器失败，正在重试 (${attempt}/5)`, {
+            error: err.message,
+            delayMs
+          })
+        }
+      }
+    ).then(() => {
+      resolve({ success: true })
+    }).catch((err) => {
       resolve({
         success: false,
-        error: '回调端口监听失败: ' + (err && err.message ? err.message : String(err))
+        error: '回调端口监听失败：' + (err && err.message ? err.message : String(err))
       })
-    })
-
-    server.listen(port, function () {
-      session.server = server
-      resolve({ success: true })
     })
   })
 }
+
 
 function _closeOAuthSessionServer (session) {
   if (!session || !session.server) return
@@ -2970,12 +3238,19 @@ function _isLocalHost (hostname) {
 async function _exchangeCodeForTokens (code, redirectUri) {
   const http = require('./httpClient')
   try {
+    const { clientId, clientSecret } = _resolveAntigravityOAuthCredentials()
+    if (!clientId) {
+      return { ok: false, error: _getAntigravityOAuthCredentialError('完成 OAuth') }
+    }
+    if (!clientSecret) {
+      return { ok: false, error: _getAntigravityOAuthCredentialError('完成 OAuth') }
+    }
     const res = await http.postForm(GOOGLE_TOKEN_URL, {
       grant_type: 'authorization_code',
       code: code,
       redirect_uri: redirectUri,
-      client_id: ANTIGRAVITY_CLIENT_ID,
-      client_secret: ANTIGRAVITY_CLIENT_SECRET
+      client_id: clientId,
+      client_secret: clientSecret
     })
     if (!res.ok || !res.data || !res.data.access_token) {
       return {
@@ -3413,6 +3688,7 @@ module.exports = {
   refreshToken,
   refreshQuota,
   refreshQuotaOrUsage,
+  refreshQuotasBatch, // 新增批量刷新
   exportAccounts,
   updateTags,
   getConfigDir,

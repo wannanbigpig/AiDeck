@@ -10,9 +10,12 @@
 const path = require('node:path')
 const cp = require('node:child_process')
 const crypto = require('node:crypto')
+const http = require('node:http')
+const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
+const sharedSettingsStore = require('../../infra-node/src/sharedSettingsStore.cjs')
 
 const PLATFORM = 'gemini'
 
@@ -22,9 +25,14 @@ const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo'
 const CODE_ASSIST_LOAD_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist'
 const CODE_ASSIST_QUOTA_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota'
 
-// 仅从环境变量读取，避免将 OAuth 凭证硬编码进仓库
-const GEMINI_CLIENT_ID = String(process.env.GEMINI_CLIENT_ID || '').trim()
-const GEMINI_CLIENT_SECRET = String(process.env.GEMINI_CLIENT_SECRET || '').trim()
+const GEMINI_CLIENT_ID = String(
+  process.env.GEMINI_CLIENT_ID ||
+  '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com'
+).trim()
+const GEMINI_CLIENT_SECRET = String(
+  process.env.GEMINI_CLIENT_SECRET ||
+  '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'
+).trim()
 
 const GEMINI_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
@@ -50,6 +58,27 @@ const AUTO_SOURCE_TAG_TO_VIA = {
   'OAuth 授权': 'oauth',
   Token导入: 'token',
   'Token 导入': 'token'
+}
+
+function _readAdvancedSettingsFromStorage () {
+  try {
+    const saved = sharedSettingsStore.readValue('gemini_advanced_settings', {})
+    if (saved && typeof saved === 'object') return saved
+  } catch {}
+  return {}
+}
+
+function _resolveGeminiOAuthCredentials () {
+  const settings = _readAdvancedSettingsFromStorage()
+  return {
+    clientId: String(GEMINI_CLIENT_ID || settings.oauthClientId || '').trim(),
+    clientSecret: String(GEMINI_CLIENT_SECRET || settings.oauthClientSecret || '').trim()
+  }
+}
+
+function _getGeminiOAuthCredentialError (action) {
+  const actionText = String(action || '执行操作').trim() || '执行操作'
+  return `未配置 Gemini 的 Google OAuth 凭证，无法${actionText}。请先到 Gemini 设置中填写 Client ID 和 Client Secret。`
 }
 
 function _normalizeAutoSourceTagKey (value) {
@@ -474,20 +503,42 @@ function _startOAuthCallbackServer (session) {
       }
     })
 
-    server.once('error', function (err) {
+    // 使用重试机制监听端口，处理网络不稳定问题
+    retryOAuthRequest(
+      () => new Promise((resolveListen, rejectListen) => {
+        server.once('error', function (err) {
+          rejectListen(err)
+        })
+
+        // 不指定 host，兼容 localhost / 127.0.0.1 / IPv6 loopback 的本地解析差异。
+        server.listen(port, function () {
+          session.server = server
+          resolveListen()
+        })
+      }),
+      {
+        maxAttempts: 5,
+        initialDelayMs: 1000,
+        maxDelayMs: 10000, // 10 秒最大延迟
+        operationName: 'OAuth callback server listen',
+        onRetry: (attempt, err, delayMs) => {
+          requestLogger.info('gemini.oauth', `启动 OAuth 回调服务器失败，正在重试 (${attempt}/5)`, {
+            error: err.message,
+            delayMs
+          })
+        }
+      }
+    ).then(() => {
+      resolve({ success: true })
+    }).catch((err) => {
       resolve({
         success: false,
-        error: '回调端口监听失败: ' + (err && err.message ? err.message : String(err))
+        error: '回调端口监听失败：' + (err && err.message ? err.message : String(err))
       })
-    })
-
-    // 不指定 host，兼容 localhost / 127.0.0.1 / IPv6 loopback 的本地解析差异。
-    server.listen(port, function () {
-      session.server = server
-      resolve({ success: true })
     })
   })
 }
+
 
 function _closeOAuthSessionServer (session) {
   if (!session || !session.server) return
@@ -640,27 +691,29 @@ function _triggerGeminiOAuthAutoComplete (session) {
  */
 async function prepareOAuthSession (port) {
   try {
-    if (!GEMINI_CLIENT_ID) {
-      return { success: false, error: '未配置 GEMINI_CLIENT_ID，无法发起 OAuth' }
+    const { clientId, clientSecret } = _resolveGeminiOAuthCredentials()
+    if (!clientId) {
+      return { success: false, error: _getGeminiOAuthCredentialError('发起 OAuth') }
     }
-    if (!GEMINI_CLIENT_SECRET) {
-      return { success: false, error: '未配置 GEMINI_CLIENT_SECRET，无法发起 OAuth' }
+    if (!clientSecret) {
+      return { success: false, error: _getGeminiOAuthCredentialError('发起 OAuth') }
     }
     storage.cleanupOAuthPending(PLATFORM, GEMINI_OAUTH_SESSION_TTL_MS)
+    // 清理旧的会话，避免 state 冲突
     _cleanupActiveOAuthSessions()
     const callbackPort = await _resolveAvailableOAuthPort(port)
     const redirectUri = 'http://127.0.0.1:' + callbackPort + GEMINI_OAUTH_CALLBACK_PATH
     const state = _randomBase64Url()
-    const authUrl = _buildGeminiAuthorizeUrl(redirectUri, state)
+    const authUrl = _buildGeminiAuthorizeUrl(redirectUri, state, clientId)
     const sessionId = 'gemini-oauth-' + fileUtils.generateId()
 
-    _cleanupExpiredOAuthSessions()
     const session = {
       sessionId,
       state,
       redirectUri,
       authUrl,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      expiresAt: Date.now() + GEMINI_OAUTH_SESSION_TTL_MS // 10 分钟后过期
     }
     oauthSessions.set(sessionId, session)
     const startRes = await _startOAuthCallbackServer(session)
@@ -671,12 +724,22 @@ async function prepareOAuthSession (port) {
     }
     _saveOAuthSession(session)
 
+    // 设置超时自动关闭定时器
+    session.timeoutTimer = setTimeout(() => {
+      requestLogger.info('gemini.oauth', 'OAuth 会话超时，自动关闭', {
+        sessionId,
+        timeoutMinutes: GEMINI_OAUTH_SESSION_TTL_MS / 60 / 1000
+      })
+      cancelOAuthSession(sessionId)
+    }, GEMINI_OAUTH_SESSION_TTL_MS)
+
     return {
       success: true,
       session: {
         sessionId,
         authUrl,
-        redirectUri
+        redirectUri,
+        expiresAt: session.expiresAt
       }
     }
   } catch (err) {
@@ -687,6 +750,11 @@ async function prepareOAuthSession (port) {
 function cancelOAuthSession (sessionId) {
   if (!sessionId) return { success: true }
   const session = oauthSessions.get(sessionId)
+  // 清除超时定时器
+  if (session && session.timeoutTimer) {
+    clearTimeout(session.timeoutTimer)
+    session.timeoutTimer = null
+  }
   _closeOAuthSessionServer(session)
   oauthSessions.delete(sessionId)
   storage.clearOAuthPending(PLATFORM, sessionId)
@@ -1098,7 +1166,7 @@ function _normalizeGeminiExpiryDateMs (value) {
   return num > 1000000000000 ? Math.floor(num) : Math.floor(num * 1000)
 }
 
-function _shouldRefreshGeminiAccessToken (accessToken, expiryDate, leadTimeMs = 10 * 60 * 1000) {
+function _shouldRefreshGeminiAccessToken (accessToken, expiryDate, leadTimeMs = 15 * 60 * 1000) {
   const nextAccessToken = String(accessToken || '').trim()
   if (!nextAccessToken) return true
   const expiryMs = _normalizeGeminiExpiryDateMs(expiryDate)
@@ -1129,6 +1197,18 @@ async function _refreshGeminiTokenAsync (account, accountId) {
     if (refreshTokenValue && shouldRefreshToken) {
       const refreshed = await _refreshGeminiTokenByRefreshToken(refreshTokenValue)
       if (!refreshed.success) {
+        // 检查是否需要禁用账号
+        if (refreshed.should_disable_account) {
+          requestLogger.warn('gemini.token', '禁用账号（Token 失效）', {
+            account: account.email || account.id
+          })
+          storage.updateAccount(PLATFORM, accountId, {
+            disabled: true,
+            disabled_at: Date.now(),
+            disabled_reason: refreshed.error
+          })
+        }
+        
         if (!nextAccessToken) {
           const quotaError = _extractGeminiQuotaError(0, refreshed.error || 'Token 刷新失败')
           const persisted = _persistGeminiQuotaError(accountId, quotaError)
@@ -1395,21 +1475,44 @@ async function _refreshGeminiTokenByRefreshToken (refreshTokenValue) {
 
   const http = require('./httpClient')
   try {
+    const { clientId, clientSecret } = _resolveGeminiOAuthCredentials()
+    if (!clientId) {
+      return { success: false, error: _getGeminiOAuthCredentialError('刷新 Token') }
+    }
+    if (!clientSecret) {
+      return { success: false, error: _getGeminiOAuthCredentialError('刷新 Token') }
+    }
     requestLogger.info('gemini.token', '开始通过 refresh_token 刷新 Token')
     const res = await http.postForm(GOOGLE_TOKEN_URL, {
-      client_id: GEMINI_CLIENT_ID,
-      client_secret: GEMINI_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type: 'refresh_token'
     })
 
     if (!res.ok || !res.data || !res.data.access_token) {
+      const rawError = res.raw || ''
+      
+      // 检测 invalid_grant 错误（Token 已失效）
+      if (rawError.toLowerCase().includes('invalid_grant')) {
+        requestLogger.error('gemini.token', 'Token 已失效（invalid_grant），建议禁用账号', {
+          account: 'unknown', // Gemini 平台没有直接的账号上下文
+          should_disable_account: true
+        })
+        
+        return {
+          success: false,
+          error: 'invalid_grant: Token 已失效或已被撤销',
+          should_disable_account: true  // 新增标记
+        }
+      }
+      
       requestLogger.warn('gemini.token', '通过 refresh_token 刷新 Token 失败', {
-        error: 'Token 刷新失败: ' + (res.raw || '').slice(0, 240)
+        error: 'Token 刷新失败: ' + rawError.slice(0, 240)
       })
       return {
         success: false,
-        error: 'Token 刷新失败: ' + (res.raw || '').slice(0, 240)
+        error: 'Token 刷新失败: ' + rawError.slice(0, 240)
       }
     }
 
@@ -1434,11 +1537,12 @@ async function _refreshGeminiTokenByRefreshToken (refreshTokenValue) {
   }
 }
 
-function _buildGeminiAuthorizeUrl (redirectUri, state) {
+function _buildGeminiAuthorizeUrl (redirectUri, state, clientId) {
+  const resolvedClientId = String(clientId || _resolveGeminiOAuthCredentials().clientId || '').trim()
   return (
     GOOGLE_AUTH_URL +
     '?response_type=code' +
-    '&client_id=' + encodeURIComponent(GEMINI_CLIENT_ID) +
+    '&client_id=' + encodeURIComponent(resolvedClientId) +
     '&redirect_uri=' + encodeURIComponent(redirectUri) +
     '&access_type=offline' +
     '&prompt=consent' +
@@ -1490,10 +1594,17 @@ async function _exchangeCodeForTokens (code, redirectUri) {
   const http = require('./httpClient')
 
   try {
+    const { clientId, clientSecret } = _resolveGeminiOAuthCredentials()
+    if (!clientId) {
+      return { ok: false, error: _getGeminiOAuthCredentialError('完成 OAuth') }
+    }
+    if (!clientSecret) {
+      return { ok: false, error: _getGeminiOAuthCredentialError('完成 OAuth') }
+    }
     const res = await http.postForm(GOOGLE_TOKEN_URL, {
       code,
-      client_id: GEMINI_CLIENT_ID,
-      client_secret: GEMINI_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       redirect_uri: redirectUri,
       grant_type: 'authorization_code'
     })
@@ -2055,6 +2166,60 @@ function _resolveUserPath (rawPath) {
   return value
 }
 
+/**
+ * 批量刷新配额 (带并发控制)
+ * @param {string[]} accountIds - 账号 ID 列表
+ * @param {object} options - 选项
+ * @param {number} options.concurrency - 并发数 (默认 5)
+ * @param {number} options.delayMs - 请求间隔 (默认 200ms，避免触发限流)
+ * @param {function} options.onProgress - 进度回调
+ * @returns {Promise<Array<{id: string, success: boolean, error?: string}>>}
+ */
+async function refreshQuotasBatch (accountIds, options = {}) {
+  const {
+    concurrency = 5,
+    delayMs = 200,
+    onProgress = null
+  } = options
+
+  const { Semaphore } = require('../utils/semaphore')
+  const semaphore = new Semaphore(concurrency)
+  const results = []
+  let completed = 0
+  
+  const tasks = accountIds.map(async (accountId) => {
+    await semaphore.acquire()
+    
+    try {
+      const account = storage.getAccount(PLATFORM, accountId)
+      if (!account) {
+        return { id: accountId, success: false, error: '账号不存在' }
+      }
+      
+      const result = await _refreshGeminiTokenAsync(account, accountId)
+      completed++
+      
+      onProgress?.({ completed, total: accountIds.length, accountId, result })
+      
+      // 添加延迟，避免触发 Google API 限流
+      if (delayMs > 0 && completed < accountIds.length) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+      
+      return { id: accountId, success: result.success, ...result }
+    } catch (err) {
+      completed++
+      onProgress?.({ completed, total: accountIds.length, accountId, error: err.message })
+      return { id: accountId, success: false, error: err.message }
+    } finally {
+      semaphore.release()
+    }
+  })
+  
+  await Promise.all(tasks)
+  return results
+}
+
 function _randomBase64Url () {
   const base64 = crypto.randomBytes(24).toString('base64')
   return base64
@@ -2092,5 +2257,6 @@ module.exports = {
   getConfigDir,
   getConfigDirCandidates,
   getLocalStateFilePaths,
-  getLocalStateWatchTargets
+  getLocalStateWatchTargets,
+  refreshQuotasBatch // 新增批量刷新
 }

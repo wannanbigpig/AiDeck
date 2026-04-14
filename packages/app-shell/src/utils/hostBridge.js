@@ -133,6 +133,9 @@ export async function showNotification (message, title = 'AiDeck') {
   const host = getHostApi()
   if (host && typeof host.showNotification === 'function') {
     try {
+      if (message && typeof message === 'object') {
+        return (await Promise.resolve(host.showNotification(message))) === true
+      }
       return (await Promise.resolve(host.showNotification(message, title))) === true
     } catch (e) {}
   }
@@ -215,6 +218,17 @@ export function subscribeRequestLogs (listener) {
   return function unsubscribe () {}
 }
 
+export function subscribeHostNavigation (listener) {
+  const bridge = getHostBridge()
+  if (typeof listener !== 'function') {
+    return function unsubscribe () {}
+  }
+  if (bridge && bridge.events && typeof bridge.events.subscribeHostNavigation === 'function') {
+    return bridge.events.subscribeHostNavigation(listener)
+  }
+  return function unsubscribe () {}
+}
+
 export function readSharedSetting (key, fallback = null) {
   const bridge = getHostBridge()
   if (bridge && bridge.settings && typeof bridge.settings.getShared === 'function') {
@@ -245,4 +259,36 @@ export function writeHostSetting (key, value) {
     return bridge.settings.setHost(key, value)
   }
   return value
+}
+
+export async function writeConfigFile (filePath, content) {
+  const host = getHostApi()
+  if (host && typeof host.writeConfigFile === 'function') {
+    return await Promise.resolve(host.writeConfigFile(filePath, content))
+  }
+  throw new Error('当前环境不支持直接写入配置文件')
+}
+
+export function readConfigFile (filePath) {
+  const host = getHostApi()
+  if (host && typeof host.readConfigFile === 'function') {
+    return host.readConfigFile(filePath)
+  }
+  throw new Error('当前环境不支持读取配置文件')
+}
+
+export function fileExists (filePath) {
+  const host = getHostApi()
+  if (host && typeof host.fileExists === 'function') {
+    return host.fileExists(filePath)
+  }
+  throw new Error('当前环境不支持文件检查')
+}
+
+export function dirExists (dirPath) {
+  const host = getHostApi()
+  if (host && typeof host.dirExists === 'function') {
+    return host.dirExists(dirPath)
+  }
+  throw new Error('当前环境不支持目录检查')
 }

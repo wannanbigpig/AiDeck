@@ -28,6 +28,13 @@ export function useGeminiOAuthFlow ({
     const sid = String(pollingSessionId || '').trim()
     if (!sid || !svc || typeof svc.getOAuthSessionStatus !== 'function') return
     const status = await Promise.resolve(svc.getOAuthSessionStatus(sid))
+    
+    // 避免幽灵轮询覆盖新会话状态
+    const pending = readPendingOAuthSession('gemini')
+    if (pending && pending.sessionId && pending.sessionId !== sid) {
+      return
+    }
+
     if (!status || !status.success) {
       if (status && status.status === 'missing') {
         stopOAuthPolling()
@@ -102,12 +109,13 @@ export function useGeminiOAuthFlow ({
     setOauthRedirectUri(pending.redirectUri || '')
     setOauthPrepareError('')
     setOauthRecovered(true)
-    startOAuthPolling(sid)
+    // 恢复会话时不自动开始轮询，等待用户点击"开始授权"
     onRecovered?.()
     return true
   }
 
   async function prepareOAuthSession () {
+    stopOAuthPolling()
     if (!svc || typeof svc.prepareOAuthSession !== 'function') {
       setOauthPrepareError('当前版本不支持 OAuth 授权')
       return null
@@ -131,7 +139,7 @@ export function useGeminiOAuthFlow ({
       setOauthCallbackInput('')
       setOauthUrlCopied(false)
       setOauthRecovered(false)
-      startOAuthPolling(session.sessionId || '')
+      // 准备阶段不启动轮询，等待用户点击"开始授权"
       writePendingOAuthSession('gemini', {
         sessionId: session.sessionId || '',
         authUrl: session.authUrl || '',
@@ -201,10 +209,8 @@ export function useGeminiOAuthFlow ({
           setOauthPrepareError(status.error || '自动处理 OAuth 回调失败，请手动提交回调地址重试')
           startOAuthPolling(sid)
           return
-        } else {
-          setOauthBusy(false)
-          startOAuthPolling(sid)
         }
+        // 其他状态（ready）不自动开始轮询，等待用户操作
       } catch {
         clearPendingOAuthSession('gemini')
         stopOAuthPolling()
@@ -251,8 +257,40 @@ export function useGeminiOAuthFlow ({
       return
     }
 
+    // 用户点击"开始授权"后才启动轮询
     if (sid) startOAuthPolling(sid)
     toast?.success?.('已在浏览器打开 Gemini OAuth 页面')
+  }
+
+  async function handleCancelOAuthInBrowser () {
+    const sid = String(oauthSessionId || '').trim()
+    if (!sid || !svc || typeof svc.cancelOAuthSession !== 'function') {
+      toast?.warning?.('OAuth 会话不存在')
+      return false
+    }
+
+    try {
+      const result = await svc.cancelOAuthSession(sid)
+      if (!result || !result.success) {
+        toast?.error?.((result && result.error) || '取消授权失败')
+        return false
+      }
+
+      stopOAuthPolling()
+      clearPendingOAuthSession('gemini')
+      setOauthSessionId('')
+      setOauthAuthUrl('')
+      setOauthRedirectUri('')
+      setOauthBusy(false)
+      setOauthRecovered(false)
+      setOauthPrepareError('')
+      
+      toast?.success?.('已取消授权会话')
+      return true
+    } catch (e) {
+      toast?.error?.('取消授权失败：' + (e?.message || String(e)))
+      return false
+    }
   }
 
   async function completeOAuthBySession (sessionId, callbackUrl, source = 'manual') {
@@ -279,10 +317,14 @@ export function useGeminiOAuthFlow ({
       if (!result || !result.success || !result.account) {
         const err = (result && result.error) || 'OAuth 授权失败'
         if (err.includes('会话不存在') || err.includes('已过期')) {
-          stopOAuthPolling()
-          clearPendingOAuthSession('gemini')
-          setOauthSessionId('')
-          setOauthRecovered(false)
+          const pending = readPendingOAuthSession('gemini')
+          if (!pending || pending.sessionId === sid) {
+            stopOAuthPolling()
+            clearPendingOAuthSession('gemini')
+            setOauthSessionId('')
+            setOauthRecovered(false)
+          }
+          if (source === 'auto') return false
         }
         if (source === 'auto') {
           setOauthPrepareError(err)
@@ -347,7 +389,7 @@ export function useGeminiOAuthFlow ({
       if (status.status === 'processing') {
         setOauthBusy(true)
         setOauthPrepareError('')
-        if (!oauthPolling) startOAuthPolling(sid)
+        // 不自动启动轮询，等待用户点击"开始授权"
         return true
       }
 
@@ -365,9 +407,7 @@ export function useGeminiOAuthFlow ({
         return true
       }
 
-      if (!oauthPolling) {
-        startOAuthPolling(sid)
-      }
+      // 其他状态（ready）不自动开始轮询，等待用户操作
       return true
     } catch (e) {
       setOauthPrepareError(e?.message || String(e))
@@ -396,6 +436,8 @@ export function useGeminiOAuthFlow ({
 
   useEffect(() => {
     return () => {
+      // 组件卸载时清理 OAuth 会话
+      resetOAuthFlow()
       stopOAuthPolling()
     }
   }, [])
@@ -415,6 +457,7 @@ export function useGeminiOAuthFlow ({
     prepareOAuthSession,
     handleCopyOAuthUrl,
     handleOpenOAuthInBrowser,
+    handleCancelOAuthInBrowser,
     handleSubmitOAuthCallback,
     ensureOAuthReady,
     reconcileOAuthSession,

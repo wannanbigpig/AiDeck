@@ -1,5 +1,8 @@
 import { readSharedSetting } from './hostBridge.js'
 
+export const GEMINI_SETTINGS_KEY = 'gemini_advanced_settings'
+const QUOTA_WARNING_THRESHOLD_MAX = 30
+
 function toUnixSeconds (value) {
   if (value === null || value === undefined || value === '') return 0
 
@@ -206,15 +209,25 @@ export function getGeminiQuotaDisplayGroups (quota) {
 }
 
 export function readGeminiAdvancedSettings () {
-  return readSharedSetting('gemini_advanced_settings', { autoRefreshMinutes: 0 }) || { autoRefreshMinutes: 0 }
+  return normalizeGeminiAdvancedSettings(readSharedSetting(GEMINI_SETTINGS_KEY, null))
 }
 
 export function normalizeGeminiAdvancedSettings (s) {
   const d = {
-    autoRefreshMinutes: 0
+    autoRefreshMinutes: 0,
+    oauthClientId: '',
+    oauthClientSecret: '',
+    quotaWarningEnabled: false,
+    quotaWarningProThreshold: 10,
+    quotaWarningFlashThreshold: 10
   }
   if (!s || typeof s !== 'object') return d
   return {
-    autoRefreshMinutes: typeof s.autoRefreshMinutes === 'number' ? s.autoRefreshMinutes : d.autoRefreshMinutes
+    autoRefreshMinutes: typeof s.autoRefreshMinutes === 'number' ? s.autoRefreshMinutes : d.autoRefreshMinutes,
+    oauthClientId: typeof s.oauthClientId === 'string' ? s.oauthClientId.trim() : d.oauthClientId,
+    oauthClientSecret: typeof s.oauthClientSecret === 'string' ? s.oauthClientSecret.trim() : d.oauthClientSecret,
+    quotaWarningEnabled: s.quotaWarningEnabled === true,
+    quotaWarningProThreshold: Math.max(0, Math.min(QUOTA_WARNING_THRESHOLD_MAX, Number(s.quotaWarningProThreshold) || 0)),
+    quotaWarningFlashThreshold: Math.max(0, Math.min(QUOTA_WARNING_THRESHOLD_MAX, Number(s.quotaWarningFlashThreshold) || 0))
   }
 }

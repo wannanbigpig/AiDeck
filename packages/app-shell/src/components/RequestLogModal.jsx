@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Modal from './Modal'
 import {
   clearRequestLogs,
-  getRequestLogDirPath,
   openRequestLogDir,
   readRequestLogs,
   subscribeRequestLogEvents
@@ -21,7 +20,6 @@ export default function RequestLogModal ({ open, onClose, toast }) {
   const consoleRef = useRef(null)
   const stickToBottomRef = useRef(true)
   const pendingScrollRef = useRef(false)
-  const logDirPath = getRequestLogDirPath()
 
   const scrollToBottom = useCallback(() => {
     const element = consoleRef.current
@@ -121,19 +119,6 @@ export default function RequestLogModal ({ open, onClose, toast }) {
       contentClassName='request-log-modal'
       footer={
         <div className='request-log-footer'>
-          <div className='request-log-footer-meta'>
-            <div className='request-log-meta-row'>
-              <span className='request-log-meta-item'>当前显示 {logs.length} 条</span>
-              <span className='request-log-meta-item'>默认加载最新 {INITIAL_LOG_LIMIT} 条</span>
-              <span className='request-log-meta-item'>最多显示最近 {MAX_VISIBLE_LOGS} 条</span>
-              <span className='request-log-meta-item'>实时订阅更新</span>
-            </div>
-            {logDirPath ? (
-              <div className='request-log-path' title={logDirPath}>
-                {logDirPath}
-              </div>
-            ) : null}
-          </div>
           <div className='request-log-footer-actions'>
             <button className='btn' onClick={onClose}>关闭</button>
             <button className='btn' style={{ background: 'var(--bg-surface)' }} onClick={loadLatestLogs}>刷新</button>

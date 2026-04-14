@@ -450,9 +450,18 @@ const host = {
     fs.writeFileSync(targetPath, normalized.buffer)
     return targetPath
   },
-  showNotification: function (message) {
+  showNotification: function (message, title = 'AiDeck') {
     if (!window.utools || typeof window.utools.showNotification !== 'function') return false
-    window.utools.showNotification(String(message || ''))
+    if (message && typeof message === 'object') {
+      const body = String(message.message || '').trim()
+      if (!body) return false
+      const featureName = String(message.featureCode || '').trim()
+      window.utools.showNotification(body, featureName || undefined)
+      return true
+    }
+    const body = String(message || '').trim()
+    if (!body) return false
+    window.utools.showNotification(body, undefined)
     return true
   },
   showItemInFolder: function (targetPath) {
@@ -461,6 +470,52 @@ const host = {
     if (!filePath) return false
     window.utools.shellShowItemInFolder(filePath)
     return true
+  },
+  writeConfigFile: function (filePath, content) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+
+    const dir = path.dirname(resolvedPath)
+    if (!fileUtils.dirExists(dir)) {
+      throw new Error(`配置目录不存在：${dir}`)
+    }
+
+    if (fileUtils.fileExists(resolvedPath)) {
+      const existingContent = fileUtils.readTextFile(resolvedPath)
+      const backupPath = resolvedPath + '.aideck.bak'
+      fileUtils.writeTextFile(backupPath, existingContent)
+    }
+
+    const ok = fileUtils.writeTextFile(resolvedPath, content)
+    if (!ok) {
+      throw new Error('写入文件失败')
+    }
+    return resolvedPath
+  },
+  readConfigFile: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.readTextFile(resolvedPath)
+  },
+  fileExists: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.fileExists(resolvedPath)
+  },
+  dirExists: function (dirPath) {
+    const resolvedPath = dirPath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), dirPath.slice(1))
+      : dirPath
+    return fileUtils.dirExists(resolvedPath)
+  },
+  deleteFile: function (filePath) {
+    const resolvedPath = filePath.startsWith('~')
+      ? path.join(fileUtils.getHomeDir(), filePath.slice(1))
+      : filePath
+    return fileUtils.deleteFile(resolvedPath)
   }
 }
 
