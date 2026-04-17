@@ -2375,7 +2375,7 @@ async function refreshToken (accountId) {
  * 内部异步配额刷新
  */
 async function _refreshQuotaAsync (account, accountId) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
 
   try {
     // 0. 先尝试从本地详情文件补全 token/quota（兼容老版本导入的“仅元数据账号”）
@@ -2958,7 +2958,7 @@ function _countImportedArray (arr) {
  * Google OAuth2: https://oauth2.googleapis.com/token
  */
 async function _refreshAntigravityToken (refreshToken, context = {}) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   const clients = _buildAntigravityOAuthClientRegistry()
   const activeKey = process.env.ANTIGRAVITY_OAUTH_CLIENT_KEY || 'antigravity_enterprise'
 
@@ -3236,7 +3236,7 @@ function _isLocalHost (hostname) {
 }
 
 async function _exchangeCodeForTokens (code, redirectUri) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   try {
     const { clientId, clientSecret } = _resolveAntigravityOAuthCredentials()
     if (!clientId) {
@@ -3277,7 +3277,7 @@ async function _fetchGoogleUserinfo (accessToken) {
   const token = (accessToken || '').trim()
   if (!token) return {}
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   try {
     const res = await http.getJSON(
       GOOGLE_USERINFO_URL,
@@ -3301,7 +3301,7 @@ async function _loadAntigravityCodeAssist (accessToken, preferredProjectId) {
     return { project_id: '', subscription_tier: '', credits: [], error: 'access_token 为空' }
   }
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   const payload = {
     metadata: _buildAntigravityCloudCodeMetadata(projectId),
     mode: 'FULL_ELIGIBILITY_CHECK'

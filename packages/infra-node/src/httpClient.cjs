@@ -8,7 +8,7 @@
 const https = require('https')
 const http = require('http')
 const zlib = require('zlib')
-const requestLogger = require('./requestLogStore')
+const requestLogger = require('./requestLogStore.cjs')
 
 const DEFAULT_TIMEOUT_MS = 15000
 

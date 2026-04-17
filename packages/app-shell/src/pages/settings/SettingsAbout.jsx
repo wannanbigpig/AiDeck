@@ -1,6 +1,7 @@
 import { useToast } from '../../components/Toast'
 import packageJson from '../../../package.json'
 import { getPlatformService } from '../../utils/hostBridge.js'
+import logoUrl from '../../assets/logo.png'
 
 const PROJECT_GITHUB_URL = 'https://github.com/wannanbigpig/AiDeck'
 const PROJECT_GITHUB_ISSUES_URL = 'https://github.com/wannanbigpig/AiDeck/issues'
@@ -63,7 +64,7 @@ export default function SettingsAbout () {
       <h2 className='settings-h2'>关于</h2>
       <div className='settings-card settings-about-card'>
         <div className='settings-about-hero'>
-          <img className='settings-about-logo' src='/logo.png' alt='AiDeck logo' />
+          <img className='settings-about-logo' src={logoUrl} alt='AiDeck logo' />
           <div className='settings-about-title'>AiDeck</div>
           <div className='settings-about-chip-row'>
             <span className='settings-about-chip'>v{PROJECT_VERSION}</span>

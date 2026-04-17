@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTheme } from './ThemeToggle'
 import { PlatformIcon } from './Icons/PlatformIcons'
 import { SidebarCollapseIcon, LogIcon, SettingsIcon } from './Icons/ActionIcons'
+import logoUrl from '../assets/logo.png'
 
 /**
  * 侧边栏 — 简洁平台列表 + 主题切换
@@ -50,7 +51,7 @@ export default function Sidebar ({
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
         <div className='sidebar-header'>
           <div className='sidebar-brand'>
-            <img src='/logo.png' alt='AiDeck' style={{ width: '28px', height: '28px', flexShrink: 0, borderRadius: '6px' }} />
+            <img src={logoUrl} alt='AiDeck' style={{ width: '28px', height: '28px', flexShrink: 0, borderRadius: '6px' }} />
             <span className='sidebar-brand-text'>AiDeck</span>
           </div>
         </div>

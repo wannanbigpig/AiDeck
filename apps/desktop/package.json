@@ -1,10 +1,9 @@
 {
-  "name": "@aideck/desktop",
-  "version": "1.0.0",
+  "name": "aideck",
+  "version": "1.0.1",
   "description": "AiDeck desktop shell",
-  "author": "AiDeck",
-  "private": true,
-  "type": "commonjs",
+  "author": "AiDeck <support@aideck.com>",
+  "homepage": "https://github.com/wannanbigpig/AiDeck",
   "main": "dist-electron/main/main.cjs",
   "scripts": {
     "dev": "vite --config vite.config.mjs",
@@ -17,8 +16,9 @@
   "build": {
     "appId": "com.aideck.desktop",
     "productName": "AiDeck",
-    "electronVersion": "36.2.1",
-    "electronDist": "node_modules/electron/dist",
+    "electronVersion": "34.0.0",
+    "npmRebuild": false,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist-packages"
     },
@@ -28,18 +28,57 @@
     ],
     "mac": {
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ]
     },
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "linux": {
+      "maintainer": "AiDeck <support@aideck.com>",
       "target": [
-        "AppImage"
-      ]
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Development"
     }
   },
   "dependencies": {
@@ -49,8 +88,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.7.0",
-    "electron": "36.2.1",
-    "electron-builder": "^24.13.3",
+    "electron": "34.0.0",
+    "electron-builder": "24.13.3",
     "vite": "^6.4.2",
     "vite-plugin-electron": "^0.29.1"
   }

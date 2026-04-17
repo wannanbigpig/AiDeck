@@ -1146,7 +1146,7 @@ async function refreshToken (accountId) {
 }
 
 async function _refreshCodexQuotaAsync (account, accountId) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   const tokens = account.tokens || {}
 
   try {
@@ -1334,7 +1334,7 @@ function _persistCodexQuotaError (accountId, quotaError) {
 
 /** 刷新 Codex access_token */
 async function _refreshCodexToken (refreshToken, context = {}) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   requestLogger.info('codex.token', '开始刷新 Token', context)
   const res = await http.postForm(CODEX_TOKEN_URL, {
     grant_type: 'refresh_token',
@@ -1716,7 +1716,7 @@ function _validateManualCallback (callbackUrl, redirectUri, expectedState) {
 }
 
 async function _exchangeCodeForTokens (code, verifier, redirectUri) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   try {
     const res = await http.postForm(CODEX_TOKEN_URL, {
       grant_type: 'authorization_code',
@@ -1859,7 +1859,7 @@ async function _fetchCodexProfile (accessToken, idToken) {
   profile.workspace = _resolveWorkspaceTitleFromOrganizations(organizations, profile.organizationId)
 
   try {
-    const http = require('./httpClient')
+    const http = require('./httpClient.cjs')
     const headers = {
       Authorization: 'Bearer ' + token,
       Accept: 'application/json'

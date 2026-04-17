@@ -9,6 +9,22 @@ function readFile (relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8').trim()
 }
 
+function readDesktopPreloadFile () {
+  const candidates = [
+    'apps/desktop/src/main/preload.js',
+    'apps/desktop/src/main/preload.cjs'
+  ]
+
+  for (const relativePath of candidates) {
+    const fullPath = path.join(root, relativePath)
+    if (fs.existsSync(fullPath)) {
+      return fs.readFileSync(fullPath, 'utf8').trim()
+    }
+  }
+
+  throw new Error('desktop preload file not found')
+}
+
 function listSourceFiles (dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true })
   const out = []
@@ -54,7 +70,7 @@ test('preload lib wrapper 应为纯转发文件', () => {
 })
 
 test('renderer 侧不应再暴露 window.services', () => {
-  const desktopPreload = readFile('apps/desktop/src/main/preload.cjs')
+  const desktopPreload = readDesktopPreloadFile()
   const utoolsPreload = readFile('apps/utools/public/preload/services.js')
   const legacyBridgeWrapper = readFile('public/preload/services.js')
 

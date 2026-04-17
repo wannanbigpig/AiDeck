@@ -1,6 +1,10 @@
 const path = require('path')
 const os = require('os')
-const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Notification, session } = require('electron')
+
+if (!app.isPackaged) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
+}
 
 console.log('[AiDeck] Electron main process started')
 console.log('[AiDeck] Home directory:', os.homedir())
@@ -8,8 +12,56 @@ console.log('[AiDeck] Data directory would be:', path.join(os.homedir(), '.ai_de
 
 let mainWindow = null
 
+function buildContentSecurityPolicy () {
+  return [
+    "default-src 'self'",
+    "script-src 'self' http://localhost:*",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' https: http://localhost:* ws://localhost:* wss:",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ')
+}
+
+function applyContentSecurityPolicyHeader () {
+  if (!app.isPackaged) return
+
+  const cspValue = buildContentSecurityPolicy()
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const currentHeaders = Object.assign({}, details.responseHeaders || {})
+    const headerKeys = Object.keys(currentHeaders)
+    for (let i = 0; i < headerKeys.length; i++) {
+      const key = headerKeys[i]
+      if (String(key || '').toLowerCase() === 'content-security-policy') {
+        delete currentHeaders[key]
+      }
+    }
+    currentHeaders['Content-Security-Policy'] = [cspValue]
+    callback({ responseHeaders: currentHeaders })
+  })
+}
+
+function resolveDevServerUrl () {
+  const injectedUrl = String(process.env.VITE_DEV_SERVER_URL || '').trim()
+  if (injectedUrl) return injectedUrl
+  const vitePort = String(process.env.VITE_PORT || '5173').trim() || '5173'
+  return `http://localhost:${vitePort}`
+}
+
 function createWindow () {
-  const preload = path.join(__dirname, 'preload.cjs')
+  // 适配打包后的路径：打包时 preload.cjs 与 main.cjs 位于同一目录 (dist-electron/main/)
+  // 使用绝对路径以确保稳定性
+  const preloadPath = path.isAbsolute(path.join(__dirname, 'preload.cjs'))
+    ? path.join(__dirname, 'preload.cjs')
+    : path.resolve(__dirname, 'preload.cjs')
+    
+  console.log('[AiDeck] Initializing window with preload:', preloadPath)
+
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -17,15 +69,36 @@ function createWindow () {
     minHeight: 720,
     title: 'AiDeck',
     webPreferences: {
-      preload,
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
   })
 
-  const vitePort = process.env.VITE_PORT || '5173'
-  win.loadURL(`http://localhost:${vitePort}`)
+  // 增加加载失败的友好处理，防止闪退
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error(`[AiDeck] Failed to load URL: ${validatedURL} (Error: ${errorCode} - ${errorDescription})`)
+    if (!app.isPackaged) {
+      const fallbackHtml = `data:text/html,<html><body><h1>Loading Failed</h1><p>Dev server URL: ${encodeURIComponent(resolveDevServerUrl())}</p></body></html>`
+      win.loadURL(fallbackHtml)
+    }
+  })
+
+  if (app.isPackaged) {
+    const indexPath = path.join(__dirname, '..', 'renderer', 'index.html')
+    console.log('[AiDeck] Loading production build:', indexPath)
+    win.loadFile(indexPath).catch(err => {
+      console.error('[AiDeck] Critical error loading production index.html:', err)
+    })
+  } else {
+    const devUrl = resolveDevServerUrl()
+    console.log(`[AiDeck] Connecting to dev server: ${devUrl}`)
+    win.loadURL(devUrl).catch(err => {
+      console.error('[AiDeck] Failed to connect to Vite dev server:', err)
+    })
+  }
+
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null
@@ -73,6 +146,7 @@ ipcMain.handle('host:show-notification', async (_event, payload) => {
 })
 
 app.whenReady().then(() => {
+  applyContentSecurityPolicyHeader()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

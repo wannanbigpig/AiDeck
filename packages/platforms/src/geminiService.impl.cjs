@@ -1473,7 +1473,7 @@ async function _refreshGeminiTokenByRefreshToken (refreshTokenValue) {
     return { success: false, error: '缺少 refresh_token' }
   }
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   try {
     const { clientId, clientSecret } = _resolveGeminiOAuthCredentials()
     if (!clientId) {
@@ -1591,7 +1591,7 @@ function _validateManualCallback (callbackUrl, redirectUri, expectedState) {
 }
 
 async function _exchangeCodeForTokens (code, redirectUri) {
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
 
   try {
     const { clientId, clientSecret } = _resolveGeminiOAuthCredentials()
@@ -1636,7 +1636,7 @@ async function _exchangeCodeForTokens (code, redirectUri) {
 async function _fetchGoogleUserinfo (accessToken) {
   if (!accessToken) return { email: '', name: '', id: '' }
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
   try {
     const res = await http.getJSON(GOOGLE_USERINFO_URL, {
       Authorization: 'Bearer ' + accessToken,
@@ -1681,7 +1681,7 @@ async function _loadCodeAssistStatus (accessToken) {
     return { project_id: '', tier_id: '', plan_name: '' }
   }
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -1740,7 +1740,7 @@ async function _retrieveUserQuotaStatus (accessToken, projectId) {
     return { quota: null, error: '' }
   }
 
-  const http = require('./httpClient')
+  const http = require('./httpClient.cjs')
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

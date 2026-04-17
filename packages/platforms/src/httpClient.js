@@ -1,1 +1,1 @@
-module.exports = require('../../infra-node/src/httpClient.cjs')
+module.exports = require('./httpClient.cjs')

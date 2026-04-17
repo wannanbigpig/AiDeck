@@ -5,7 +5,7 @@
 <h1 align="center">AiDeck 🚀</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.0-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-v1.0.1-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Node.js-%3E%3D20-83CD29?style=flat-square&logo=node.js" />
@@ -129,7 +129,14 @@ npm run dev:desktop
 
 ---
 
-## 🆕 v1.0.0 更新记录
+## 🆕 版本更新记录
+
+### v1.0.1
+
+- 修复 `uTools` 安装包中的 OAuth 能力加载问题。
+- 修复生产环境下应用内 logo 资源路径异常。
+
+### v1.0.0 更新记录
 
 - **🚀 性能飞跃**：优化了底层 Storage 加载策略，支持大规模账号秒级加载。
 - **🔄 OAuth 增强**：引入指数退避重试，显著提升弱网环境下的授权成功率。

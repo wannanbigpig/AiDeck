@@ -1,21 +1,22 @@
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
-const { contextBridge, clipboard, shell, ipcRenderer } = require('electron')
-const { createHostBridge } = require('../../../../packages/core/src/index.cjs')
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
+import { contextBridge, clipboard, shell, ipcRenderer } from 'electron'
+import { createHostBridge } from '../../../../packages/core/src/index.cjs'
 
 console.log('[AiDeck Preload] Home directory:', os.homedir())
 console.log('[AiDeck Preload] Data directory:', path.join(os.homedir(), '.ai_deck'))
 console.log('[AiDeck Preload] Data exists:', fs.existsSync(path.join(os.homedir(), '.ai_deck')))
-const antigravityService = require('../../../../packages/platforms/src/antigravityService.cjs')
-const codexService = require('../../../../packages/platforms/src/codexService.cjs')
-const geminiService = require('../../../../packages/platforms/src/geminiService.cjs')
-const accountStorage = require('../../../../packages/infra-node/src/accountStorage.cjs')
-const fileUtils = require('../../../../packages/infra-node/src/fileUtils.cjs')
-const requestLogStore = require('../../../../packages/infra-node/src/requestLogStore.cjs')
-const sharedSettingsStore = require('../../../../packages/infra-node/src/sharedSettingsStore.cjs')
-const hostSettingsStore = require('../../../../packages/infra-node/src/hostSettingsStore.cjs')
-const revisionBus = require('../../../../packages/infra-node/src/storageRevisionBus.cjs')
+
+import antigravityService from '../../../../packages/platforms/src/antigravityService.cjs'
+import codexService from '../../../../packages/platforms/src/codexService.cjs'
+import geminiService from '../../../../packages/platforms/src/geminiService.cjs'
+import accountStorage from '../../../../packages/infra-node/src/accountStorage.cjs'
+import fileUtils from '../../../../packages/infra-node/src/fileUtils.cjs'
+import requestLogStore from '../../../../packages/infra-node/src/requestLogStore.cjs'
+import sharedSettingsStore from '../../../../packages/infra-node/src/sharedSettingsStore.cjs'
+import hostSettingsStore from '../../../../packages/infra-node/src/hostSettingsStore.cjs'
+import revisionBus from '../../../../packages/infra-node/src/storageRevisionBus.cjs'
 
 const WATCH_DEBOUNCE_MS = 180
 const watchHandles = []
@@ -53,7 +54,7 @@ function subscribeLocalState (listener) {
   }
   localStateListeners.add(listener)
   return function unsubscribe () {
-    localStateListeners.delete(listener)
+    localStateListeners.add(listener)
   }
 }
 
