@@ -1,4 +1,5 @@
 import { readSharedSetting } from './hostBridge.js'
+import { normalizeRefreshIntervalMinutes } from './refreshInterval.js'
 
 export const GEMINI_SETTINGS_KEY = 'gemini_advanced_settings'
 const QUOTA_WARNING_THRESHOLD_MAX = 30
@@ -223,7 +224,7 @@ export function normalizeGeminiAdvancedSettings (s) {
   }
   if (!s || typeof s !== 'object') return d
   return {
-    autoRefreshMinutes: typeof s.autoRefreshMinutes === 'number' ? s.autoRefreshMinutes : d.autoRefreshMinutes,
+    autoRefreshMinutes: normalizeRefreshIntervalMinutes(s.autoRefreshMinutes, d.autoRefreshMinutes),
     oauthClientId: typeof s.oauthClientId === 'string' ? s.oauthClientId.trim() : d.oauthClientId,
     oauthClientSecret: typeof s.oauthClientSecret === 'string' ? s.oauthClientSecret.trim() : d.oauthClientSecret,
     quotaWarningEnabled: s.quotaWarningEnabled === true,

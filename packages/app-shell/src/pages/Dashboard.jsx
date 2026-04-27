@@ -16,6 +16,8 @@ import PrivacyToggleButton from '../components/PrivacyToggleButton'
 import { getAntigravityTierBadge } from '../utils/antigravity'
 import { resolveQuotaErrorMeta } from '../utils/codex'
 
+const DASHBOARD_PLATFORM_ORDER = ['codex', 'antigravity', 'gemini']
+
 function isCodexTeamLikePlan(planType) {
   if (!planType || typeof planType !== 'string') return false
   const upper = planType.toUpperCase()
@@ -128,7 +130,7 @@ export default function Dashboard({ onNavigate, onRefresh, searchQuery = '', pla
   const rawAccountsTotal = Object.values(data).reduce((acc, p) => acc + (p.accounts?.length || 0), 0)
 
   const q = String(searchQuery || '').trim().toLowerCase()
-  const groupedResults = Object.entries(data).map(([platformId, platform]) => {
+  const groupedResults = DASHBOARD_PLATFORM_ORDER.map(platformId => [platformId, data[platformId] || { accounts: [], currentId: null }]).map(([platformId, platform]) => {
     const accounts = Array.isArray(platform?.accounts) ? platform.accounts : []
     const matchedAccounts = accounts.filter(acc => {
       if (!q) return true

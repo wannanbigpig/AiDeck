@@ -142,16 +142,6 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
             </div>
           )}
 
-          <div className="settings-row">
-            <div className="settings-info">
-              <div className="settings-label">显示 Code Review 配额</div>
-              <div className="settings-desc">在统计概览中展示代码审查相关的使用进度。</div>
-            </div>
-            <ToggleSwitch 
-              checked={settings.showCodeReviewQuota} 
-              onChange={e => handleChange('showCodeReviewQuota', e.target.checked)} 
-            />
-          </div>
         </div>
 
         {/* IDE 交互设置 */}

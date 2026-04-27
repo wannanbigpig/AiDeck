@@ -9,8 +9,7 @@ const preloadOutfile = path.join(workspaceRoot, 'dist', 'preload', 'services.js'
 
 const externalModules = Array.from(new Set([
   ...builtinModules,
-  ...builtinModules.map((name) => name.replace(/^node:/, '')),
-  'electron'
+  ...builtinModules.map((name) => name.replace(/^node:/, ''))
 ]))
 
 async function buildPreloadBundle () {

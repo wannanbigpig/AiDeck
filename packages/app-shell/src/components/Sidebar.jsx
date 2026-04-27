@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTheme } from './ThemeToggle'
 import { PlatformIcon } from './Icons/PlatformIcons'
-import { SidebarCollapseIcon, LogIcon, SettingsIcon } from './Icons/ActionIcons'
+import { SidebarCollapseIcon, BellIcon, LogIcon, SettingsIcon } from './Icons/ActionIcons'
 import logoUrl from '../assets/logo.png'
 
 /**
@@ -34,15 +34,17 @@ export default function Sidebar ({
   platformData,
   searchQuery = '',
   showRequestLog = false,
-  onOpenRequestLog
+  onOpenRequestLog,
+  announcementUnreadCount = 0,
+  onOpenAnnouncements
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const query = String(searchQuery || '').trim().toLowerCase()
 
   const platforms = [
     { id: 'dashboard', name: '仪表盘' },
-    { id: 'antigravity', name: 'Antigravity' },
     { id: 'codex', name: 'Codex' },
+    { id: 'antigravity', name: 'Antigravity' },
     { id: 'gemini', name: 'Gemini CLI' }
   ]
 
@@ -81,6 +83,18 @@ export default function Sidebar ({
         </nav>
 
         <div className='sidebar-footer'>
+          <div
+            className='sidebar-item settings-item announcement-sidebar-item'
+            onClick={() => onOpenAnnouncements?.()}
+          >
+            <span className='sidebar-item-icon announcement-sidebar-icon' style={{ width: '18px', height: '18px', display: 'flex' }}>
+              <BellIcon size={18} />
+              {announcementUnreadCount > 0 && (
+                <span className='announcement-sidebar-badge'>{announcementUnreadCount > 9 ? '9+' : announcementUnreadCount}</span>
+              )}
+            </span>
+            <span>消息</span>
+          </div>
           {showRequestLog && (
             <div
               className='sidebar-item settings-item'

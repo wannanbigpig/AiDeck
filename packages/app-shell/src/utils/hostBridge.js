@@ -154,6 +154,43 @@ export async function showItemInFolder (targetPath) {
   return false
 }
 
+export async function getAvailableTerminals () {
+  const host = getHostApi()
+  if (host && typeof host.getAvailableTerminals === 'function') {
+    try {
+      const result = await Promise.resolve(host.getAvailableTerminals())
+      return Array.isArray(result) ? result : []
+    } catch (e) {}
+  }
+  return [{ value: 'system', label: '系统默认' }]
+}
+
+export function getCommandStatus (commandName) {
+  const command = String(commandName || '').trim()
+  const host = getHostApi()
+  if (host && typeof host.getCommandStatus === 'function') {
+    try {
+      const result = host.getCommandStatus(command)
+      return result && typeof result === 'object'
+        ? result
+        : { command, available: false, installCommand: '' }
+    } catch (e) {}
+  }
+  return { command, available: false, installCommand: '' }
+}
+
+export async function launchCliCommand (payload) {
+  const host = getHostApi()
+  if (host && typeof host.launchCliCommand === 'function') {
+    try {
+      return await Promise.resolve(host.launchCliCommand(payload || {}))
+    } catch (e) {
+      return { success: false, error: e?.message || String(e) }
+    }
+  }
+  return { success: false, error: '当前环境不支持打开终端' }
+}
+
 export function bindPluginSubInput (listener, placeholder = '') {
   const plugin = getPluginApi()
   if (plugin && typeof plugin.setSubInput === 'function') {
@@ -259,6 +296,54 @@ export function writeHostSetting (key, value) {
     return bridge.settings.setHost(key, value)
   }
   return value
+}
+
+export async function getAnnouncementState (options = {}) {
+  const host = getHostApi()
+  if (host && typeof host.getAnnouncementState === 'function') {
+    try {
+      const result = await Promise.resolve(host.getAnnouncementState(options))
+      return result && typeof result === 'object'
+        ? result
+        : { announcements: [], unreadIds: [], popupAnnouncement: null }
+    } catch (e) {}
+  }
+  return { announcements: [], unreadIds: [], popupAnnouncement: null }
+}
+
+export async function forceRefreshAnnouncements (options = {}) {
+  const host = getHostApi()
+  if (host && typeof host.forceRefreshAnnouncements === 'function') {
+    try {
+      const result = await Promise.resolve(host.forceRefreshAnnouncements(options))
+      return result && typeof result === 'object'
+        ? result
+        : { announcements: [], unreadIds: [], popupAnnouncement: null }
+    } catch (e) {}
+  }
+  return { announcements: [], unreadIds: [], popupAnnouncement: null }
+}
+
+export async function markAnnouncementAsRead (id) {
+  const host = getHostApi()
+  if (host && typeof host.markAnnouncementAsRead === 'function') {
+    try {
+      await Promise.resolve(host.markAnnouncementAsRead(id))
+      return true
+    } catch (e) {}
+  }
+  return false
+}
+
+export async function markAllAnnouncementsAsRead (options = {}) {
+  const host = getHostApi()
+  if (host && typeof host.markAllAnnouncementsAsRead === 'function') {
+    try {
+      await Promise.resolve(host.markAllAnnouncementsAsRead(options))
+      return true
+    } catch (e) {}
+  }
+  return false
 }
 
 export async function writeConfigFile (filePath, content) {

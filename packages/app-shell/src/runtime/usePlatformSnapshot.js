@@ -23,12 +23,31 @@ function buildAccountsFingerprint (accounts) {
   return list
     .map((account) => {
       const item = account && typeof account === 'object' ? account : {}
+      const quota = item.quota && typeof item.quota === 'object' ? item.quota : {}
+      const additional = Array.isArray(quota.additional_rate_limits)
+        ? quota.additional_rate_limits.map(limit => [
+            String(limit?.limit_name || ''),
+            Number(limit?.hourly_percentage ?? -1),
+            Number(limit?.hourly_reset_time || 0),
+            Number(limit?.weekly_percentage ?? -1),
+            Number(limit?.weekly_reset_time || 0)
+          ].join('/')).join(',')
+        : ''
       return [
         String(item.id || ''),
         Number(item.updated_at || 0),
         Number(item.last_used || 0),
         String(item.invalid ? '1' : '0'),
-        String(item.quota_error?.message || item.quota?.error || '')
+        String(item.quota_error?.message || item.quota?.error || ''),
+        Number(quota.schema_version || 0),
+        Number(quota.updated_at || 0),
+        Number(quota.hourly_percentage ?? -1),
+        Number(quota.hourly_reset_time || 0),
+        Number(quota.weekly_percentage ?? -1),
+        Number(quota.weekly_reset_time || 0),
+        additional,
+        String(quota.credits?.balance ?? ''),
+        String(quota.credits?.unlimited ? '1' : '0')
       ].join(':')
     })
     .join('|')

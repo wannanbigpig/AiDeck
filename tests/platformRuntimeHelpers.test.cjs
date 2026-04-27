@@ -56,7 +56,7 @@ async function waitFor (predicate, options = {}) {
 }
 
 async function withMockGeminiHttpClient (mockClient, callback) {
-  const modulePath = path.join(process.cwd(), 'packages/platforms/src/httpClient.js')
+  const modulePath = path.join(process.cwd(), 'packages/platforms/src/httpClient.cjs')
   const resolved = require.resolve(modulePath)
   const original = require(resolved)
   require.cache[resolved].exports = mockClient
@@ -95,6 +95,18 @@ test('buildSharedAccountBackFields 应仅输出有值的共享字段', async () 
   ])
 })
 
+test('normalizeRefreshIntervalMinutes 应支持 1-60 分钟细粒度并保留关闭态', async () => {
+  const refreshUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/refreshInterval.js')).href)
+
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes(0, 10), 0)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes(1, 10), 1)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes(2.6, 10), 3)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes(61, 10), 60)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes('17', 10), 17)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes('bad', 10), 10)
+  assert.equal(refreshUtils.normalizeRefreshIntervalMinutes(undefined, 0), 0)
+})
+
 test('normalizePlatformService 应为旧 service 补齐共享契约 fallback', async () => {
   const { normalizePlatformService } = await loadRuntimeHelper('normalizePlatformService.js')
 
@@ -130,12 +142,130 @@ test('normalizeCodexAdvancedSettings 应清理旧触发模型配置并保留优�
   const normalized = codexUtils.normalizeCodexAdvancedSettings({
     autoSwitch: true,
     autoSwitchModelGroup: 'codex',
-    autoSwitchPreferSameEmail: false
+    autoSwitchPreferSameEmail: false,
+    showCodeReviewQuota: true
   })
 
   assert.equal(normalized.autoSwitch, true)
   assert.equal(normalized.autoSwitchPreferSameEmail, false)
   assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'autoSwitchModelGroup'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'showCodeReviewQuota'), false)
+})
+
+test('Codex 配额解析应忽略代码审查额度并保留额外模型与积分', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const parsed = codex._internal.parseCodexQuota({
+    plan_type: 'pro',
+    rate_limit: {
+      primary_window: {
+        used_percent: 54,
+        limit_window_seconds: 18000,
+        reset_at: 1777289063
+      },
+      secondary_window: {
+        used_percent: 11,
+        limit_window_seconds: 604800,
+        reset_at: 1777875863
+      }
+    },
+    code_review_rate_limit: {
+      primary_window: {
+        used_percent: 99,
+        limit_window_seconds: 18000,
+        reset_at: 1777290000
+      }
+    },
+    additional_rate_limits: [
+      {
+        limit_name: 'GPT-5.3-Codex-Spark',
+        metered_feature: 'codex_bengalfox',
+        rate_limit: {
+          primary_window: {
+            used_percent: 0,
+            limit_window_seconds: 18000,
+            reset_at: 1777299448
+          },
+          secondary_window: {
+            used_percent: 0,
+            limit_window_seconds: 604800,
+            reset_at: 1777886248
+          }
+        }
+      }
+    ],
+    credits: {
+      has_credits: false,
+      unlimited: false,
+      overage_limit_reached: false,
+      balance: '0',
+      approx_local_messages: [0, 0],
+      approx_cloud_messages: [0, 0]
+    }
+  })
+
+  assert.equal(parsed.hourly_percentage, 46)
+  assert.equal(parsed.weekly_percentage, 89)
+  assert.equal(parsed.schema_version, codex._internal.CODEX_QUOTA_SCHEMA_VERSION)
+  assert.equal(Object.prototype.hasOwnProperty.call(parsed, 'code_review_percentage'), false)
+  assert.equal(parsed.additional_rate_limits.length, 1)
+  assert.equal(parsed.additional_rate_limits[0].limit_name, 'GPT-5.3-Codex-Spark')
+  assert.equal(parsed.additional_rate_limits[0].hourly_percentage, 100)
+  assert.equal(parsed.additional_rate_limits[0].weekly_percentage, 100)
+  assert.deepEqual(parsed.credits, {
+    has_credits: false,
+    unlimited: false,
+    overage_limit_reached: false,
+    balance: '0',
+    approx_local_messages: [0, 0],
+    approx_cloud_messages: [0, 0]
+  })
+})
+
+test('resolveCodexSubscriptionDisplay 应展示账号字段并兼容 id_token 订阅到期字段', async () => {
+  const codexUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/codex.js')).href)
+  const timestampMs = Date.UTC(2026, 1, 2, 3, 4, 0)
+  const expectedDate = new Date(timestampMs)
+  const originalNow = Date.now
+  Date.now = () => timestampMs - 5 * 24 * 60 * 60 * 1000
+  const expectedText = `${expectedDate.getFullYear()}-${String(expectedDate.getMonth() + 1).padStart(2, '0')}-${String(expectedDate.getDate()).padStart(2, '0')} ${String(expectedDate.getHours()).padStart(2, '0')}:${String(expectedDate.getMinutes()).padStart(2, '0')}（5 天）`
+
+  try {
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({
+      subscription_active_until: String(timestampMs)
+    }).text, expectedText)
+
+    const token = buildFakeJwt({
+      'https://api.openai.com/auth': {
+        chatgpt_subscription_active_until: { value: String(timestampMs) }
+      }
+    })
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({
+      tokens: { id_token: token }
+    }).text, expectedText)
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({}).text, '未知')
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+test('resolveCodexSubscriptionDisplay 应按订阅剩余天数返回颜色', async () => {
+  const codexUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/codex.js')).href)
+  const originalNow = Date.now
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0)
+  Date.now = () => now
+  try {
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({
+      subscription_active_until: String(now + 3 * 24 * 60 * 60 * 1000)
+    }).color, '#ef4444')
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({
+      subscription_active_until: String(now + 10 * 24 * 60 * 60 * 1000)
+    }).color, '#f59e0b')
+    assert.equal(codexUtils.resolveCodexSubscriptionDisplay({
+      subscription_active_until: String(now + 11 * 24 * 60 * 60 * 1000)
+    }).color, 'var(--accent-green)')
+  } finally {
+    Date.now = originalNow
+  }
 })
 
 test('三平台预警设置归一化应补齐默认值并限制阈值范围', async () => {
@@ -163,10 +293,12 @@ test('三平台预警设置归一化应补齐默认值并限制阈值范围', as
   assert.equal(codex.quotaWarningWeeklyThreshold, 0)
 
   const gemini = geminiUtils.normalizeGeminiAdvancedSettings({
+    autoRefreshMinutes: 61,
     quotaWarningEnabled: true,
     quotaWarningProThreshold: 31,
     quotaWarningFlashThreshold: -2
   })
+  assert.equal(gemini.autoRefreshMinutes, 60)
   assert.equal(gemini.quotaWarningEnabled, true)
   assert.equal(gemini.quotaWarningProThreshold, 30)
   assert.equal(gemini.quotaWarningFlashThreshold, 0)

@@ -13,18 +13,81 @@ import {
   TagIcon,
   TrashIcon,
   CopyIcon,
-  CheckIcon
+  CheckIcon,
+  CommandLineIcon
 } from '../../components/Icons/ActionIcons'
 import {
   resolveQuotaErrorMeta,
   resolveCodexIdentityDisplay,
   resolveCodexAddMethodDisplay,
   resolveCodexProviderLoginDisplay,
+  resolveCodexSubscriptionDisplay,
   resolveWorkspaceDisplay,
   shouldOfferReauthorizeAction
 } from '../../utils/codex'
 import { buildSharedAccountBackFields } from '../../runtime/buildSharedAccountBackFields.js'
 import { useFlippableAccountCard } from '../../runtime/useFlippableAccountCard.js'
+
+function buildCodexQuotaItems (quota, planName) {
+  const items = []
+  const isFree = String(planName || '').trim().toUpperCase() === 'FREE'
+  if (!isFree && typeof quota?.hourly_percentage === 'number') {
+    items.push({
+      key: 'primary-hourly',
+      label: '5小时',
+      percentage: quota.hourly_percentage,
+      resetTime: quota.hourly_reset_time,
+      requestsLeft: quota.hourly_requests_left,
+      requestsLimit: quota.hourly_requests_limit
+    })
+  }
+  if (typeof quota?.weekly_percentage === 'number') {
+    items.push({
+      key: 'primary-weekly',
+      label: '每周',
+      percentage: quota.weekly_percentage,
+      resetTime: quota.weekly_reset_time,
+      requestsLeft: quota.weekly_requests_left,
+      requestsLimit: quota.weekly_requests_limit
+    })
+  }
+
+  const additional = Array.isArray(quota?.additional_rate_limits) ? quota.additional_rate_limits : []
+  additional.forEach((limit, index) => {
+    const name = String(limit?.limit_name || limit?.name || '额外模型').trim() || '额外模型'
+    if (typeof limit?.hourly_percentage === 'number') {
+      items.push({
+        key: `additional-${index}-hourly`,
+        label: `${name} 5小时`,
+        percentage: limit.hourly_percentage,
+        resetTime: limit.hourly_reset_time,
+        requestsLeft: limit.hourly_requests_left,
+        requestsLimit: limit.hourly_requests_limit
+      })
+    }
+    if (typeof limit?.weekly_percentage === 'number') {
+      items.push({
+        key: `additional-${index}-weekly`,
+        label: `${name} 每周`,
+        percentage: limit.weekly_percentage,
+        resetTime: limit.weekly_reset_time,
+        requestsLeft: limit.weekly_requests_left,
+        requestsLimit: limit.weekly_requests_limit
+      })
+    }
+  })
+
+  return items
+}
+
+function formatCodexCredits (quota) {
+  const credits = quota?.credits && typeof quota.credits === 'object' ? quota.credits : null
+  if (!credits) return ''
+  if (credits.unlimited === true) return '无限'
+  const balance = String(credits.balance ?? '').trim()
+  if (balance) return balance
+  return credits.has_credits === true ? '可用' : '0'
+}
 
 export default function CodexAccountItem ({
   account,
@@ -38,8 +101,8 @@ export default function CodexAccountItem ({
   onDelete,
   onEditTags,
   onReauthorize,
-  svc,
-  showCodeReviewQuota = true
+  onLaunchCli,
+  svc
 }) {
   const { isPrivacyMode } = usePrivacy()
   const quota = account.quota
@@ -47,6 +110,7 @@ export default function CodexAccountItem ({
   const { flipped, openCard, closeCard, stopFlip } = useFlippableAccountCard()
   const [syncing, setSyncing] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [launchingCli, setLaunchingCli] = useState(false)
   const [idCopied, setIdCopied] = useState(false)
 
   const handleRefreshWrap = async (e) => {
@@ -68,6 +132,14 @@ export default function CodexAccountItem ({
     setSwitching(true)
     try { await onActivate() } catch {}
     setSwitching(false)
+  }
+
+  const handleLaunchCliWrap = async (e) => {
+    stopFlip(e)
+    if (launchingCli) return
+    setLaunchingCli(true)
+    try { await onLaunchCli?.() } catch {}
+    setLaunchingCli(false)
   }
 
   const handleReauthorizeWrap = (e) => {
@@ -117,21 +189,14 @@ export default function CodexAccountItem ({
     ? '当前激活'
     : ((isInvalid || showReauthorizeAction) ? '无效' : (hasQuotaError ? '配额异常' : '有效'))
   const statusColor = isCurrent ? 'var(--accent-green)' : ((isInvalid || hasQuotaError) ? '#ef4444' : 'var(--text-secondary)')
-  const codeReviewPercentage = typeof quota?.code_review_percentage === 'number'
-    ? quota.code_review_percentage
-    : (typeof quota?.weekly_percentage === 'number' ? quota.weekly_percentage : null)
-  const codeReviewResetTime = quota?.code_review_reset_time || quota?.weekly_reset_time || ''
-  const codeReviewRequestsLeft = typeof quota?.code_review_requests_left === 'number'
-    ? quota.code_review_requests_left
-    : quota?.weekly_requests_left
-  const codeReviewRequestsLimit = typeof quota?.code_review_requests_limit === 'number'
-    ? quota.code_review_requests_limit
-    : quota?.weekly_requests_limit
+  const quotaItems = buildCodexQuotaItems(quota, planName)
+  const creditsText = formatCodexCredits(quota)
   const workspaceDisplay = resolveWorkspaceDisplay(account)
   const addMethodDisplay = resolveCodexAddMethodDisplay(account)
   const providerLoginDisplay = resolveCodexProviderLoginDisplay(account)
   const loginMethodDisplay = `${addMethodDisplay} | ${providerLoginDisplay}`
   const identityDisplay = resolveCodexIdentityDisplay(account)
+  const subscriptionDisplay = resolveCodexSubscriptionDisplay(account)
   const sharedBackFields = buildSharedAccountBackFields({
     addMethod: loginMethodDisplay,
     addedAt: account.added_at ? formatDate(account.added_at) : (account.created_at ? formatDate(account.created_at) : '-'),
@@ -168,50 +233,38 @@ export default function CodexAccountItem ({
 
           <div className='account-card-quota'>
             {(() => {
-              const hasHourly = (planName || '').toUpperCase() !== 'FREE' && typeof quota?.hourly_percentage === 'number'
-              const hasWeekly = typeof quota?.weekly_percentage === 'number'
-              const hasCR = showCodeReviewQuota && typeof codeReviewPercentage === 'number'
-
-              if (!hasHourly && !hasWeekly && !hasCR) {
+              if (quotaItems.length === 0) {
                 return <div className='quota-empty-placeholder'>暂无配额数据</div>
               }
 
               return (
                 <>
-                  {hasHourly && (
+                  {quotaItems.map(item => (
                     <QuotaBar
-                      percentage={quota.hourly_percentage}
-                      label='5小时'
-                      resetTime={quota.hourly_reset_time ? formatResetTime(quota.hourly_reset_time) : ''}
-                      requestsLeft={quota.hourly_requests_left}
-                      requestsLimit={quota.hourly_requests_limit}
+                      key={item.key}
+                      percentage={item.percentage}
+                      label={item.label}
+                      resetTime={item.resetTime ? formatResetTime(item.resetTime) : ''}
+                      requestsLeft={item.requestsLeft}
+                      requestsLimit={item.requestsLimit}
                     />
-                  )}
-                  {hasWeekly && (
-                    <QuotaBar
-                      percentage={quota.weekly_percentage}
-                      label='每周'
-                      resetTime={quota.weekly_reset_time ? formatResetTime(quota.weekly_reset_time) : ''}
-                      requestsLeft={quota.weekly_requests_left}
-                      requestsLimit={quota.weekly_requests_limit}
-                    />
-                  )}
-                  {hasCR && (
-                    <QuotaBar
-                      percentage={codeReviewPercentage}
-                      label='代码审查'
-                      resetTime={codeReviewResetTime ? formatResetTime(codeReviewResetTime) : ''}
-                      requestsLeft={codeReviewRequestsLeft}
-                      requestsLimit={codeReviewRequestsLimit}
-                    />
-                  )}
+                  ))}
                 </>
               )
             })()}
           </div>
 
-          <div className='account-card-divider' />
-          <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
+          <div className='codex-card-bottom'>
+            {creditsText && (
+              <div className='codex-credits-line'>剩余额度: {creditsText}</div>
+            )}
+            <div className='account-card-divider' />
+            <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
+            <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
+              <span className='action-icon-tip'>在目录中启动 Codex CLI</span>
+              {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
+            </button>
+
             {showReauthorizeAction && (
               <button className='action-icon-btn' onClick={handleReauthorizeWrap}>
                 <span className='action-icon-tip'>重新授权</span>
@@ -250,6 +303,7 @@ export default function CodexAccountItem ({
               <span className='action-icon-tip'>删除弃用此账号</span>
               <TrashIcon size={16} />
             </button>
+            </div>
           </div>
         </div>
 
@@ -265,6 +319,12 @@ export default function CodexAccountItem ({
                 <span className='account-detail-label'>工作空间:</span>
                 <AutoTip text={workspaceDisplay.text}>
                   {isPrivacyMode ? maskText(workspaceDisplay.text, 'text') : workspaceDisplay.text}
+                </AutoTip>
+              </div>
+              <div className='account-detail-row'>
+                <span className='account-detail-label'>订阅到期:</span>
+                <AutoTip text={subscriptionDisplay.title} style={subscriptionDisplay.color ? { color: subscriptionDisplay.color } : undefined}>
+                  {subscriptionDisplay.text}
                 </AutoTip>
               </div>
               {sharedBackFields.map((field) => (

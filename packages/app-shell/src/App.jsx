@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
 import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
 import { ToastProvider, useToast } from './components/Toast'
+import { GlobalNoticeProvider } from './components/GlobalNotice'
+import AnnouncementCenter from './components/AnnouncementCenter'
 import { ThemeProvider } from './components/ThemeToggle'
 import { PrivacyProvider } from './components/PrivacyMode'
 import { readGlobalSettings, writeGlobalSettings } from './utils/globalSettings'
@@ -9,6 +11,7 @@ import { setRequestLogEnabled } from './utils/requestLogClient'
 import { bindPluginSubInput, subscribeHostNavigation, subscribePluginEnter } from './utils/hostBridge.js'
 import { useDashboardPlatformData } from './runtime/useDashboardPlatformData.js'
 import { useQuotaWarningNotifications } from './runtime/useQuotaWarningNotifications.js'
+import { useAnnouncements } from './runtime/useAnnouncements.js'
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
 const Antigravity = lazy(() => import('./pages/Antigravity.jsx'))
@@ -35,8 +38,10 @@ function AppInner () {
   const [searchQuery, setSearchQuery] = useState('')
   const [globalSettings, setGlobalSettings] = useState(() => readGlobalSettings())
   const [showRequestLogModal, setShowRequestLogModal] = useState(false)
+  const [showAnnouncementCenter, setShowAnnouncementCenter] = useState(false)
   const toast = useToast()
   const { platformData } = useDashboardPlatformData(activePlatform)
+  const announcements = useAnnouncements()
 
   useQuotaWarningNotifications(platformData)
 
@@ -129,6 +134,8 @@ function AppInner () {
             searchQuery={searchQuery}
             showRequestLog={globalSettings.requestLogEnabled === true}
             onOpenRequestLog={() => setShowRequestLogModal(true)}
+            announcementUnreadCount={announcements.state.unreadIds.length}
+            onOpenAnnouncements={() => setShowAnnouncementCenter(true)}
           />
         )}
         <main className={`main-content ${activePlatform === 'settings' ? 'no-padding' : ''}`}>
@@ -145,6 +152,16 @@ function AppInner () {
         open={showRequestLogModal && globalSettings.requestLogEnabled === true}
         onClose={() => setShowRequestLogModal(false)}
         toast={toast}
+      />
+      <AnnouncementCenter
+        open={showAnnouncementCenter}
+        onClose={() => setShowAnnouncementCenter(false)}
+        announcementState={announcements.state}
+        loading={announcements.loading}
+        onRefresh={announcements.refresh}
+        onMarkAsRead={announcements.markAsRead}
+        onMarkAllAsRead={announcements.markAllAsRead}
+        onNavigate={handleSelectPlatform}
       />
     </div>
   )
@@ -200,7 +217,9 @@ export default function App () {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <AppInner />
+        <GlobalNoticeProvider>
+          <AppInner />
+        </GlobalNoticeProvider>
       </ToastProvider>
     </ThemeProvider>
   )

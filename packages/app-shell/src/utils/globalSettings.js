@@ -4,7 +4,8 @@ const GLOBAL_SETTINGS_KEY = 'aideck_global_settings'
 
 const DEFAULT_GLOBAL_SETTINGS = {
   autoImportLocalAccounts: true,
-  requestLogEnabled: false
+  requestLogEnabled: false,
+  defaultTerminal: 'system'
 }
 
 function _readRawSettings () {
@@ -20,7 +21,10 @@ export function readGlobalSettings () {
     ...DEFAULT_GLOBAL_SETTINGS,
     ...raw,
     autoImportLocalAccounts: raw.autoImportLocalAccounts !== false,
-    requestLogEnabled: raw.requestLogEnabled === true
+    requestLogEnabled: raw.requestLogEnabled === true,
+    defaultTerminal: typeof raw.defaultTerminal === 'string' && raw.defaultTerminal.trim()
+      ? raw.defaultTerminal.trim()
+      : DEFAULT_GLOBAL_SETTINGS.defaultTerminal
   }
 }
 
@@ -31,6 +35,9 @@ export function writeGlobalSettings (patch) {
   }
   next.autoImportLocalAccounts = next.autoImportLocalAccounts !== false
   next.requestLogEnabled = next.requestLogEnabled === true
+  next.defaultTerminal = typeof next.defaultTerminal === 'string' && next.defaultTerminal.trim()
+    ? next.defaultTerminal.trim()
+    : DEFAULT_GLOBAL_SETTINGS.defaultTerminal
   writeSharedSetting(GLOBAL_SETTINGS_KEY, next)
   return next
 }

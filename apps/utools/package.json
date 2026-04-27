@@ -1,6 +1,6 @@
 {
   "name": "@aideck/utools",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react-swc": "^4.3.0",
     "utools-api-types": "^7.5.1",
     "vite": "^6.4.2"
   }

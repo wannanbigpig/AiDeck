@@ -6,7 +6,9 @@
     ]
   },
   "include": [
-    "src/**/*.jsx",
-    "src/**/*.js"
+    "apps/utools/src/**/*.jsx",
+    "apps/utools/src/**/*.js",
+    "packages/app-shell/src/**/*.jsx",
+    "packages/app-shell/src/**/*.js"
   ]
 }

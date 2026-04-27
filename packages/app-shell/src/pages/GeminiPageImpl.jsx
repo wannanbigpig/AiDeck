@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ConfirmModal } from '../components/Modal'
 import ExportJsonModal from '../components/ExportJsonModal'
 import { useToast } from '../components/Toast'
+import { useGlobalNotice } from '../components/GlobalNotice'
 import { normalizeGeminiAdvancedSettings, readGeminiAdvancedSettings } from '../utils/gemini'
 import { PlatformIcon } from '../components/Icons/PlatformIcons'
 import PrivacyToggleButton from '../components/PrivacyToggleButton'
@@ -32,6 +33,7 @@ import { useSelectionSet } from '../runtime/useSelectionSet.js'
 import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
+import { launchPlatformCli } from '../runtime/launchPlatformCli.js'
 
 const GEMINI_JSON_IMPORT_REQUIRED_TEXT = '必填字段：access_token 或 refresh_token 至少一个（支持 tokens.access_token / tokens.refresh_token 或顶层字段）。建议补充 id、email、auth_id、name、selected_auth_type、project_id、tier_id、plan_name、created_at、last_used。'
 
@@ -88,6 +90,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
   const [tagEditor, setTagEditor] = useState({ id: '', value: '' })
   const [localImportHint, setLocalImportHint] = useState({ visible: false, email: '' })
   const toast = useToast()
+  const notice = useGlobalNotice()
   const platformSnapshot = usePlatformSnapshot('gemini', {
     watchLocalState: true,
     watchStorageRevision: true,
@@ -337,9 +340,24 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
       }
       onActivity?.(`Gemini 激活账号 -> ${id}`)
       refresh()
+      return true
     } else {
       toast.error(result.error || '激活失败')
+      return false
     }
+  }
+
+  async function handleLaunchCli (account) {
+    return await launchPlatformCli({
+      platform: 'gemini',
+      command: 'gemini',
+      account,
+      toast,
+      notice,
+      onActivity,
+      refresh,
+      activate: (target) => handleActivate(target.id)
+    })
   }
 
   function handleDelete (id) {
@@ -550,6 +568,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
                 onRefresh={() => void handleRefreshQuota(account.id)}
                 onDelete={() => setConfirmDelete(account.id)}
                 onEditTags={() => handleOpenTagEditor(account)}
+                onLaunchCli={() => handleLaunchCli(account)}
               />
             ))}
           </div>

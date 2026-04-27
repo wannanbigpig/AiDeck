@@ -43,11 +43,11 @@ test('hostSettingsStore 写入应与 shared settings 隔离', () => {
   const { sharedSettingsStore, hostSettingsStore, revisionBus } = loadStores(rootDir)
   const before = revisionBus.getRevision()
 
-  hostSettingsStore.writeValue('desktop', 'sidebar_collapsed', true)
+  hostSettingsStore.writeValue('utools', 'sidebar_collapsed', true)
   const after = revisionBus.getRevision()
 
   assert.equal(after, before)
-  assert.equal(hostSettingsStore.readValue('desktop', 'sidebar_collapsed', false), true)
+  assert.equal(hostSettingsStore.readValue('utools', 'sidebar_collapsed', false), true)
   assert.equal(sharedSettingsStore.readValue('sidebar_collapsed', null), null)
 
   fs.rmSync(rootDir, { recursive: true, force: true })

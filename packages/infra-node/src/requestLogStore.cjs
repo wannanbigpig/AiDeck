@@ -345,17 +345,6 @@ function subscribe (listener) {
 async function openLogDir () {
   const dirPath = getLogDir()
   try {
-    try {
-      const electron = require('electron')
-      if (electron && electron.shell && typeof electron.shell.openPath === 'function') {
-        const message = await electron.shell.openPath(dirPath)
-        if (!message) {
-          return { success: true, path: dirPath }
-        }
-        return { success: false, error: message, path: dirPath }
-      }
-    } catch (e) {}
-
     if (process.platform === 'darwin') {
       cp.spawn('open', [dirPath], { detached: true, stdio: 'ignore' }).unref()
       return { success: true, path: dirPath }

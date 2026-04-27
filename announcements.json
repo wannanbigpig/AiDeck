@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "announcements": [
+    {
+      "id": "ann-2026-04-aideck-1-0-2-update",
+      "type": "feature",
+      "priority": 300,
+      "version": "1.0.2",
+      "releaseStatus": "reviewing",
+      "marketVersion": "1.0.1",
+      "title": "AiDeck v1.0.2 更新",
+      "summary": "v1.0.2 聚焦 uTools 单端、Codex/Gemini CLI 启动、Codex 新额度展示和消息通知中心。",
+      "content": "v1.0.2 本次更新：\n1. 项目收敛为 uTools 单端：移除 Electron Desktop、旧根入口和历史 preload 转发层，构建与发布只保留 uTools 插件产物。\n2. Codex/Gemini 账号卡片新增 CLI 启动按钮：点击后会先检测 codex 或 gemini 命令，未安装时展示安装命令；已安装时选择工作目录，并用全局设置里的默认终端启动。\n3. 全局设置新增默认终端：会列出当前系统已安装的常见终端；CLI 检测会额外扫描 Homebrew、npm、Volta、Bun、nvm 等常见目录，减少 GUI 环境 PATH 过短导致检测不到命令的问题。\n4. Codex 额度展示重新整理：移除代码审查额度开关和展示；Plus 显示 5 小时、每周和剩余额度；Pro 会额外显示接口返回的模型额度，例如 GPT-5.3-Codex-Spark 5 小时和每周额度。\n5. Codex 旧配额会自动补齐新结构：进入 Codex 页面时检测到旧本地配额后会静默刷新一次，避免必须手动刷新后才看到额外模型额度。\n6. Codex 卡片背面新增订阅到期展示：日期后显示括号天数，并按剩余时间着色，3 天内红色、10 天内黄色、大于 10 天绿色。\n7. 配额刷新间隔支持 1-60 分钟，步进为 1 分钟。\n8. 新增消息通知中心：左侧栏增加消息入口，支持置顶、未读角标、刷新、全部已读；消息按发布时间倒序展示，置顶消息排在最上方，popup=true 的未读消息会自动弹窗。\n9. Codex 平台排序前移：侧边栏中 Codex 放到仪表盘下方第一个，仪表盘里的 Codex 分组也优先展示。\n10. 当公告版本高于当前安装版本时，会提示等待 uTools 应用市场审核通过后更新并重启插件。",
+      "action": {
+        "type": "url",
+        "target": "https://github.com/wannanbigpig/AiDeck",
+        "label": "查看项目"
+      },
+      "targetVersions": "*",
+      "targetLanguages": [
+        "*"
+      ],
+      "showOnce": true,
+      "popup": true,
+      "pinned": true,
+      "createdAt": "2026-04-27T08:00:00Z",
+      "expiresAt": null,
+      "locales": {
+        "zh-CN": {
+          "title": "AiDeck v1.0.2 更新",
+          "summary": "v1.0.2 聚焦 uTools 单端、Codex/Gemini CLI 启动、Codex 新额度展示和消息通知中心。",
+          "content": "v1.0.2 本次更新：\n1. 项目收敛为 uTools 单端：移除 Electron Desktop、旧根入口和历史 preload 转发层，构建与发布只保留 uTools 插件产物。\n2. Codex/Gemini 账号卡片新增 CLI 启动按钮：点击后会先检测 codex 或 gemini 命令，未安装时展示安装命令；已安装时选择工作目录，并用全局设置里的默认终端启动。\n3. 全局设置新增默认终端：会列出当前系统已安装的常见终端；CLI 检测会额外扫描 Homebrew、npm、Volta、Bun、nvm 等常见目录，减少 GUI 环境 PATH 过短导致检测不到命令的问题。\n4. Codex 额度展示重新整理：移除代码审查额度开关和展示；Plus 显示 5 小时、每周和剩余额度；Pro 会额外显示接口返回的模型额度，例如 GPT-5.3-Codex-Spark 5 小时和每周额度。\n5. Codex 旧配额会自动补齐新结构：进入 Codex 页面时检测到旧本地配额后会静默刷新一次，避免必须手动刷新后才看到额外模型额度。\n6. Codex 卡片背面新增订阅到期展示：日期后显示括号天数，并按剩余时间着色，3 天内红色、10 天内黄色、大于 10 天绿色。\n7. 配额刷新间隔支持 1-60 分钟，步进为 1 分钟。\n8. 新增消息通知中心：左侧栏增加消息入口，支持置顶、未读角标、刷新、全部已读；消息按发布时间倒序展示，置顶消息排在最上方，popup=true 的未读消息会自动弹窗。\n9. Codex 平台排序前移：侧边栏中 Codex 放到仪表盘下方第一个，仪表盘里的 Codex 分组也优先展示。\n10. 当公告版本高于当前安装版本时，会提示等待 uTools 应用市场审核通过后更新并重启插件。",
+          "actionLabel": "查看项目"
+        },
+        "en-US": {
+          "title": "AiDeck v1.0.2 Update",
+          "summary": "v1.0.2 focuses on uTools-only delivery, Codex/Gemini CLI launch, the new Codex quota display, and the message center.",
+          "content": "v1.0.2 updates:\n1. Simplified the project to the uTools app only: removed Electron Desktop, legacy root entries, and the old preload forwarding layer; build and release now keep only the uTools plugin artifact.\n2. Added CLI launch buttons to Codex/Gemini account cards: AiDeck checks the codex or gemini command first, shows the install command when missing, then opens the selected workspace in the default terminal when available.\n3. Added a default terminal setting in General settings: installed common terminals are listed, and CLI detection also scans common Homebrew, npm, Volta, Bun, and nvm paths to avoid missing commands when the GUI PATH is short.\n4. Reworked the Codex quota display: removed the code review quota setting and display; Plus shows 5-hour, weekly, and credit balance; Pro also shows additional model quotas returned by the API, such as GPT-5.3-Codex-Spark 5-hour and weekly quotas.\n5. Added automatic migration for old Codex quota snapshots: when the Codex page detects an old local quota schema, it silently refreshes once so additional model quotas can appear without a manual refresh.\n6. Added Codex subscription expiry display on the card back: the date now includes days in parentheses and uses red within 3 days, yellow within 10 days, and green after 10 days.\n7. Quota refresh intervals now support 1-60 minutes with 1-minute steps.\n8. Added the message center: the sidebar entry supports pinned messages, unread badges, refresh, and mark-all-read; messages are sorted by publish time, pinned messages stay on top, and unread popup=true messages open automatically.\n9. Moved Codex ahead in the UI: Codex now appears directly under Dashboard in the sidebar, and the Dashboard Codex group is shown first.\n10. When an announcement version is newer than the installed version, AiDeck now tells users to wait for uTools App Market approval, then update and restart the plugin.",
+          "actionLabel": "View Project"
+        }
+      }
+    },
+    {
+      "id": "ann-2026-04-welcome-aideck",
+      "type": "info",
+      "priority": 100,
+      "title": "欢迎使用 AiDeck",
+      "summary": "多平台账号管理、配额查看与快速切换能力已就绪。",
+      "content": "感谢使用 AiDeck。\n\n这里会展示项目公告、重要更新和需要你关注的消息。\n\n后续只需要更新仓库根目录的 announcements.json，客户端就会从 GitHub raw 地址读取最新消息。",
+      "action": {
+        "type": "url",
+        "target": "https://github.com/wannanbigpig/AiDeck",
+        "label": "查看项目"
+      },
+      "targetVersions": "*",
+      "targetLanguages": [
+        "*"
+      ],
+      "showOnce": true,
+      "popup": false,
+      "createdAt": "2026-04-27T00:00:00Z",
+      "expiresAt": null,
+      "locales": {
+        "zh-CN": {
+          "title": "欢迎使用 AiDeck",
+          "summary": "多平台账号管理、配额查看与快速切换能力已就绪。",
+          "content": "感谢使用 AiDeck。\n\n这里会展示项目公告、重要更新和需要你关注的消息。\n\n后续只需要更新仓库根目录的 announcements.json，客户端就会从 GitHub raw 地址读取最新消息。",
+          "actionLabel": "查看项目"
+        }
+      }
+    }
+  ]
+}

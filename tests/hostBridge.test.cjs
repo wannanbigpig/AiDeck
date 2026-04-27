@@ -54,7 +54,7 @@ test('createHostBridge 应仅暴露约定命名空间并将平台实例挂到 pl
   }
 
   const bridge = createHostBridge({
-    hostId: 'desktop',
+    hostId: 'utools',
     services,
     host: { copyText: () => true },
     plugin: { onEnter: () => function unsubscribe () {} },
@@ -67,7 +67,7 @@ test('createHostBridge 应仅暴露约定命名空间并将平台实例挂到 pl
     subscribeStorageRevision: () => function unsubscribe () {}
   })
 
-  assert.equal(bridge.hostId, 'desktop')
+  assert.equal(bridge.hostId, 'utools')
   assert.deepEqual(Object.keys(bridge).sort(), [
     'events',
     'host',
@@ -93,7 +93,7 @@ test('createHostBridge 应仅暴露约定命名空间并将平台实例挂到 pl
 test('createHostBridge 应为平台实例补齐共享契约兼容入口', async () => {
   const { sharedSettingsStore, hostSettingsStore } = createMemorySettingsStore()
   const bridge = createHostBridge({
-    hostId: 'desktop',
+    hostId: 'utools',
     services: {
       gemini: {
         refreshToken (id) { return { success: true, id, from: 'refreshToken' } },
@@ -139,7 +139,7 @@ test('createHostBridge 应暴露宿主通知导航订阅入口', () => {
   const { sharedSettingsStore, hostSettingsStore } = createMemorySettingsStore()
   let handled = null
   const bridge = createHostBridge({
-    hostId: 'desktop',
+    hostId: 'utools',
     services: {},
     sharedSettingsStore,
     hostSettingsStore,

@@ -1,32 +1,21 @@
 {
   "name": "aideck-workspace",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "workspaces": [
-    "apps/*",
+    "apps/utools",
     "packages/*"
   ],
   "scripts": {
     "dev": "npm run dev -w @aideck/utools",
     "dev:utools": "npm run dev -w @aideck/utools",
-    "dev:desktop": "npm run dev -w aideck",
-    "build": "npm run build -w @aideck/utools && npm run build -w aideck",
+    "build": "npm run build -w @aideck/utools",
     "build:utools": "npm run build -w @aideck/utools",
-    "build:desktop": "npm run build -w aideck",
-    "build:desktop:mac": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_CUSTOM_DIR=v34.0.0 npm run build:mac -w aideck",
-    "build:desktop:win": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_CUSTOM_DIR=v34.0.0 npm run build:win -w aideck",
-    "build:desktop:linux": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_CUSTOM_DIR=v34.0.0 npm run build:linux -w aideck",
     "release": "node scripts/release.js",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.cjs\""
   },
   "devDependencies": {
-    "electron": "34.0.0",
     "standard": "^17.1.0"
-  },
-  "dependencies": {
-    "7zip-bin": "^5.2.0",
-    "app-builder-bin": "^4.2.0",
-    "dmg-builder": "^24.13.3"
   }
 }

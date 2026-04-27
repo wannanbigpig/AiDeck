@@ -15,7 +15,8 @@ import {
   TagIcon,
   TrashIcon,
   CopyIcon,
-  CheckIcon
+  CheckIcon,
+  CommandLineIcon
 } from '../../components/Icons/ActionIcons'
 import { resolveQuotaErrorMeta } from '../../utils/codex'
 import { buildSharedAccountBackFields } from '../../runtime/buildSharedAccountBackFields.js'
@@ -77,12 +78,14 @@ export default function GeminiAccountItem ({
   onRefresh,
   onDelete,
   onEditTags,
+  onLaunchCli,
   svc
 }) {
   const { isPrivacyMode } = usePrivacy()
   const planBadge = svc?.getPlanBadge(account) || ''
   const { flipped, openCard, closeCard, stopFlip } = useFlippableAccountCard()
   const [injecting, setInjecting] = useState(false)
+  const [launchingCli, setLaunchingCli] = useState(false)
   const [expandedGroupKey, setExpandedGroupKey] = useState('')
   const [idCopied, setIdCopied] = useState(false)
 
@@ -138,6 +141,14 @@ export default function GeminiAccountItem ({
     setInjecting(true)
     try { await onActivate() } catch {}
     setInjecting(false)
+  }
+
+  const handleLaunchCliWrap = async (e) => {
+    stopFlip(e)
+    if (launchingCli) return
+    setLaunchingCli(true)
+    try { await onLaunchCli?.() } catch {}
+    setLaunchingCli(false)
   }
 
   const handleDeleteWrap = (e) => {
@@ -228,6 +239,11 @@ export default function GeminiAccountItem ({
 
           <div className='account-card-divider' />
           <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
+            <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
+              <span className='action-icon-tip'>在目录中启动 Gemini CLI</span>
+              {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
+            </button>
+
             <button className={`action-icon-btn primary ${injecting ? 'is-loading' : ''}`} onClick={handleInjectWrap}>
               <span className='action-icon-tip'>{isCurrent ? '重新切换账号' : '切换账号'}</span>
               {injecting ? <SpinnerBtnIcon /> : <SwitchIcon size={16} />}

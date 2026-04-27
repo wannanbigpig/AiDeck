@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { readSharedSetting, writeSharedSetting } from '../../utils/hostBridge.js'
+import { getAvailableTerminals, readSharedSetting, writeSharedSetting } from '../../utils/hostBridge.js'
 
 function ToggleSwitch ({ checked, onChange }) {
   return (
@@ -15,13 +15,30 @@ function ToggleSwitch ({ checked, onChange }) {
 export default function SettingsGeneral ({ globalSettings, onGlobalSettingsChange }) {
   const [yellow, setYellow] = useState(20)
   const [green, setGreen] = useState(60)
+  const [terminalOptions, setTerminalOptions] = useState([{ value: 'system', label: '系统默认' }])
   const requestLogEnabled = globalSettings?.requestLogEnabled === true
+  const defaultTerminal = String(globalSettings?.defaultTerminal || 'system')
 
   useEffect(() => {
     const saved = readSharedSetting('aideck_quota_thresholds', null)
     if (saved) {
       setYellow(saved.yellow || 20)
       setGreen(saved.green || 60)
+    }
+    let disposed = false
+    getAvailableTerminals()
+      .then((options) => {
+        if (disposed) return
+        const normalized = Array.isArray(options) && options.length > 0
+          ? options
+          : [{ value: 'system', label: '系统默认' }]
+        setTerminalOptions(normalized)
+      })
+      .catch(() => {
+        if (!disposed) setTerminalOptions([{ value: 'system', label: '系统默认' }])
+      })
+    return () => {
+      disposed = true
     }
   }, [])
 
@@ -48,6 +65,28 @@ export default function SettingsGeneral ({ globalSettings, onGlobalSettingsChang
   return (
     <div className='settings-panel'>
       <h2 className='settings-h2'>常规</h2>
+
+      <div className='settings-card' style={{ marginBottom: 16 }}>
+        <div className='settings-card-row'>
+          <div className='settings-card-info'>
+            <div className='settings-card-title'>默认终端</div>
+            <div className='settings-card-desc'>
+              Codex / Gemini CLI 从账号卡片启动时使用的终端。
+            </div>
+          </div>
+          <div className='settings-card-control'>
+            <select
+              className='settings-select'
+              value={defaultTerminal}
+              onChange={(e) => onGlobalSettingsChange?.({ defaultTerminal: e.target.value })}
+            >
+              {terminalOptions.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
 
       <div className='settings-card' style={{ marginBottom: 16 }}>
         <div className='settings-card-row'>

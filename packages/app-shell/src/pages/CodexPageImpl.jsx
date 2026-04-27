@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ConfirmModal } from '../components/Modal'
 import ExportJsonModal from '../components/ExportJsonModal'
 import { useToast } from '../components/Toast'
+import { useGlobalNotice } from '../components/GlobalNotice'
 import { PlatformIcon } from '../components/Icons/PlatformIcons'
 import PrivacyToggleButton from '../components/PrivacyToggleButton'
 import LocalPendingCard from '../components/LocalPendingCard'
@@ -19,7 +20,6 @@ import CodexAddAccountModal from './codex/CodexAddAccountModal'
 import CodexTagModals from './codex/CodexTagModals'
 import { useCodexOAuthFlow } from './codex/useCodexOAuthFlow'
 import { logRequestEvent } from '../utils/requestLogClient'
-import { coerceBooleanSetting } from '../utils/globalSettings'
 import { copyText } from '../utils/hostBridge.js'
 import { usePlatformSnapshot } from '../runtime/usePlatformSnapshot.js'
 import { usePlatformActions } from '../runtime/usePlatformActions.js'
@@ -30,6 +30,7 @@ import { useSelectionSet } from '../runtime/useSelectionSet.js'
 import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
+import { launchPlatformCli } from '../runtime/launchPlatformCli.js'
 import {
   resolveQuotaErrorMeta,
   shouldOfferReauthorizeAction,
@@ -38,6 +39,7 @@ import {
 } from '../utils/codex'
 
 const CODEX_JSON_IMPORT_REQUIRED_TEXT = '必填字段：tokens.access_token 或 tokens.refresh_token 至少一个（也支持顶层 access_token / refresh_token）。建议补充 id、email、tokens.id_token、tokens.access_token、tokens.refresh_token、created_at、last_used。'
+const CODEX_QUOTA_SCHEMA_VERSION = 2
 
 const CODEX_JSON_IMPORT_EXAMPLE = `[
   {
@@ -79,8 +81,9 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
   const [advancedSettings, setAdvancedSettings] = useState(() => initialSettingsRef.current)
   const [tagEditor, setTagEditor] = useState({ id: '', value: '' })
   const [localImportHint, setLocalImportHint] = useState({ visible: false, email: '' })
+  const quotaSchemaRefreshRef = useRef(false)
   const toast = useToast()
-  const prevShowCodeReviewQuotaRef = useRef(coerceBooleanSetting(initialSettingsRef.current.showCodeReviewQuota, true))
+  const notice = useGlobalNotice()
   const platformSnapshot = usePlatformSnapshot('codex', {
     watchLocalState: true,
     watchStorageRevision: true,
@@ -194,13 +197,16 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
   }, [])
 
   useEffect(() => {
-    const currentShow = coerceBooleanSetting(advancedSettings.showCodeReviewQuota, true)
-    const prevShow = prevShowCodeReviewQuotaRef.current
-    prevShowCodeReviewQuotaRef.current = currentShow
-    if (currentShow && !prevShow) {
-      void refreshAllQuotas({ silent: true, source: 'show-code-review-toggle' })
-    }
-  }, [advancedSettings.showCodeReviewQuota])
+    if (!svc || quotaSchemaRefreshRef.current || accounts.length === 0 || quotaActions.batchRunning) return
+    const hasLegacyQuota = accounts.some(account => {
+      const quota = account && account.quota && typeof account.quota === 'object' ? account.quota : null
+      if (!quota) return false
+      return Number(quota.schema_version || 0) < CODEX_QUOTA_SCHEMA_VERSION
+    })
+    if (!hasLegacyQuota) return
+    quotaSchemaRefreshRef.current = true
+    void refreshAllQuotas({ silent: true, source: 'quota-schema-upgrade' })
+  }, [accounts, quotaActions.batchRunning, svc])
 
   function refresh () {
     if (!svc) return
@@ -411,9 +417,24 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
         toast.warning(result.warnings[0])
       }
       refresh()
+      return true
     } else {
       toast.error(result.error || '激活失败')
+      return false
     }
+  }
+
+  async function handleLaunchCli (account) {
+    return await launchPlatformCli({
+      platform: 'codex',
+      command: 'codex',
+      account,
+      toast,
+      notice,
+      onActivity,
+      refresh,
+      activate: (target) => handleActivate(target.id)
+    })
   }
 
   function handleDelete (id) {
@@ -601,8 +622,8 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
                 onDelete={() => setConfirmDelete(account.id)}
                 onEditTags={() => handleOpenTagEditor(account)}
                 onReauthorize={() => openAddModal('oauth')}
+                onLaunchCli={() => handleLaunchCli(account)}
                 svc={svc}
-                showCodeReviewQuota={coerceBooleanSetting(advancedSettings.showCodeReviewQuota, true)}
               />
             ))}
           </div>

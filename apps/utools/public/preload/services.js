@@ -10,6 +10,8 @@ const requestLogStore = require('../../../../packages/infra-node/src/requestLogS
 const sharedSettingsStore = require('../../../../packages/infra-node/src/sharedSettingsStore.cjs')
 const hostSettingsStore = require('../../../../packages/infra-node/src/hostSettingsStore.cjs')
 const revisionBus = require('../../../../packages/infra-node/src/storageRevisionBus.cjs')
+const terminalLauncher = require('../../../../packages/infra-node/src/terminalLauncher.cjs')
+const announcementService = require('../../../../packages/infra-node/src/announcementService.cjs')
 
 const LOCAL_STATE_EVENT = 'aideck:local-state-change'
 const HOST_ID = 'utools'
@@ -70,14 +72,14 @@ function normalizePathFromDialogResult (result) {
   return String(result || '').trim()
 }
 
-function getDefaultDesktopPath (fileName) {
+function getDefaultUserDesktopPath (fileName) {
   return path.join(fileUtils.getHomeDir(), 'Desktop', fileName)
 }
 
 function resolveTextWritePayload (payload, options) {
   if (payload && typeof payload === 'object' && !Buffer.isBuffer(payload)) {
     const fileName = String(payload.fileName || payload.filename || options?.fileName || 'aideck-output.txt').trim() || 'aideck-output.txt'
-    const defaultPath = String(payload.defaultPath || payload.path || options?.defaultPath || getDefaultDesktopPath(fileName)).trim()
+    const defaultPath = String(payload.defaultPath || payload.path || options?.defaultPath || getDefaultUserDesktopPath(fileName)).trim()
     let content = payload.content
     if (typeof content !== 'string') content = payload.text
     if (typeof content !== 'string') content = payload.data
@@ -91,7 +93,7 @@ function resolveTextWritePayload (payload, options) {
 
   return {
     content: String(payload || ''),
-    defaultPath: String(options?.defaultPath || getDefaultDesktopPath(options?.fileName || 'aideck-output.txt')),
+    defaultPath: String(options?.defaultPath || getDefaultUserDesktopPath(options?.fileName || 'aideck-output.txt')),
     title: String(options?.title || '保存文本文件')
   }
 }
@@ -146,7 +148,7 @@ function resolveImageWritePayload (payload, options) {
   const fileName = String(options?.fileName || `aideck-image${extension}`).trim() || `aideck-image${extension}`
   return {
     buffer,
-    defaultPath: String(options?.defaultPath || getDefaultDesktopPath(fileName)),
+    defaultPath: String(options?.defaultPath || getDefaultUserDesktopPath(fileName)),
     title: String(options?.title || '保存图片文件')
   }
 }
@@ -470,6 +472,27 @@ const host = {
     if (!filePath) return false
     window.utools.shellShowItemInFolder(filePath)
     return true
+  },
+  getAvailableTerminals: function () {
+    return terminalLauncher.getAvailableTerminals()
+  },
+  getCommandStatus: function (commandName) {
+    return terminalLauncher.getCommandStatus(commandName)
+  },
+  launchCliCommand: function (payload) {
+    return terminalLauncher.launchCliCommand(payload || {})
+  },
+  getAnnouncementState: function (options) {
+    return announcementService.getAnnouncementState(options || {})
+  },
+  forceRefreshAnnouncements: function (options) {
+    return announcementService.forceRefreshAnnouncements(options || {})
+  },
+  markAnnouncementAsRead: function (id) {
+    return announcementService.markAnnouncementAsRead(id)
+  },
+  markAllAnnouncementsAsRead: function (options) {
+    return announcementService.markAllAnnouncementsAsRead(options || {})
   },
   writeConfigFile: function (filePath, content) {
     const resolvedPath = filePath.startsWith('~')

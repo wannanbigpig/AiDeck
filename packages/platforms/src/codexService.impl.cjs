@@ -29,6 +29,7 @@ const PLATFORM = 'codex'
 
 // Codex (OpenAI) 配额 API
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const CODEX_QUOTA_SCHEMA_VERSION = 2
 
 // Codex OAuth2 凭证（提取自 codex-tools）
 const CODEX_AUTH_URL = 'https://auth.openai.com/oauth/authorize'
@@ -398,6 +399,7 @@ async function completeOAuthSession (sessionId, callbackUrl) {
   if (profile.organizationId) draft.organization_id = profile.organizationId
   if (profile.accountName) draft.account_name = profile.accountName
   if (profile.accountStructure) draft.account_structure = profile.accountStructure
+  if (profile.subscriptionActiveUntil) draft.subscription_active_until = profile.subscriptionActiveUntil
   if (profile.workspace) draft.workspace = profile.workspace
   _stampPluginAddedMeta(draft, 'oauth')
   let account = storage.addAccount(PLATFORM, draft)
@@ -747,6 +749,7 @@ async function _importFromLocalAsync () {
         user_id: profile.userId || data.user_id || '',
         auth_mode: data.auth_mode || 'oauth',
         plan_type: profile.planType || data.plan_type || '',
+        subscription_active_until: profile.subscriptionActiveUntil || data.subscription_active_until || '',
         account_id: profile.accountId || data.account_id || '',
         organization_id: profile.organizationId || data.organization_id || '',
         account_name: profile.accountName || data.account_name || '',
@@ -1240,6 +1243,7 @@ async function _refreshCodexQuotaAsync (account, accountId) {
           if (profile.organizationId) nextPatch.organization_id = profile.organizationId
           if (profile.accountName) nextPatch.account_name = profile.accountName
           if (profile.accountStructure) nextPatch.account_structure = profile.accountStructure
+          if (profile.subscriptionActiveUntil) nextPatch.subscription_active_until = profile.subscriptionActiveUntil
           if (profile.workspace) nextPatch.workspace = profile.workspace
         }
       } catch {}
@@ -1409,33 +1413,14 @@ function _parseCodexQuota (data) {
   const windows = _resolveRateLimitWindows(primary, secondary)
   const hourly = windows.hourlyWindow || null
   const weekly = windows.weeklyWindow || null
-  const codeReviewRateLimit = (data && (
-    data.code_review_rate_limit ||
-    data.codeReviewRateLimit ||
-    data.code_review ||
-    (data.rate_limit && (
-      data.rate_limit.code_review_rate_limit ||
-      data.rate_limit.codeReviewRateLimit ||
-      data.rate_limit.code_review
-    ))
-  )) || null
-  const codeReviewWindow = _resolveCodeReviewWindow(codeReviewRateLimit)
-
   const hourlyRemaining = _resolveRemainingPercent(hourly)
   const weeklyRemaining = _resolveRemainingPercent(weekly)
-  let codeReviewRemaining = _resolveRemainingPercent(codeReviewWindow)
-  if (codeReviewRemaining === null) {
-    // 兼容部分账号未返回独立 code review 窗口，回退到周配额
-    codeReviewRemaining = weeklyRemaining
-  }
 
   const hourlyReset = _normalizeResetTime(hourly)
   const weeklyReset = _normalizeResetTime(weekly)
-  const codeReviewReset = _normalizeResetTime(codeReviewWindow) || weeklyReset
-  const codeReviewRequestsLeft = _pickNumberField(codeReviewWindow, ['remaining', 'requests_left']) ?? _pickNumberField(weekly, ['remaining', 'requests_left'])
-  const codeReviewRequestsLimit = _pickNumberField(codeReviewWindow, ['limit', 'requests_limit']) ?? _pickNumberField(weekly, ['limit', 'requests_limit'])
 
   return {
+    schema_version: CODEX_QUOTA_SCHEMA_VERSION,
     hourly_percentage: hourlyRemaining,
     hourly_reset_time: hourlyReset,
     hourly_requests_left: _pickNumberField(hourly, ['remaining', 'requests_left']),
@@ -1444,40 +1429,53 @@ function _parseCodexQuota (data) {
     weekly_reset_time: weeklyReset,
     weekly_requests_left: _pickNumberField(weekly, ['remaining', 'requests_left']),
     weekly_requests_limit: _pickNumberField(weekly, ['limit', 'requests_limit']),
-    code_review_percentage: codeReviewRemaining,
-    code_review_reset_time: codeReviewReset,
-    code_review_requests_left: codeReviewRequestsLeft,
-    code_review_requests_limit: codeReviewRequestsLimit,
-    code_review_window_present: Boolean(codeReviewWindow) || typeof codeReviewRemaining === 'number',
+    additional_rate_limits: _normalizeCodexAdditionalRateLimits(data && data.additional_rate_limits),
+    credits: _normalizeCodexCredits(data && data.credits),
     updated_at: Math.floor(Date.now() / 1000)
   }
 }
 
-function _resolveCodeReviewWindow (rateLimit) {
-  if (!rateLimit || typeof rateLimit !== 'object') return null
-  if (_looksLikeQuotaWindow(rateLimit)) {
-    return rateLimit
-  }
-  const primary = rateLimit.primary_window || rateLimit.primaryWindow || null
-  const secondary = rateLimit.secondary_window || rateLimit.secondaryWindow || null
-  if (!primary && !secondary && Array.isArray(rateLimit.windows) && rateLimit.windows.length > 0) {
-    const windows = rateLimit.windows.filter(function (item) {
-      return item && typeof item === 'object'
-    })
-    if (windows.length === 1) return windows[0]
-    if (windows.length >= 2) {
-      const sorted = windows.slice().sort(function (left, right) {
-        return _getWindowSeconds(left) - _getWindowSeconds(right)
-      })
-      return sorted[0]
+function _normalizeCodexAdditionalRateLimits (items) {
+  if (!Array.isArray(items)) return []
+  return items.map(function (item) {
+    if (!item || typeof item !== 'object') return null
+    const rateLimit = item.rate_limit || item.rateLimit || null
+    if (!rateLimit || typeof rateLimit !== 'object') return null
+    const primary = rateLimit.primary_window || rateLimit.primaryWindow || null
+    const secondary = rateLimit.secondary_window || rateLimit.secondaryWindow || null
+    const windows = _resolveRateLimitWindows(primary, secondary)
+    const hourly = windows.hourlyWindow || null
+    const weekly = windows.weeklyWindow || null
+    const limitName = _firstNonEmptyString(item.limit_name, item.limitName, item.name) || '额外模型'
+    return {
+      limit_name: limitName,
+      metered_feature: _firstNonEmptyString(item.metered_feature, item.meteredFeature),
+      hourly_percentage: _resolveRemainingPercent(hourly),
+      hourly_reset_time: _normalizeResetTime(hourly),
+      hourly_requests_left: _pickNumberField(hourly, ['remaining', 'requests_left']),
+      hourly_requests_limit: _pickNumberField(hourly, ['limit', 'requests_limit']),
+      weekly_percentage: _resolveRemainingPercent(weekly),
+      weekly_reset_time: _normalizeResetTime(weekly),
+      weekly_requests_left: _pickNumberField(weekly, ['remaining', 'requests_left']),
+      weekly_requests_limit: _pickNumberField(weekly, ['limit', 'requests_limit'])
     }
+  }).filter(Boolean)
+}
+
+function _normalizeCodexCredits (credits) {
+  if (!credits || typeof credits !== 'object') return null
+  return {
+    has_credits: credits.has_credits === true || credits.hasCredits === true,
+    unlimited: credits.unlimited === true,
+    overage_limit_reached: credits.overage_limit_reached === true || credits.overageLimitReached === true,
+    balance: String(credits.balance ?? '').trim(),
+    approx_local_messages: Array.isArray(credits.approx_local_messages)
+      ? credits.approx_local_messages
+      : (Array.isArray(credits.approxLocalMessages) ? credits.approxLocalMessages : []),
+    approx_cloud_messages: Array.isArray(credits.approx_cloud_messages)
+      ? credits.approx_cloud_messages
+      : (Array.isArray(credits.approxCloudMessages) ? credits.approxCloudMessages : [])
   }
-  if (primary && secondary) {
-    const primarySeconds = _getWindowSeconds(primary)
-    const secondarySeconds = _getWindowSeconds(secondary)
-    return primarySeconds <= secondarySeconds ? primary : secondary
-  }
-  return primary || secondary || null
 }
 
 function _resolveRemainingPercent (window) {
@@ -1496,16 +1494,6 @@ function _resolveRemainingPercent (window) {
     return Math.max(0, Math.min(100, (remaining / limit) * 100))
   }
   return null
-}
-
-function _looksLikeQuotaWindow (window) {
-  if (!window || typeof window !== 'object') return false
-  return (
-    _pickNumberField(window, ['used_percent', 'usedPercent']) !== null ||
-    _pickNumberField(window, ['remaining_percent', 'remainingPercent']) !== null ||
-    _pickNumberField(window, ['remaining', 'requests_left']) !== null ||
-    _pickNumberField(window, ['limit', 'requests_limit']) !== null
-  )
 }
 
 function _normalizeResetTime (window) {
@@ -1780,6 +1768,10 @@ function _createCodexAccountFromTokens (tokens, addedVia, authMode) {
     Array.isArray(idAuth.organizations) ? idAuth.organizations : [],
     organizationId
   )
+  const subscriptionActiveUntil = _normalizeOptionalJsonScalar(
+    idAuth.chatgpt_subscription_active_until ||
+    accessAuth.chatgpt_subscription_active_until
+  )
   const normalizedAuthMode = String(authMode || 'oauth').trim().toLowerCase() || 'oauth'
   const normalizedAddedVia = String(addedVia || '').trim().toLowerCase()
   return {
@@ -1788,6 +1780,7 @@ function _createCodexAccountFromTokens (tokens, addedVia, authMode) {
     auth_mode: normalizedAuthMode,
     account_id: accountId,
     organization_id: organizationId,
+    subscription_active_until: subscriptionActiveUntil,
     workspace: workspace || '',
     tokens: {
       id_token: idToken,
@@ -1815,6 +1808,7 @@ async function _fetchCodexProfile (accessToken, idToken) {
       organizationId: '',
       accountName: '',
       accountStructure: '',
+      subscriptionActiveUntil: '',
       workspace: ''
     }
   }
@@ -1838,7 +1832,11 @@ async function _fetchCodexProfile (accessToken, idToken) {
       authClaim.chatgpt_user_id,
       authClaim.user_id
     ),
-    planType: '',
+    planType: _firstNonEmptyString(
+      authClaim.chatgpt_plan_type,
+      authClaim.plan_type,
+      payload.plan_type
+    ),
     accountId: String(
       authClaim.chatgpt_account_id ||
       authClaim.account_id ||
@@ -1854,6 +1852,7 @@ async function _fetchCodexProfile (accessToken, idToken) {
     ).trim(),
     accountName: '',
     accountStructure: '',
+    subscriptionActiveUntil: _normalizeOptionalJsonScalar(authClaim.chatgpt_subscription_active_until),
     workspace: ''
   }
   profile.workspace = _resolveWorkspaceTitleFromOrganizations(organizations, profile.organizationId)
@@ -1871,6 +1870,13 @@ async function _fetchCodexProfile (accessToken, idToken) {
     if (res && res.ok && res.data && typeof res.data === 'object') {
       if (typeof res.data.plan_type === 'string' && res.data.plan_type.trim()) {
         profile.planType = res.data.plan_type.trim()
+      }
+      const responseSubscriptionActiveUntil = _normalizeOptionalJsonScalar(
+        res.data.subscription_active_until ||
+        res.data.chatgpt_subscription_active_until
+      )
+      if (responseSubscriptionActiveUntil) {
+        profile.subscriptionActiveUntil = responseSubscriptionActiveUntil
       }
       const accountProfile = _parseAccountProfileFromCheckResponse(res.data, {
         accountId: profile.accountId,
@@ -2243,6 +2249,30 @@ function _firstNonEmptyString () {
   return ''
 }
 
+function _normalizeOptionalJsonScalar (value) {
+  if (value === null || typeof value === 'undefined') return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const candidates = [
+      value.value,
+      value.timestamp,
+      value.ts,
+      value.seconds,
+      value.sec,
+      value.unix,
+      value.epoch,
+      value.epoch_seconds,
+      value.epochSeconds
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+      const normalized = _normalizeOptionalJsonScalar(candidates[i])
+      if (normalized) return normalized
+    }
+  }
+  return ''
+}
+
 /**
  * 导出账号
  * @param {string[]} accountIds
@@ -2357,6 +2387,11 @@ function normalizeAccount (raw) {
   )
   const accountName = _firstNonEmptyString(raw.account_name, raw.accountName)
   const accountStructure = _firstNonEmptyString(raw.account_structure, raw.accountStructure)
+  const subscriptionActiveUntil = _normalizeOptionalJsonScalar(
+    raw.subscription_active_until ||
+    raw.subscriptionActiveUntil ||
+    authClaim.chatgpt_subscription_active_until
+  )
   const tokenWorkspaceTitle = _resolveWorkspaceTitleFromOrganizations(
     Array.isArray(authClaim.organizations) ? authClaim.organizations : [],
     organizationId
@@ -2384,6 +2419,7 @@ function normalizeAccount (raw) {
     workspace: workspace,
     auth_mode: raw.auth_mode || 'import',
     plan_type: raw.plan_type || '',
+    subscription_active_until: subscriptionActiveUntil,
     account_id: accountId,
     organization_id: organizationId,
     account_name: accountName,
@@ -3068,5 +3104,9 @@ module.exports = {
   getDefaultCodexAppPath,
   getDefaultOpenCodeAppPath,
   detectCodexAppPath,
-  detectOpenCodeAppPath
+  detectOpenCodeAppPath,
+  _internal: {
+    parseCodexQuota: _parseCodexQuota,
+    CODEX_QUOTA_SCHEMA_VERSION
+  }
 }

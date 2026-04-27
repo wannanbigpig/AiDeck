@@ -3,6 +3,7 @@ import { readSharedSetting } from './hostBridge.js'
 import { normalizeRefreshIntervalMinutes } from './refreshInterval.js'
 
 export const CODEX_SETTINGS_KEY = 'codex_advanced_settings'
+const DAY_IN_MS = 24 * 60 * 60 * 1000
 
 export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   autoRefreshMinutes: 10,
@@ -13,7 +14,6 @@ export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   overrideOpenCode: true,
   autoRestartOpenCode: false,
   autoStartOpenCodeWhenClosed: false,
-  showCodeReviewQuota: true,
   autoSwitch: true,
   autoSwitchHourlyThreshold: 20,
   autoSwitchWeeklyThreshold: 1,
@@ -31,7 +31,6 @@ export const CODEX_BOOLEAN_SETTING_KEYS = [
   'overrideOpenCode',
   'autoRestartOpenCode',
   'autoStartOpenCodeWhenClosed',
-  'showCodeReviewQuota',
   'autoSwitch',
   'autoSwitchPreferSameEmail',
   'quotaWarningEnabled'
@@ -74,6 +73,7 @@ export function normalizeCodexAdvancedSettings (raw) {
 
   delete next.autoSwitchLockMinutes
   delete next.autoSwitchModelGroup
+  delete next.showCodeReviewQuota
 
   return next
 }
@@ -171,6 +171,102 @@ export function firstNonEmptyString() {
     if (trimmed) return trimmed
   }
   return ''
+}
+
+function normalizeCodexSubscriptionValue (value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const candidates = [
+      value.value,
+      value.timestamp,
+      value.ts,
+      value.seconds,
+      value.sec,
+      value.unix,
+      value.epoch,
+      value.epoch_seconds,
+      value.epochSeconds
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+      const normalized = normalizeCodexSubscriptionValue(candidates[i])
+      if (normalized) return normalized
+    }
+  }
+  return ''
+}
+
+function parseCodexSubscriptionDate (value) {
+  const raw = normalizeCodexSubscriptionValue(value)
+  if (!raw) return null
+
+  const numeric = Number(raw)
+  if (Number.isFinite(numeric)) {
+    const ms = numeric < 1000000000000 ? numeric * 1000 : numeric
+    const date = new Date(ms)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function formatCodexSubscriptionDate (date) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+export function resolveCodexSubscriptionDisplay (account) {
+  const tokens = (account && account.tokens && typeof account.tokens === 'object') ? account.tokens : {}
+  const idPayload = decodeJwtPayload(tokens.id_token)
+  const accessPayload = decodeJwtPayload(tokens.access_token)
+  const idAuth = (idPayload && idPayload['https://api.openai.com/auth'] && typeof idPayload['https://api.openai.com/auth'] === 'object')
+    ? idPayload['https://api.openai.com/auth']
+    : {}
+  const accessAuth = (accessPayload && accessPayload['https://api.openai.com/auth'] && typeof accessPayload['https://api.openai.com/auth'] === 'object')
+    ? accessPayload['https://api.openai.com/auth']
+    : {}
+  const raw = normalizeCodexSubscriptionValue(
+    account?.subscription_active_until ||
+    account?.subscriptionActiveUntil ||
+    idAuth.chatgpt_subscription_active_until ||
+    accessAuth.chatgpt_subscription_active_until
+  )
+  const date = parseCodexSubscriptionDate(raw)
+
+  if (!date) {
+    return {
+      text: '未知',
+      title: '未获取到订阅到期时间',
+      tone: 'missing',
+      color: undefined,
+      timestampMs: null
+    }
+  }
+
+  const timestampMs = date.getTime()
+  const diffMs = timestampMs - Date.now()
+  const dateText = formatCodexSubscriptionDate(date)
+  const remainingDays = Math.max(0, Math.ceil(diffMs / DAY_IN_MS))
+  const text = `${dateText}（${remainingDays} 天）`
+  let tone = 'active'
+  let color = 'var(--accent-green)'
+  if (diffMs <= DAY_IN_MS * 3) {
+    tone = 'danger'
+    color = '#ef4444'
+  } else if (diffMs <= DAY_IN_MS * 10) {
+    tone = 'warning'
+    color = '#f59e0b'
+  }
+
+  return {
+    text,
+    title: diffMs <= 0 ? `订阅已到期：${dateText}` : `订阅到期时间：${text}`,
+    tone,
+    color,
+    timestampMs
+  }
 }
 
 export function resolveCodexIdentityDisplay(account) {

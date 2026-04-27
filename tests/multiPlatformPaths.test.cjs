@@ -2,9 +2,9 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 
-const codexService = require(path.join(__dirname, '..', 'public', 'preload', 'lib', 'codexService.js'))
-const geminiService = require(path.join(__dirname, '..', 'public', 'preload', 'lib', 'geminiService.js'))
-const antigravityService = require(path.join(__dirname, '..', 'public', 'preload', 'lib', 'antigravityService.js'))
+const codexService = require(path.join(__dirname, '..', 'packages', 'platforms', 'src', 'codexService.cjs'))
+const geminiService = require(path.join(__dirname, '..', 'packages', 'platforms', 'src', 'geminiService.cjs'))
+const antigravityService = require(path.join(__dirname, '..', 'packages', 'platforms', 'src', 'antigravityService.cjs'))
 
 test('Codex / OpenCode 默认候选路径按平台返回首选项', () => {
   const macRuntime = { platform: 'darwin', homeDir: '/Users/tester', env: {} }
