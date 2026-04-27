@@ -10,8 +10,8 @@ const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-log-home-'))
 process.env.HOME = tempHome
 process.env.USERPROFILE = tempHome
 
-const requestLogStorePath = path.join(__dirname, '..', 'public', 'preload', 'lib', 'requestLogStore.js')
-const httpClientPath = path.join(__dirname, '..', 'public', 'preload', 'lib', 'httpClient.js')
+const requestLogStorePath = path.join(__dirname, '..', 'packages', 'infra-node', 'src', 'requestLogStore.cjs')
+const httpClientPath = path.join(__dirname, '..', 'packages', 'infra-node', 'src', 'httpClient.cjs')
 
 function resetLogEnvironment () {
   fs.rmSync(path.join(tempHome, '.ai_deck'), { recursive: true, force: true })

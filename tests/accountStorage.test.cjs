@@ -8,12 +8,10 @@ const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-home-'))
 process.env.HOME = tempHome
 process.env.USERPROFILE = tempHome
 
-const fileUtilsPath = path.join(__dirname, '..', 'public', 'preload', 'lib', 'fileUtils.js')
-const storagePath = path.join(__dirname, '..', 'public', 'preload', 'lib', 'accountStorage.js')
+const storagePath = path.join(__dirname, '..', 'packages', 'infra-node', 'src', 'accountStorage.cjs')
 const revisionBusPath = path.join(__dirname, '..', 'packages', 'infra-node', 'src', 'storageRevisionBus.cjs')
 const packageFileUtilsPath = path.join(__dirname, '..', 'packages', 'infra-node', 'src', 'fileUtils.cjs')
 
-delete require.cache[require.resolve(fileUtilsPath)]
 delete require.cache[require.resolve(storagePath)]
 delete require.cache[require.resolve(revisionBusPath)]
 delete require.cache[require.resolve(packageFileUtilsPath)]

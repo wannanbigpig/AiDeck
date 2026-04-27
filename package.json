@@ -13,7 +13,7 @@
     "build": "npm run build -w @aideck/utools",
     "build:utools": "npm run build -w @aideck/utools",
     "release": "node scripts/release.js",
-    "test": "node --test --test-concurrency=1 \"tests/**/*.test.cjs\""
+    "test": "node scripts/run-tests.cjs"
   },
   "devDependencies": {
     "standard": "^17.1.0"
