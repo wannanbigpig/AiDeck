@@ -29,6 +29,14 @@ function getAnnouncementUrl () {
   return String(process.env.AIDECK_ANNOUNCEMENT_URL || DEFAULT_ANNOUNCEMENT_URL).trim()
 }
 
+function normalizeAnnouncementUrl (url) {
+  const target = String(url || '').trim()
+  const match = target.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/i)
+  if (!match) return target
+  const [, owner, repo, branch, filePath] = match
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`
+}
+
 function isDevelopmentRuntime (runtimeDirValue = __dirname) {
   const explicit = String(process.env.AIDECK_ANNOUNCEMENT_DEV_LOCAL || '').trim().toLowerCase()
   if (explicit === '1' || explicit === 'true') return true
@@ -70,6 +78,18 @@ function getLocalAnnouncementFile () {
   return findUpFile(__dirname, LOCAL_ANNOUNCEMENT_FILE)
 }
 
+function getBundledAnnouncementFile (runtimeDirValue = __dirname) {
+  const explicit = String(process.env.AIDECK_BUNDLED_ANNOUNCEMENT_FILE || '').trim()
+  if (explicit && fs.existsSync(path.resolve(explicit))) return path.resolve(explicit)
+
+  const runtimeDir = path.resolve(runtimeDirValue)
+  const candidates = [
+    path.resolve(runtimeDir, '..', LOCAL_ANNOUNCEMENT_FILE),
+    path.resolve(runtimeDir, '..', '..', LOCAL_ANNOUNCEMENT_FILE)
+  ]
+  return candidates.find(candidate => fs.existsSync(candidate)) || ''
+}
+
 function readJsonSafe (filePath, fallback) {
   const data = fileUtils.readJsonFile(filePath)
   return data == null ? fallback : data
@@ -83,7 +103,7 @@ function writeJsonSafe (filePath, data) {
 
 function fetchJson (url) {
   return new Promise((resolve, reject) => {
-    const target = String(url || '').trim()
+    const target = normalizeAnnouncementUrl(url)
     if (!target) {
       reject(new Error('公告地址为空'))
       return
@@ -247,6 +267,8 @@ async function loadAnnouncementsRaw (forceRefresh) {
   } catch (err) {
     const cache = loadCache()
     if (cache) return normalizeResponse(cache.data)
+    const bundledFile = getBundledAnnouncementFile()
+    if (bundledFile) return normalizeResponse(readJsonSafe(bundledFile, { announcements: [] }))
     return { version: '1.0', announcements: [] }
   }
 }
@@ -382,6 +404,8 @@ module.exports = {
   markAllAnnouncementsAsRead,
   filterAnnouncements,
   normalizeResponse,
+  normalizeAnnouncementUrl,
   getLocalAnnouncementFile,
+  getBundledAnnouncementFile,
   isDevelopmentRuntime
 }

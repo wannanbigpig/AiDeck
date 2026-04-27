@@ -135,6 +135,49 @@ test('announcementService 应识别 uTools dist preload 开发路径', () => {
   assert.equal(service.isDevelopmentRuntime(path.join(process.cwd(), 'dist/preload')), true)
 })
 
+test('announcementService 应将 GitHub blob 公告地址转换为 raw 地址', () => {
+  const service = require(path.join(process.cwd(), 'packages/infra-node/src/announcementService.cjs'))
+  assert.equal(
+    service.normalizeAnnouncementUrl('https://github.com/wannanbigpig/AiDeck/blob/main/announcements.json'),
+    'https://raw.githubusercontent.com/wannanbigpig/AiDeck/main/announcements.json'
+  )
+})
+
+test('announcementService 远程失败时应回退到随包公告文件', async () => {
+  const service = require(path.join(process.cwd(), 'packages/infra-node/src/announcementService.cjs'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-bundled-ann-'))
+  const bundledFile = path.join(dir, 'announcements.json')
+  fs.writeFileSync(bundledFile, JSON.stringify({
+    version: '1.0',
+    announcements: [
+      {
+        id: 'bundled-ann',
+        type: 'info',
+        title: 'Bundled',
+        targetVersions: '*',
+        targetLanguages: ['*'],
+        createdAt: '2026-04-27T00:00:00Z'
+      }
+    ]
+  }))
+
+  try {
+    await withTempEnv({
+      AIDECK_DATA_DIR: path.join(dir, 'data'),
+      AIDECK_ANNOUNCEMENT_FILE: null,
+      AIDECK_ANNOUNCEMENT_DEV_LOCAL: '0',
+      AIDECK_ANNOUNCEMENT_URL: 'file:///not-found-aideck-announcements.json',
+      AIDECK_BUNDLED_ANNOUNCEMENT_FILE: bundledFile
+    }, async () => {
+      const state = await service.forceRefreshAnnouncements({ version: '1.0.2', locale: 'zh-CN' })
+      assert.equal(state.announcements.length, 1)
+      assert.equal(state.announcements[0].id, 'bundled-ann')
+    })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('announcementService 应置顶优先并按发布时间倒序排序', async () => {
   const service = require(path.join(process.cwd(), 'packages/infra-node/src/announcementService.cjs'))
   const list = service.filterAnnouncements([

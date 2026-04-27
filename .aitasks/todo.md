@@ -630,3 +630,33 @@
 - 验证结果：`rg` 确认应用版本声明已为 `1.0.2`；`npm run build` 通过；`git diff --check` 通过。
 - 未验证项：未在真实 uTools 开发者工具中重新导入插件查看版本号。
 - 风险说明：`package-lock.json` 已按当前 uTools-only workspace 重新生成，顺带移除了旧桌面端依赖锁定项，符合此前项目减负方向。
+
+# 任务：修复远程公告未显示
+
+## 目标
+- 远程 `https://github.com/wannanbigpig/AiDeck/blob/main/announcements.json` 已存在公告时，消息通知中心应能显示公告。
+- 定位公告服务为什么返回空列表，并做最小范围修复。
+
+## 步骤
+- [x] 检查远程公告内容。
+- [x] 检查公告服务远程拉取、缓存和过滤逻辑。
+- [x] 复现当前版本下公告服务返回结果。
+- [x] 修复根因并补充测试。
+- [x] 执行公告测试、构建和 diff 检查。
+
+## 验证方法
+- 直接调用公告服务读取远程或本地公告，确认返回列表非空。
+- 运行 `node --test tests/announcementService.test.cjs`。
+- 运行 `npm run build`。
+- 运行 `git diff --check`。
+
+## 风险
+- GitHub 页面 URL 和 raw URL 不同，客户端应读取 raw JSON，不能读取 HTML 页面。
+- 当前版本为 `1.0.2` 时，`showOnce` 或版本过滤不应把所有公告误筛掉。
+
+## 结果记录
+- 修改内容：默认公告地址保持为 `https://raw.githubusercontent.com/wannanbigpig/AiDeck/main/announcements.json`；公告服务支持把 GitHub `blob` 页面地址转换为 raw 地址；远程读取失败且缓存为空时回退读取随包 `announcements.json`；uTools postbuild 会复制仓库根公告文件到 `dist/announcements.json`。
+- 根因：uTools 生产包此前只依赖远程 raw 读取，网络失败或误配成 GitHub `blob` 页面地址时会解析失败；同时 `dist` 里没有随包公告兜底，最终消息中心只能显示空列表。
+- 验证结果：远程 raw 地址确认可返回 JSON；本地公告服务在 `version: 1.0.2`、`locale: zh-CN` 下返回 2 条公告；`node --test tests/announcementService.test.cjs` 通过；`npm run build` 通过；`git diff --check` 通过；构建后 `dist/announcements.json` 存在并包含 2 条公告。
+- 未验证项：未在真实 uTools 窗口重新导入 `dist` 后复验消息中心。
+- 风险说明：用户若已把公告标记为已读，消息列表仍会显示公告，但不会再自动弹出；需要重新打包并选择 `/Users/liuml/data/openSource/Aideck/dist` 才能使用新的随包兜底逻辑。
