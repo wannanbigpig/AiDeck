@@ -14,7 +14,8 @@ test('Codex 唤醒参数应复用 codex exec 安全参数', () => {
     workspaceDir: '/tmp/workspace'
   })
 
-  assert.deepEqual(args.slice(0, 4), ['exec', '--skip-git-repo-check', '--color', 'never'])
+  assert.deepEqual(args.slice(0, 5), ['exec', '--skip-git-repo-check', '--ignore-rules', '--color', 'never'])
+  assert.equal(args.includes('--ignore-rules'), true)
   assert.equal(args.includes('--output-last-message'), true)
   assert.equal(args.includes('-C'), true)
   assert.equal(args.includes('model="gpt-\\"demo\\""'), true)
@@ -151,7 +152,10 @@ test('Codex 单账号唤醒配置应支持保存、读取、删除和到点触�
 
     const dueAt = new Date(2026, 3, 28, 8, 6, 0, 0).getTime()
     assert.equal(codex._internal.isCodexWakeupScheduleDue(loaded.schedule, dueAt), true)
-    const due = await codex.runDueWakeupSchedules(dueAt, { command: 'definitely-not-aideck-codex' })
+    const due = await codex.runDueWakeupSchedules(dueAt, {
+      command: 'definitely-not-aideck-codex',
+      commandRuntime: { env: { PATH: '' } }
+    })
     assert.equal(due.success, true)
     assert.equal(due.due_count, 1)
     assert.equal(due.results.length, 1)

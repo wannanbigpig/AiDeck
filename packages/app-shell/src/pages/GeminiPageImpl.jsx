@@ -483,6 +483,18 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
         <div>
           <h1 className='page-title'>
             <PlatformIcon platform='gemini' size={24} /> Gemini CLI
+            <UsageGuide
+              platform='Gemini CLI'
+              title='Gemini CLI 账号管理说明'
+              description='用于管理 Gemini CLI 账号，查看 Pro / Flash 配额，导入本机登录态，或通过 OAuth、Token/JSON 添加账号，并将选中的账号同步为当前 Gemini CLI 使用的本地登录态。'
+              permissions={[
+                '读取并写入当前系统默认 Gemini 配置目录中的 `oauth_creds.json`、`google_accounts.json` 和 `settings.json`，用于同步当前本地登录态及切号。'
+              ]}
+              network={[
+                'OAuth 与凭证刷新会调用 Google 官方接口（`accounts.google.com`、`oauth2.googleapis.com`）。',
+                '配额查询会调用 Gemini 内部接口（`cloudcode-pa.googleapis.com`），仅发送必要的认证字段。'
+              ]}
+            />
           </h1>
           <p className='page-subtitle' style={{ marginTop: 4, color: 'var(--text-secondary)' }}>
             共 {accounts.length} 个账号，有效 {validCount}，失效 {invalidCount}
@@ -519,21 +531,6 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
           </button>
         </div>
       </div>
-
-      <UsageGuide
-        platform='Gemini CLI'
-        title='Gemini Cli 账号管理说明'
-        description='支持读取当前系统默认 Gemini 配置目录中的本地登录态，也支持粘贴 Token/JSON 或 OAuth 授权登录来管理 Gemini Cli 账号。'
-        permissions={[
-          '读取并写入当前系统默认 Gemini 配置目录中的 `oauth_creds.json`、`google_accounts.json` 和 `settings.json`，用于同步当前本地登录态及切号。'
-        ]}
-        network={[
-          'OAuth 与凭证刷新会调用 Google 官方接口（`accounts.google.com`、`oauth2.googleapis.com`）。',
-          '配额查询会调用 Gemini 内部接口（`cloudcode-pa.googleapis.com`），仅发送必要的认证字段。'
-        ]}
-      />
-
-
 
       {accounts.length === 0 && !localImportHint.visible
         ? (

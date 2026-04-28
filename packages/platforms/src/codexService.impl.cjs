@@ -47,8 +47,8 @@ const CODEX_CLI_MANAGED_ACCOUNT_DIR = 'accounts'
 const CODEX_CLI_SHARED_DIR = '_shared'
 const CODEX_SHARED_DIRS = ['skills', 'rules', path.join('vendor_imports', 'skills')]
 const CODEX_SHARED_FILES = ['AGENTS.md']
-const CODEX_SHARED_SESSION_DIRS = ['sessions', 'archived_sessions']
-const CODEX_SHARED_SESSION_FILES = ['session_index.jsonl', 'history.jsonl']
+const CODEX_INSTANCE_SESSION_DIRS = ['sessions', 'archived_sessions']
+const CODEX_INSTANCE_SESSION_FILES = ['session_index.jsonl', 'history.jsonl']
 const CODEX_WAKEUP_DEFAULT_PROMPT = 'hi'
 const CODEX_WAKEUP_DEFAULT_DAILY_TIME = '09:00'
 const CODEX_WAKEUP_DEFAULT_TIMEOUT_MS = 120 * 1000
@@ -71,6 +71,12 @@ const localSyncState = {
 let codexWakeupSchedulerTimer = null
 let codexWakeupStartupTriggered = false
 const codexWakeupRunningScheduleIds = new Set()
+const CODEX_CACHE_MAX_ENTRIES = 600
+const codexJsonlRecordsCache = new Map()
+const codexHeadTailCache = new Map()
+const codexFileMetadataCache = new Map()
+const codexThreadRowsCache = new Map()
+const codexThreadColumnsCache = new Map()
 
 const DEFAULT_ADVANCED_SETTINGS = {
   codexStartupPath: '',
@@ -1035,6 +1041,12 @@ function _getCodexCliSharedRootDir () {
   return path.join(_getCodexCliInstancesRootDir(), CODEX_CLI_SHARED_DIR)
 }
 
+function _getDefaultCodexHomeDir (options = {}) {
+  const configured = String(options && options.defaultCodexHomeDir ? options.defaultCodexHomeDir : '').trim()
+  if (configured) return configured
+  return path.join(fileUtils.getHomeDir(), '.codex')
+}
+
 function _buildCodexCliInstanceDir (accountId) {
   const raw = String(accountId || 'account').trim() || 'account'
   const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16)
@@ -1105,6 +1117,17 @@ function _pathExistsOrIsSymlink (targetPath) {
   }
 }
 
+function _isSymlinkInside (targetPath, rootDir) {
+  try {
+    if (!fs.lstatSync(targetPath).isSymbolicLink()) return false
+    const realTarget = fs.realpathSync(targetPath)
+    const realRoot = fs.realpathSync(rootDir)
+    return _isPathInside(realRoot, realTarget)
+  } catch {
+    return false
+  }
+}
+
 function _ensureCodexSharedEntry (instanceDir, relativePath, isDir, sourceRoot = getConfigDir(), options = {}) {
   const sourcePath = path.join(sourceRoot, relativePath)
   const targetPath = path.join(instanceDir, relativePath)
@@ -1133,6 +1156,29 @@ function _ensureCodexSharedEntry (instanceDir, relativePath, isDir, sourceRoot =
   }
 }
 
+function _ensureCodexInstanceEntry (instanceDir, relativePath, isDir, options = {}) {
+  const targetPath = path.join(instanceDir, relativePath)
+  const sharedRoot = _getCodexCliSharedRootDir()
+  try {
+    if (_pathExistsOrIsSymlink(targetPath) && _isSymlinkInside(targetPath, sharedRoot)) {
+      _removePathIfExists(targetPath)
+    }
+    if (isDir) {
+      fileUtils.ensureDir(targetPath)
+      return
+    }
+    if (options.ensureFile) {
+      fileUtils.ensureDir(path.dirname(targetPath))
+      if (!fs.existsSync(targetPath)) fs.writeFileSync(targetPath, '', 'utf8')
+    }
+  } catch (err) {
+    requestLogger.warn('codex.cli', '初始化实例本地会话数据失败', {
+      relativePath,
+      error: err && err.message ? err.message : String(err)
+    })
+  }
+}
+
 function _ensureCodexCliSharedEntries (instanceDir) {
   for (const relativePath of CODEX_SHARED_DIRS) {
     _ensureCodexSharedEntry(instanceDir, relativePath, true)
@@ -1140,12 +1186,2007 @@ function _ensureCodexCliSharedEntries (instanceDir) {
   for (const relativePath of CODEX_SHARED_FILES) {
     _ensureCodexSharedEntry(instanceDir, relativePath, false)
   }
-  const sharedRoot = _getCodexCliSharedRootDir()
-  for (const relativePath of CODEX_SHARED_SESSION_DIRS) {
-    _ensureCodexSharedEntry(instanceDir, relativePath, true, sharedRoot)
+  for (const relativePath of CODEX_INSTANCE_SESSION_DIRS) {
+    _ensureCodexInstanceEntry(instanceDir, relativePath, true)
   }
-  for (const relativePath of CODEX_SHARED_SESSION_FILES) {
-    _ensureCodexSharedEntry(instanceDir, relativePath, false, sharedRoot, { ensureFile: true })
+  for (const relativePath of CODEX_INSTANCE_SESSION_FILES) {
+    _ensureCodexInstanceEntry(instanceDir, relativePath, false, { ensureFile: true })
+  }
+}
+
+function _safeParseJsonLine (line) {
+  const text = String(line || '').trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function _rememberCodexCacheEntry (cache, key, value) {
+  if (!cache || !key) return value
+  cache.set(key, value)
+  while (cache.size > CODEX_CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (!oldest) break
+    cache.delete(oldest)
+  }
+  return value
+}
+
+function _buildCodexFileCacheKey (filePath, stat, suffix = '') {
+  const fullPath = String(filePath || '').trim()
+  if (!fullPath || !stat) return ''
+  return [
+    path.resolve(fullPath),
+    Number(stat.size || 0),
+    Number(stat.mtimeMs || 0),
+    suffix
+  ].join('|')
+}
+
+function _cloneCodexRecordList (records) {
+  return (Array.isArray(records) ? records : []).map(item => (
+    item && typeof item === 'object' && !Array.isArray(item) ? Object.assign({}, item) : item
+  ))
+}
+
+function _cloneCodexHeadTail (value) {
+  return {
+    head: _cloneCodexRecordList(value && value.head),
+    tail: _cloneCodexRecordList(value && value.tail)
+  }
+}
+
+function _invalidateCodexPathCaches (filePath) {
+  const target = String(filePath || '').trim()
+  if (!target) return
+  let resolved = ''
+  try {
+    resolved = path.resolve(target)
+  } catch {
+    resolved = target
+  }
+  for (const cache of [codexJsonlRecordsCache, codexHeadTailCache, codexFileMetadataCache, codexThreadRowsCache, codexThreadColumnsCache]) {
+    for (const key of cache.keys()) {
+      if (String(key).startsWith(`${resolved}|`)) cache.delete(key)
+    }
+  }
+}
+
+function _normalizeTimestampMs (value) {
+  if (value == null || value === '') return 0
+  if (value instanceof Date) {
+    const time = value.getTime()
+    return Number.isFinite(time) ? time : 0
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return 0
+    return value < 100000000000 ? Math.round(value * 1000) : Math.round(value)
+  }
+  const text = String(value || '').trim()
+  if (!text) return 0
+  if (/^\d+(\.\d+)?$/.test(text)) return _normalizeTimestampMs(Number(text))
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function _resolveCodexInstancePath (instanceDir, value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return path.isAbsolute(text) ? text : path.join(instanceDir, text)
+}
+
+function _isCodexReservedJsonlFile (filePath) {
+  const base = path.basename(String(filePath || '')).toLowerCase()
+  return CODEX_INSTANCE_SESSION_FILES.includes(base)
+}
+
+function _getObjectPathValue (object, keys) {
+  let cursor = object
+  for (const key of keys) {
+    if (!cursor || typeof cursor !== 'object') return ''
+    cursor = cursor[key]
+  }
+  return cursor
+}
+
+function _pickSessionField (record, candidates) {
+  for (const item of candidates) {
+    const keys = Array.isArray(item) ? item : String(item).split('.')
+    const value = _getObjectPathValue(record, keys)
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function _deriveCodexSessionId (filePath, record) {
+  const fromRecord = _pickCodexRecordSessionId(record)
+  if (fromRecord) return fromRecord
+  const base = path.basename(String(filePath || ''), path.extname(String(filePath || '')))
+  return base || fileUtils.generateId()
+}
+
+function _pickCodexRecordSessionId (record) {
+  return _pickSessionField(record, [
+    'id',
+    'session_id',
+    'sessionId',
+    'thread_id',
+    'threadId',
+    'conversation_id',
+    'conversationId'
+  ])
+}
+
+function _deriveCodexSessionTitle (record, filePath) {
+  const title = _pickSessionField(record, [
+    'title',
+    'name',
+    'summary',
+    'conversation_title',
+    'conversationTitle',
+    ['thread', 'title'],
+    ['metadata', 'title']
+  ])
+  if (title) return title.slice(0, 160)
+  const base = path.basename(String(filePath || ''), path.extname(String(filePath || '')))
+  return base ? base.replace(/^rollout-/, '') : '未命名会话'
+}
+
+function _deriveCodexSessionWorkspace (record) {
+  return _pickSessionField(record, [
+    'cwd',
+    'workspace',
+    'workspace_path',
+    'workspacePath',
+    'project_path',
+    'projectPath',
+    'repo_path',
+    'repoPath',
+    ['metadata', 'cwd'],
+    ['metadata', 'workspace'],
+    ['metadata', 'workspace_path'],
+    ['metadata', 'project_path'],
+    ['thread', 'cwd'],
+    ['thread', 'workspace']
+  ])
+}
+
+function _getCodexWorkspaceName (workspacePath) {
+  const text = String(workspacePath || '').trim()
+  if (!text) return '未知工作区'
+  if (text === path.sep) return path.sep
+  const normalized = text.replace(/[\\/]+$/, '')
+  return path.basename(normalized) || normalized
+}
+
+function _normalizeCodexWorkspacePath (workspacePath) {
+  const text = String(workspacePath || '').trim()
+  if (!text) return ''
+  try {
+    return path.resolve(text)
+  } catch {
+    return text.replace(/[\\/]+$/, '')
+  }
+}
+
+function _readCodexSavedWorkspaceRoots (codexHomeDir) {
+  const statePath = path.join(String(codexHomeDir || '').trim(), '.codex-global-state.json')
+  const state = fileUtils.readJsonFile(statePath)
+  if (!state || typeof state !== 'object') return []
+  const roots = []
+  const addRoots = (items) => {
+    if (!Array.isArray(items)) return
+    for (const item of items) {
+      const workspacePath = _normalizeCodexWorkspacePath(item)
+      if (workspacePath && !roots.includes(workspacePath)) roots.push(workspacePath)
+    }
+  }
+  addRoots(state['project-order'])
+  addRoots(state['electron-saved-workspace-roots'])
+  return roots
+}
+
+function _getCodexSavedWorkspaceRootsForSources (sourceResults, options = {}) {
+  const defaultDir = _getDefaultCodexHomeDir(options)
+  const allowDefaultFallback = !(options && options.includeDefaultHome === false)
+  const defaultRoots = allowDefaultFallback ? _readCodexSavedWorkspaceRoots(defaultDir) : []
+  const roots = []
+  for (const source of Array.isArray(sourceResults) ? sourceResults : []) {
+    const sourceRoots = _readCodexSavedWorkspaceRoots(source && source.instanceDir)
+    const nextRoots = sourceRoots.length > 0 ? sourceRoots : defaultRoots
+    for (const workspacePath of nextRoots) {
+      if (workspacePath && !roots.includes(workspacePath)) roots.push(workspacePath)
+    }
+  }
+  return roots
+}
+
+function _readCodexJsonlRecords (filePath, limit = 5000, maxBytes = 0) {
+  try {
+    if (!fs.existsSync(filePath)) return []
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) return []
+    const cacheKey = _buildCodexFileCacheKey(filePath, stat, `${limit}:${maxBytes}:jsonl`)
+    if (cacheKey && codexJsonlRecordsCache.has(cacheKey)) {
+      return _cloneCodexRecordList(codexJsonlRecordsCache.get(cacheKey))
+    }
+    let content = ''
+    if (maxBytes > 0 && stat.size > maxBytes) {
+      const fd = fs.openSync(filePath, 'r')
+      try {
+        const buffer = Buffer.alloc(maxBytes)
+        const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0)
+        content = buffer.subarray(0, bytesRead).toString('utf8')
+      } finally {
+        fs.closeSync(fd)
+      }
+    } else {
+      content = fs.readFileSync(filePath, 'utf8')
+    }
+    const lines = content.split(/\r?\n/)
+    const records = []
+    for (let i = 0; i < lines.length && records.length < limit; i++) {
+      const record = _safeParseJsonLine(lines[i])
+      if (record) records.push(record)
+    }
+    if (cacheKey) _rememberCodexCacheEntry(codexJsonlRecordsCache, cacheKey, _cloneCodexRecordList(records))
+    return records
+  } catch {
+    return []
+  }
+}
+
+function _collectCodexSessionFiles (rootDir, limit = 3000) {
+  const files = []
+  function walk (dirPath) {
+    if (files.length >= limit) return
+    let entries = []
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (files.length >= limit) return
+      const nextPath = path.join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        walk(nextPath)
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.jsonl') && !_isCodexReservedJsonlFile(nextPath)) {
+        files.push(nextPath)
+      }
+    }
+  }
+  walk(rootDir)
+  return files
+}
+
+function _readCodexHeadTailRecords (filePath, headLimit = 12, tailLimit = 40, maxBytes = 1024 * 1024) {
+  try {
+    if (!fs.existsSync(filePath)) return { head: [], tail: [] }
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) return { head: [], tail: [] }
+    const cacheKey = _buildCodexFileCacheKey(filePath, stat, `${headLimit}:${tailLimit}:${maxBytes}:headtail`)
+    if (cacheKey && codexHeadTailCache.has(cacheKey)) {
+      return _cloneCodexHeadTail(codexHeadTailCache.get(cacheKey))
+    }
+    const readSize = maxBytes > 0 && stat.size > maxBytes ? maxBytes : stat.size
+    const fd = fs.openSync(filePath, 'r')
+    let content = ''
+    try {
+      const buffer = Buffer.alloc(readSize)
+      const start = Math.max(0, stat.size - readSize)
+      const bytesRead = fs.readSync(fd, buffer, 0, readSize, start)
+      content = buffer.subarray(0, bytesRead).toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
+    const lines = content.split(/\r?\n/).filter(line => line.trim())
+    const head = lines.slice(0, headLimit).map(_safeParseJsonLine).filter(Boolean)
+    const tail = lines.slice(Math.max(0, lines.length - tailLimit)).map(_safeParseJsonLine).filter(Boolean)
+    const result = { head, tail }
+    if (cacheKey) _rememberCodexCacheEntry(codexHeadTailCache, cacheKey, _cloneCodexHeadTail(result))
+    return result
+  } catch {
+    return { head: [], tail: [] }
+  }
+}
+
+function _extractCodexMessageParts (value) {
+  const result = { texts: [], images: [] }
+  function walk (item) {
+    if (item == null) return
+    if (typeof item === 'string') {
+      if (item.trim()) result.texts.push(item)
+      return
+    }
+    if (Array.isArray(item)) {
+      item.forEach(walk)
+      return
+    }
+    if (typeof item !== 'object') return
+    const type = String(item.type || '').trim()
+    if (type === 'input_image' || type === 'image') {
+      const imageUrl = _firstNonEmptyString(item.image_url, item.imageUrl, item.url, item.src)
+      if (imageUrl) result.images.push(imageUrl)
+      return
+    }
+    const direct = _firstNonEmptyString(item.text, item.output)
+    if (direct) result.texts.push(direct)
+    else if (Array.isArray(item.content)) walk(item.content)
+    else if (typeof item.content === 'string' && item.content.trim()) result.texts.push(item.content)
+  }
+  walk(value)
+  return result
+}
+
+function _normalizeCodexMessageText (texts, hasImages) {
+  return (Array.isArray(texts) ? texts : [])
+    .map(text => String(text || ''))
+    .map(text => hasImages ? text.replace(/<\/?image\s*\/?>/gi, '').trim() : text.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function _extractCodexText (value) {
+  const parts = _extractCodexMessageParts(value)
+  return _normalizeCodexMessageText(parts.texts, parts.images.length > 0)
+}
+
+function _extractCodexResponseMessage (record) {
+  if (!record || typeof record !== 'object') return null
+  if (record.type !== 'response_item') return null
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload : null
+  if (!payload) return null
+  const payloadType = String(payload.type || '').trim()
+  if (payloadType === 'message') {
+    const role = String(payload.role || 'unknown').trim() || 'unknown'
+    const parts = _extractCodexMessageParts(payload.content)
+    const content = _normalizeCodexMessageText(parts.texts, parts.images.length > 0).trim()
+    if (!content && parts.images.length === 0) return null
+    return {
+      role,
+      content,
+      images: parts.images,
+      ts: _normalizeTimestampMs(record.timestamp || payload.timestamp)
+    }
+  }
+  if (payloadType === 'function_call') {
+    const name = String(payload.name || 'unknown').trim() || 'unknown'
+    return {
+      role: 'assistant',
+      content: `[Tool: ${name}]`,
+      ts: _normalizeTimestampMs(record.timestamp || payload.timestamp)
+    }
+  }
+  if (payloadType === 'function_call_output') {
+    const content = String(payload.output || '').trim()
+    if (!content) return null
+    return {
+      role: 'tool',
+      content,
+      ts: _normalizeTimestampMs(record.timestamp || payload.timestamp)
+    }
+  }
+  return null
+}
+
+function _deriveCodexFileMetadata (filePath) {
+  let metadataCacheKey = ''
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath)
+      if (stat.isFile()) {
+        metadataCacheKey = _buildCodexFileCacheKey(filePath, stat, 'metadata')
+        if (metadataCacheKey && codexFileMetadataCache.has(metadataCacheKey)) {
+          return Object.assign({}, codexFileMetadataCache.get(metadataCacheKey))
+        }
+      }
+    }
+  } catch {}
+  const { head, tail } = _readCodexHeadTailRecords(filePath)
+  let meta = {}
+  let firstUserMessage = ''
+  let createdAt = 0
+
+  for (const record of head) {
+    createdAt = createdAt || _normalizeTimestampMs(record.timestamp)
+    if (record.type === 'session_meta' && record.payload && typeof record.payload === 'object') {
+      meta = Object.assign({}, meta, {
+        id: record.payload.id,
+        cwd: record.payload.cwd,
+        created_at_ms: _normalizeTimestampMs(record.payload.timestamp || record.timestamp) || createdAt
+      })
+    }
+    if (!firstUserMessage) {
+      const message = _extractCodexResponseMessage(record)
+      if (message && message.role === 'user' && !message.content.trim().startsWith('# AGENTS.md')) {
+        firstUserMessage = message.content.trim()
+      }
+    }
+  }
+
+  let summary = ''
+  let lastActiveAt = 0
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const record = tail[i]
+    lastActiveAt = lastActiveAt || _normalizeTimestampMs(record.timestamp)
+    if (!summary) {
+      const message = _extractCodexResponseMessage(record)
+      if (
+        message &&
+        (message.role === 'assistant' || message.role === 'user') &&
+        message.content.trim() &&
+        !message.content.trim().startsWith('[Tool:')
+      ) {
+        summary = message.content.trim()
+      }
+    }
+    if (summary && lastActiveAt) break
+  }
+
+  const result = Object.assign({}, meta, {
+    title: firstUserMessage ? firstUserMessage.slice(0, 160) : meta.title,
+    summary: summary ? summary.slice(0, 240) : '',
+    created_at_ms: meta.created_at_ms || createdAt,
+    updated_at_ms: lastActiveAt || 0,
+    rollout_path: filePath
+  })
+  if (metadataCacheKey) _rememberCodexCacheEntry(codexFileMetadataCache, metadataCacheKey, Object.assign({}, result))
+  return result
+}
+
+function _execCodexSqliteJson (dbPath, sql) {
+  try {
+    const output = cp.execFileSync('sqlite3', ['-json', dbPath, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const parsed = JSON.parse(output || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function _execCodexSqliteStatement (dbPath, sql) {
+  try {
+    cp.execFileSync('sqlite3', [dbPath, sql], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    _invalidateCodexPathCaches(dbPath)
+    return { success: true }
+  } catch (err) {
+    const stderr = err && err.stderr ? String(err.stderr).trim() : ''
+    return { success: false, error: stderr || (err && err.message ? err.message : String(err)) }
+  }
+}
+
+function _quoteSqliteIdentifier (value) {
+  return `"${String(value || '').replace(/"/g, '""')}"`
+}
+
+function _quoteSqliteLiteral (value) {
+  if (value == null) return 'NULL'
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL'
+  if (typeof value === 'boolean') return value ? '1' : '0'
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function _isTruthyCodexFlag (value) {
+  if (value === true) return true
+  if (typeof value === 'number') return value !== 0
+  const text = String(value == null ? '' : value).trim().toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes' || text === 'y'
+}
+
+function _getCodexRecordSessionPath (instanceDir, record, fallbackPath = '') {
+  const fromRecord = _resolveCodexInstancePath(instanceDir, _pickSessionField(record, [
+    'rollout_path',
+    'rolloutPath',
+    'path',
+    'file',
+    'session_path',
+    'sessionPath'
+  ]))
+  if (fromRecord && !_isCodexReservedJsonlFile(fromRecord)) return fromRecord
+  const fallback = String(fallbackPath || '').trim()
+  return fallback && fallback.toLowerCase().endsWith('.jsonl') && !_isCodexReservedJsonlFile(fallback) ? fallback : ''
+}
+
+function _resolveCodexSessionStatus (record, sessionPath, stat, sessionId) {
+  const pathText = String(sessionPath || '').trim()
+  const archivedByPath = pathText
+    ? path.normalize(pathText).split(path.sep).includes('archived_sessions')
+    : false
+  const archived = _isTruthyCodexFlag(record && record.archived) || archivedByPath
+  const recordSource = String(record && record.__codexRecordSource ? record.__codexRecordSource : '').trim()
+  const idText = String(sessionId || '').trim()
+  if (!idText) {
+    return {
+      status: 'broken',
+      statusLabel: '异常',
+      statusReason: '缺少会话 ID',
+      archived
+    }
+  }
+  if (!pathText || !pathText.toLowerCase().endsWith('.jsonl')) {
+    return {
+      status: 'broken',
+      statusLabel: '异常',
+      statusReason: '缺少会话文件路径',
+      archived
+    }
+  }
+  if (!stat) {
+    return {
+      status: 'broken',
+      statusLabel: '异常',
+      statusReason: '会话文件不存在',
+      archived
+    }
+  }
+  if (recordSource && recordSource !== 'sqlite') {
+    return {
+      status: 'unindexed',
+      statusLabel: '未索引',
+      statusReason: '缺少 SQLite threads 索引，Codex App 可能不可见',
+      archived
+    }
+  }
+  if (archived) {
+    return {
+      status: 'archived',
+      statusLabel: '已归档',
+      statusReason: archivedByPath ? '位于 archived_sessions 目录' : 'SQLite 标记 archived',
+      archived
+    }
+  }
+  return {
+    status: 'available',
+    statusLabel: '可用',
+    statusReason: '可恢复会话',
+    archived
+  }
+}
+
+function _listCodexThreadRows (instanceDir) {
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  let stat = null
+  try {
+    if (!fs.existsSync(dbPath)) return []
+    stat = fs.statSync(dbPath)
+    if (!stat.isFile()) return []
+  } catch {
+    return []
+  }
+
+  const cacheKey = _buildCodexFileCacheKey(dbPath, stat, 'threadRows')
+  if (cacheKey && codexThreadRowsCache.has(cacheKey)) {
+    return _cloneCodexRecordList(codexThreadRowsCache.get(cacheKey))
+  }
+
+  const columns = _getCodexThreadColumns(instanceDir)
+  if (!columns.includes('id') || !columns.includes('rollout_path')) return []
+
+  const preferred = [
+    'id',
+    'rollout_path',
+    'cwd',
+    'title',
+    'updated_at_ms',
+    'updated_at',
+    'created_at_ms',
+    'created_at',
+    'archived',
+    'model',
+    'model_provider'
+  ].filter(column => columns.includes(column))
+  if (preferred.length === 0) return []
+
+  const selectColumns = preferred.map(column => `"${column.replace(/"/g, '""')}"`).join(', ')
+  const rows = _execCodexSqliteJson(dbPath, `SELECT ${selectColumns} FROM threads;`)
+  if (cacheKey) _rememberCodexCacheEntry(codexThreadRowsCache, cacheKey, _cloneCodexRecordList(rows))
+  return rows
+}
+
+function _getCodexThreadColumns (instanceDir) {
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  let stat = null
+  try {
+    if (!fs.existsSync(dbPath)) return []
+    stat = fs.statSync(dbPath)
+    if (!stat.isFile()) return []
+  } catch {
+    return []
+  }
+  const cacheKey = _buildCodexFileCacheKey(dbPath, stat, 'threadColumns')
+  if (cacheKey && codexThreadColumnsCache.has(cacheKey)) {
+    return codexThreadColumnsCache.get(cacheKey).slice()
+  }
+  const columns = _execCodexSqliteJson(dbPath, 'PRAGMA table_info(threads);')
+    .map(item => String(item && item.name ? item.name : '').trim())
+    .filter(Boolean)
+  if (cacheKey) _rememberCodexCacheEntry(codexThreadColumnsCache, cacheKey, columns.slice())
+  return columns
+}
+
+function _getCodexThreadRowById (instanceDir, sessionId) {
+  const columns = _getCodexThreadColumns(instanceDir)
+  if (!columns.includes('id')) return { columns: [], row: null }
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  const selectColumns = columns.map(_quoteSqliteIdentifier).join(', ')
+  const rows = _execCodexSqliteJson(dbPath, `SELECT ${selectColumns} FROM threads WHERE id = ${_quoteSqliteLiteral(sessionId)} LIMIT 1;`)
+  return { columns, row: rows[0] || null }
+}
+
+function _deleteCodexThreadRow (instanceDir, sessionId) {
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  if (!fs.existsSync(dbPath)) return { success: true, skipped: true }
+  return _execCodexSqliteStatement(dbPath, `DELETE FROM threads WHERE id = ${_quoteSqliteLiteral(sessionId)};`)
+}
+
+function _restoreCodexThreadRow (instanceDir, columns, row) {
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  if (!row || !fs.existsSync(dbPath)) return { success: true, skipped: true }
+  const currentColumns = new Set(_getCodexThreadColumns(instanceDir))
+  const usableColumns = (Array.isArray(columns) ? columns : Object.keys(row)).filter(column => currentColumns.has(column) && Object.prototype.hasOwnProperty.call(row, column))
+  if (usableColumns.length === 0) return { success: true, skipped: true }
+  const sql = `INSERT OR REPLACE INTO threads (${usableColumns.map(_quoteSqliteIdentifier).join(', ')}) VALUES (${usableColumns.map(column => _quoteSqliteLiteral(row[column])).join(', ')});`
+  return _execCodexSqliteStatement(dbPath, sql)
+}
+
+function _readCodexSessionIndexMap (instanceDir) {
+  const map = new Map()
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  for (const record of _readCodexJsonlRecords(indexPath)) {
+    const id = _pickSessionField(record, [
+      'id',
+      'session_id',
+      'sessionId',
+      'thread_id',
+      'threadId',
+      'conversation_id',
+      'conversationId'
+    ])
+    if (id) map.set(id, record)
+  }
+  return map
+}
+
+function _readCodexSessionIndexEntries (instanceDir) {
+  return _readCodexJsonlRecords(path.join(instanceDir, 'session_index.jsonl'))
+}
+
+function _writeCodexSessionIndexEntries (instanceDir, entries) {
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  try {
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true })
+    const content = (Array.isArray(entries) ? entries : [])
+      .map(entry => JSON.stringify(entry))
+      .join('\n')
+    fs.writeFileSync(indexPath, content ? `${content}\n` : '', 'utf8')
+    _invalidateCodexPathCaches(indexPath)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function _getCodexSessionIndexEntryId (record) {
+  return _pickSessionField(record, [
+    'id',
+    'session_id',
+    'sessionId',
+    'thread_id',
+    'threadId',
+    'conversation_id',
+    'conversationId'
+  ])
+}
+
+function _removeCodexSessionIndexEntry (instanceDir, sessionId) {
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  if (!fs.existsSync(indexPath)) return { success: true, entry: null }
+  const entries = _readCodexSessionIndexEntries(instanceDir)
+  let removed = null
+  const next = entries.filter(entry => {
+    if (_getCodexSessionIndexEntryId(entry) === sessionId) {
+      removed = removed || entry
+      return false
+    }
+    return true
+  })
+  const written = _writeCodexSessionIndexEntries(instanceDir, next)
+  return Object.assign({}, written, { entry: removed })
+}
+
+function _restoreCodexSessionIndexEntry (instanceDir, sessionId, entry) {
+  if (!entry) return { success: true, skipped: true }
+  const entries = _readCodexSessionIndexEntries(instanceDir)
+  if (entries.some(item => _getCodexSessionIndexEntryId(item) === sessionId)) {
+    return { success: true, skipped: true }
+  }
+  return _writeCodexSessionIndexEntries(instanceDir, entries.concat([entry]))
+}
+
+function _upsertCodexSessionIndexEntry (instanceDir, sessionId, entry) {
+  if (!entry || !sessionId) return { success: false, error: '会话索引记录为空' }
+  const entries = _readCodexSessionIndexEntries(instanceDir)
+  let changed = false
+  const nextEntries = entries.map(item => {
+    if (_getCodexSessionIndexEntryId(item) !== sessionId) return item
+    changed = true
+    return entry
+  })
+  if (!changed) nextEntries.push(entry)
+  return _writeCodexSessionIndexEntries(instanceDir, nextEntries)
+}
+
+function _buildCodexThreadRowForCopy (targetColumns, sourceRow, session, newSessionId, targetPath, nowMs) {
+  const columns = Array.isArray(targetColumns) ? targetColumns : []
+  const source = sourceRow && typeof sourceRow === 'object' ? sourceRow : {}
+  const row = {}
+  for (const column of columns) {
+    if (Object.prototype.hasOwnProperty.call(source, column)) row[column] = source[column]
+  }
+  if (columns.includes('id')) row.id = newSessionId
+  if (columns.includes('rollout_path')) row.rollout_path = targetPath
+  if (columns.includes('cwd')) row.cwd = session.workspacePath || source.cwd || ''
+  if (columns.includes('title')) row.title = session.title || source.title || '复制的会话'
+  if (columns.includes('updated_at_ms')) row.updated_at_ms = nowMs
+  if (columns.includes('created_at_ms')) row.created_at_ms = Number(session.createdAt || source.created_at_ms || nowMs)
+  if (columns.includes('updated_at')) row.updated_at = Math.floor(nowMs / 1000)
+  if (columns.includes('created_at')) row.created_at = Math.floor(Number(session.createdAt || nowMs) / 1000)
+  if (columns.includes('archived')) row.archived = 0
+  if (columns.includes('archived_at')) row.archived_at = null
+  if (columns.includes('archived_at_ms')) row.archived_at_ms = null
+  return row
+}
+
+function _insertCodexThreadRowForCopy (instanceDir, sourceRow, session, newSessionId, targetPath, nowMs) {
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  if (!fs.existsSync(dbPath)) {
+    return { success: true, skipped: true, warning: '目标实例尚未生成 state_5.sqlite，Codex App 可能需要启动一次后才能看到该副本' }
+  }
+  const columns = _getCodexThreadColumns(instanceDir)
+  if (!columns.includes('id') || !columns.includes('rollout_path')) {
+    return { success: true, skipped: true, warning: '目标实例 SQLite 缺少 threads 必要字段，已仅写入会话文件和 session_index' }
+  }
+  const row = _buildCodexThreadRowForCopy(columns, sourceRow, session, newSessionId, targetPath, nowMs)
+  const usableColumns = columns.filter(column => Object.prototype.hasOwnProperty.call(row, column))
+  if (usableColumns.length === 0) return { success: true, skipped: true }
+  const sql = `INSERT OR REPLACE INTO threads (${usableColumns.map(_quoteSqliteIdentifier).join(', ')}) VALUES (${usableColumns.map(column => _quoteSqliteLiteral(row[column])).join(', ')});`
+  return _execCodexSqliteStatement(dbPath, sql)
+}
+
+const CODEX_COPY_SESSION_ID_KEYS = new Set([
+  'id',
+  'session_id',
+  'sessionId',
+  'thread_id',
+  'threadId',
+  'conversation_id',
+  'conversationId'
+])
+
+function _rewriteCodexSessionRecordForCopy (value, oldSessionId, newSessionId, sourcePath, targetPath) {
+  if (Array.isArray(value)) {
+    return value.map(item => _rewriteCodexSessionRecordForCopy(item, oldSessionId, newSessionId, sourcePath, targetPath))
+  }
+  if (!value || typeof value !== 'object') return value
+  const next = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (CODEX_COPY_SESSION_ID_KEYS.has(key) && String(item || '') === oldSessionId) {
+      next[key] = newSessionId
+    } else if (key === 'rollout_path' || key === 'rolloutPath' || key === 'session_path' || key === 'sessionPath') {
+      next[key] = String(item || '') === sourcePath ? targetPath : item
+    } else {
+      next[key] = _rewriteCodexSessionRecordForCopy(item, oldSessionId, newSessionId, sourcePath, targetPath)
+    }
+  }
+  if (next.type === 'session_meta' && next.payload && typeof next.payload === 'object') {
+    next.payload = Object.assign({}, next.payload, { id: newSessionId })
+  }
+  return next
+}
+
+function _updateCodexThreadForUnarchive (instanceDir, sessionId, nextPath) {
+  const columns = _getCodexThreadColumns(instanceDir)
+  const updates = []
+  if (columns.includes('archived')) updates.push(`${_quoteSqliteIdentifier('archived')} = 0`)
+  if (columns.includes('archived_at')) updates.push(`${_quoteSqliteIdentifier('archived_at')} = NULL`)
+  if (columns.includes('archived_at_ms')) updates.push(`${_quoteSqliteIdentifier('archived_at_ms')} = NULL`)
+  if (nextPath && columns.includes('rollout_path')) updates.push(`${_quoteSqliteIdentifier('rollout_path')} = ${_quoteSqliteLiteral(nextPath)}`)
+  if (updates.length === 0) return { success: true, skipped: true }
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  if (!fs.existsSync(dbPath)) return { success: true, skipped: true }
+  return _execCodexSqliteStatement(dbPath, `UPDATE threads SET ${updates.join(', ')} WHERE id = ${_quoteSqliteLiteral(sessionId)};`)
+}
+
+function _updateCodexSessionIndexForUnarchive (instanceDir, sessionId, nextPath) {
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  if (!fs.existsSync(indexPath)) return { success: true, skipped: true }
+  const entries = _readCodexSessionIndexEntries(instanceDir)
+  let changed = false
+  const nextEntries = entries.map(entry => {
+    if (_getCodexSessionIndexEntryId(entry) !== sessionId) return entry
+    changed = true
+    const next = Object.assign({}, entry, { archived: false })
+    if (Object.prototype.hasOwnProperty.call(next, 'archived_at')) next.archived_at = null
+    if (Object.prototype.hasOwnProperty.call(next, 'archivedAt')) next.archivedAt = null
+    if (Object.prototype.hasOwnProperty.call(next, 'archived_at_ms')) next.archived_at_ms = null
+    if (Object.prototype.hasOwnProperty.call(next, 'archivedAtMs')) next.archivedAtMs = null
+    if (nextPath) next.rollout_path = nextPath
+    return next
+  })
+  if (!changed) return { success: true, skipped: true }
+  return _writeCodexSessionIndexEntries(instanceDir, nextEntries)
+}
+
+function _updateCodexThreadForArchive (instanceDir, sessionId, nextPath, archivedAtMs) {
+  const columns = _getCodexThreadColumns(instanceDir)
+  const updates = []
+  if (columns.includes('archived')) updates.push(`${_quoteSqliteIdentifier('archived')} = 1`)
+  if (columns.includes('archived_at')) updates.push(`${_quoteSqliteIdentifier('archived_at')} = ${Math.floor(Number(archivedAtMs || Date.now()) / 1000)}`)
+  if (columns.includes('archived_at_ms')) updates.push(`${_quoteSqliteIdentifier('archived_at_ms')} = ${Math.round(Number(archivedAtMs || Date.now()))}`)
+  if (nextPath && columns.includes('rollout_path')) updates.push(`${_quoteSqliteIdentifier('rollout_path')} = ${_quoteSqliteLiteral(nextPath)}`)
+  if (updates.length === 0) return { success: true, skipped: true }
+  const dbPath = path.join(instanceDir, 'state_5.sqlite')
+  if (!fs.existsSync(dbPath)) return { success: true, skipped: true }
+  return _execCodexSqliteStatement(dbPath, `UPDATE threads SET ${updates.join(', ')} WHERE id = ${_quoteSqliteLiteral(sessionId)};`)
+}
+
+function _updateCodexSessionIndexForArchive (instanceDir, sessionId, nextPath, archivedAtMs) {
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  if (!fs.existsSync(indexPath)) return { success: true, skipped: true }
+  const entries = _readCodexSessionIndexEntries(instanceDir)
+  let changed = false
+  const nextEntries = entries.map(entry => {
+    if (_getCodexSessionIndexEntryId(entry) !== sessionId) return entry
+    changed = true
+    const next = Object.assign({}, entry, {
+      archived: true,
+      archived_at: Math.floor(Number(archivedAtMs || Date.now()) / 1000)
+    })
+    if (Object.prototype.hasOwnProperty.call(next, 'archivedAt')) next.archivedAt = next.archived_at
+    if (Object.prototype.hasOwnProperty.call(next, 'archived_at_ms')) next.archived_at_ms = Math.round(Number(archivedAtMs || Date.now()))
+    if (Object.prototype.hasOwnProperty.call(next, 'archivedAtMs')) next.archivedAtMs = Math.round(Number(archivedAtMs || Date.now()))
+    if (nextPath) next.rollout_path = nextPath
+    return next
+  })
+  if (!changed) return { success: true, skipped: true }
+  return _writeCodexSessionIndexEntries(instanceDir, nextEntries)
+}
+
+function _moveCodexSessionFileToArchived (instanceDir, sourcePath) {
+  const currentPath = String(sourcePath || '').trim()
+  if (!currentPath) return { success: true, moved: false, path: currentPath }
+  const sessionsRoot = path.join(instanceDir, 'sessions')
+  if (!_isPathInside(sessionsRoot, currentPath)) return { success: true, moved: false, path: currentPath }
+  const nextPath = path.join(instanceDir, 'archived_sessions', path.basename(currentPath))
+  if (fs.existsSync(nextPath)) {
+    return { success: false, error: 'archived_sessions 中已存在同名会话文件，已取消归档操作' }
+  }
+  try {
+    fs.mkdirSync(path.dirname(nextPath), { recursive: true })
+    fs.renameSync(currentPath, nextPath)
+    _invalidateCodexPathCaches(currentPath)
+    _invalidateCodexPathCaches(nextPath)
+    return { success: true, moved: true, path: nextPath, previousPath: currentPath }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function _moveArchivedCodexSessionFileToSessions (instanceDir, sourcePath) {
+  const currentPath = String(sourcePath || '').trim()
+  if (!currentPath) return { success: true, moved: false, path: currentPath }
+  const archivedRoot = path.join(instanceDir, 'archived_sessions')
+  if (!_isPathInside(archivedRoot, currentPath)) return { success: true, moved: false, path: currentPath }
+  const relativePath = path.relative(archivedRoot, currentPath)
+  const dateMatch = path.basename(currentPath).match(/^rollout-(\d{4})-(\d{2})-(\d{2})T/)
+  const nextRelativePath = relativePath.includes(path.sep) || !dateMatch
+    ? relativePath
+    : path.join(dateMatch[1], dateMatch[2], dateMatch[3], path.basename(currentPath))
+  const nextPath = path.join(instanceDir, 'sessions', nextRelativePath)
+  if (fs.existsSync(nextPath)) {
+    return { success: false, error: 'sessions 中已存在同名会话文件，已取消取消归档操作' }
+  }
+  try {
+    fs.mkdirSync(path.dirname(nextPath), { recursive: true })
+    fs.renameSync(currentPath, nextPath)
+    _invalidateCodexPathCaches(currentPath)
+    _invalidateCodexPathCaches(nextPath)
+    return { success: true, moved: true, path: nextPath, previousPath: currentPath }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function _formatCodexSessionCopyDateParts (value) {
+  const date = new Date(Number(value || 0) > 0 ? Number(value) : Date.now())
+  const iso = Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString()
+  const datePart = iso.slice(0, 10)
+  const timePart = iso.slice(11, 19).replace(/:/g, '-')
+  const [year, month, day] = datePart.split('-')
+  return { year, month, day, stamp: `${datePart}T${timePart}` }
+}
+
+function _buildCodexCopiedSessionPath (instanceDir, session, newSessionId, nowMs) {
+  const parts = _formatCodexSessionCopyDateParts(session && (session.createdAt || session.updatedAt) ? (session.createdAt || session.updatedAt) : nowMs)
+  return path.join(instanceDir, 'sessions', parts.year, parts.month, parts.day, `rollout-${parts.stamp}-${newSessionId}.jsonl`)
+}
+
+function _buildCodexCopiedSessionIndexEntry (sourceEntry, session, newSessionId, targetPath, nowMs) {
+  const entry = Object.assign({}, sourceEntry && typeof sourceEntry === 'object' ? sourceEntry : {})
+  entry.id = newSessionId
+  entry.title = session.title || entry.title || '复制的会话'
+  entry.cwd = session.workspacePath || entry.cwd || ''
+  entry.rollout_path = targetPath
+  entry.updated_at_ms = nowMs
+  if (!entry.created_at_ms) entry.created_at_ms = Number(session.createdAt || nowMs)
+  entry.archived = false
+  if (Object.prototype.hasOwnProperty.call(entry, 'archived_at')) entry.archived_at = null
+  if (Object.prototype.hasOwnProperty.call(entry, 'archivedAt')) entry.archivedAt = null
+  if (Object.prototype.hasOwnProperty.call(entry, 'archived_at_ms')) entry.archived_at_ms = null
+  if (Object.prototype.hasOwnProperty.call(entry, 'archivedAtMs')) entry.archivedAtMs = null
+  return entry
+}
+
+function _copyCodexSessionFileWithNewId (sourcePath, targetPath, oldSessionId, newSessionId) {
+  const sourceText = fs.readFileSync(sourcePath, 'utf8')
+  const lines = sourceText.split(/\r?\n/)
+  const nextLines = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    const record = _safeParseJsonLine(line)
+    if (!record) {
+      nextLines.push(line)
+      continue
+    }
+    const rewritten = _rewriteCodexSessionRecordForCopy(record, oldSessionId, newSessionId, sourcePath, targetPath)
+    nextLines.push(JSON.stringify(rewritten))
+  }
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+  fs.writeFileSync(targetPath, nextLines.length > 0 ? `${nextLines.join('\n')}\n` : '', 'utf8')
+  _invalidateCodexPathCaches(targetPath)
+}
+
+function _getCodexSessionStatusRank (session) {
+  const status = String(session && session.status ? session.status : '').trim()
+  if (status === 'available') return 0
+  if (status === 'unindexed') return 1
+  if (status === 'broken') return 2
+  if (status === 'archived') return 3
+  return 4
+}
+
+function _sortCodexSessions (sessions) {
+  return (Array.isArray(sessions) ? sessions : []).sort((a, b) => {
+    const rankDiff = _getCodexSessionStatusRank(a) - _getCodexSessionStatusRank(b)
+    if (rankDiff !== 0) return rankDiff
+    return Number(b && b.updatedAt ? b.updatedAt : 0) - Number(a && a.updatedAt ? a.updatedAt : 0)
+  })
+}
+
+function _buildCodexSessionItem (account, instanceDir, sourcePath, record, fallbackStat) {
+  const sessionPath = _getCodexRecordSessionPath(instanceDir, record, sourcePath)
+  let stat = fallbackStat || null
+  try {
+    if (!stat && sessionPath && fs.existsSync(sessionPath)) stat = fs.statSync(sessionPath)
+  } catch {}
+  const workspacePath = _deriveCodexSessionWorkspace(record)
+  const explicitSessionId = _pickCodexRecordSessionId(record)
+  const sessionId = explicitSessionId || (sessionPath ? _deriveCodexSessionId(sessionPath, record) : '')
+  const status = _resolveCodexSessionStatus(record, sessionPath, stat, sessionId)
+  const updatedAt = _normalizeTimestampMs(_pickSessionField(record, [
+    'updated_at_ms',
+    'updatedAtMs',
+    'updated_at',
+    'updatedAt',
+    'last_updated_at',
+    'lastUpdatedAt',
+    'timestamp',
+    'time',
+    'created_at',
+    'createdAt'
+  ])) || (stat ? Math.round(stat.mtimeMs) : 0)
+  const createdAt = _normalizeTimestampMs(_pickSessionField(record, [
+    'created_at_ms',
+    'createdAtMs',
+    'created_at',
+    'createdAt',
+    'started_at',
+    'startedAt'
+  ])) || (stat ? Math.round(stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs) : updatedAt)
+
+  return {
+    id: `${account.id || 'account'}:${sessionId}`,
+    sessionId,
+    title: _deriveCodexSessionTitle(record, sessionPath || sourcePath),
+    accountId: account.id || '',
+    accountEmail: account.email || '',
+    accountName: account.account_name || account.workspace || '',
+    instanceDir,
+    path: sessionPath || sourcePath || '',
+    workspacePath,
+    workspaceName: _getCodexWorkspaceName(workspacePath),
+    updatedAt,
+    createdAt,
+    size: stat ? stat.size : 0,
+    status: status.status,
+    statusLabel: status.statusLabel,
+    statusReason: status.statusReason,
+    archived: status.archived,
+    missingFile: status.status === 'broken' && status.statusReason === '会话文件不存在'
+  }
+}
+
+function _buildCodexSessionSourceItem (source, sourcePath, record, fallbackStat) {
+  const sessionPath = _resolveCodexInstancePath(source.instanceDir, _pickSessionField(record, [
+    'rollout_path',
+    'rolloutPath',
+    'path',
+    'file',
+    'session_path',
+    'sessionPath'
+  ])) || sourcePath
+  const fileMetadata = sessionPath && sessionPath.toLowerCase().endsWith('.jsonl')
+    ? _deriveCodexFileMetadata(sessionPath)
+    : {}
+  const enriched = Object.assign({}, fileMetadata, record)
+  if (!enriched.summary && fileMetadata.summary) enriched.summary = fileMetadata.summary
+  if (!_pickSessionField(enriched, ['title', 'name', 'summary']) && fileMetadata.title) enriched.title = fileMetadata.title
+  if (!_pickSessionField(enriched, ['cwd', 'workspace', 'workspace_path']) && fileMetadata.cwd) enriched.cwd = fileMetadata.cwd
+  const item = _buildCodexSessionItem(source.account, source.instanceDir, sourcePath, enriched, fallbackStat)
+  item.sourceType = source.sourceType || 'account'
+  item.sourceName = source.sourceName || ''
+  item.accountId = source.account.id || ''
+  item.accountEmail = source.account.email || ''
+  item.accountName = source.account.account_name || source.account.workspace || source.sourceName || ''
+  item.id = `${source.id || item.accountId || 'codex'}:${item.sessionId}`
+  item.summary = String(enriched.summary || '').trim()
+  item.resumeCommand = item.sessionId ? `codex resume ${item.sessionId}` : ''
+  return item
+}
+
+function _getCodexSessionItemRank (item) {
+  const status = String(item && item.status ? item.status : '').trim()
+  const hasPath = !!String(item && item.path ? item.path : '').trim()
+  if ((status === 'available' || status === 'archived') && hasPath) return 50
+  if (status === 'unindexed' && hasPath) return 40
+  if (status === 'broken' && hasPath) return 20
+  return hasPath ? 10 : 0
+}
+
+function _listCodexSessionsForSource (source) {
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  if (!instanceDir || !fs.existsSync(instanceDir)) {
+    return {
+      accountId: source && source.account && source.account.id ? source.account.id : '',
+      accountEmail: source && source.account && source.account.email ? source.account.email : '',
+      sourceId: source && source.id ? source.id : '',
+      sourceType: source && source.sourceType ? source.sourceType : 'account',
+      sourceName: source && source.sourceName ? source.sourceName : '',
+      instanceDir,
+      bound: false,
+      sessions: []
+    }
+  }
+
+  const byPath = new Map()
+  const keyBySessionId = new Map()
+  const setSessionItem = (key, item) => {
+    const sessionId = String(item && item.sessionId ? item.sessionId : '').trim()
+    if (sessionId && keyBySessionId.has(sessionId)) {
+      const existingKey = keyBySessionId.get(sessionId)
+      const existing = byPath.get(existingKey)
+      if (existingKey !== key) {
+        if (_getCodexSessionItemRank(item) > _getCodexSessionItemRank(existing)) {
+          byPath.delete(existingKey)
+          byPath.set(key, item)
+          keyBySessionId.set(sessionId, key)
+        }
+        return
+      }
+    }
+    byPath.set(key, item)
+    if (sessionId) keyBySessionId.set(sessionId, key)
+  }
+  const indexMap = _readCodexSessionIndexMap(instanceDir)
+  const threadRows = _listCodexThreadRows(instanceDir)
+  for (const row of threadRows) {
+    const id = _deriveCodexSessionId('', row)
+    const indexRecord = id && indexMap.has(id) ? indexMap.get(id) : {}
+    const record = Object.assign({}, indexRecord, row, { __codexRecordSource: 'sqlite' })
+    const item = _buildCodexSessionSourceItem(source, path.join(instanceDir, 'state_5.sqlite'), record)
+    const key = item.path ? path.resolve(item.path) : `${source.id}:${item.sessionId}`
+    setSessionItem(key, item)
+  }
+
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  const indexRecords = _readCodexJsonlRecords(indexPath)
+  for (const record of indexRecords) {
+    const item = _buildCodexSessionSourceItem(source, '', Object.assign({}, record, { __codexRecordSource: 'index' }))
+    if (item.path) {
+      const key = path.resolve(item.path)
+      if (!byPath.has(key)) setSessionItem(key, item)
+    } else if (item.sessionId) {
+      const key = `${source.id}:${item.sessionId}`
+      if (!byPath.has(key)) setSessionItem(key, item)
+    }
+  }
+
+  for (const relativePath of CODEX_INSTANCE_SESSION_DIRS) {
+    const sessionRoot = path.join(instanceDir, relativePath)
+    for (const filePath of _collectCodexSessionFiles(sessionRoot)) {
+      const key = path.resolve(filePath)
+      if (byPath.has(key)) continue
+      const records = _readCodexJsonlRecords(filePath, 30, 512 * 1024)
+      const metadata = records.find(item => _deriveCodexSessionWorkspace(item) || _pickSessionField(item, ['title', 'summary', ['metadata', 'title']])) || records[0] || {}
+      let stat = null
+      try {
+        stat = fs.statSync(filePath)
+      } catch {}
+      setSessionItem(key, _buildCodexSessionSourceItem(source, filePath, Object.assign({}, metadata, { __codexRecordSource: 'file' }), stat))
+    }
+  }
+
+  const sessions = _sortCodexSessions(Array.from(byPath.values()))
+  return {
+    accountId: source.account.id || '',
+    accountEmail: source.account.email || '',
+    sourceId: source.id || '',
+    sourceType: source.sourceType || 'account',
+    sourceName: source.sourceName || '',
+    instanceDir,
+    bound: true,
+    sessions
+  }
+}
+
+function _pushCodexSessionSource (sources, seen, source) {
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  if (!instanceDir || !fs.existsSync(instanceDir)) return
+  const key = path.resolve(instanceDir)
+  if (seen.has(key)) return
+  seen.add(key)
+  sources.push(Object.assign({}, source, { instanceDir }))
+}
+
+function _discoverLegacyCodexCliInstanceDirs (accountId) {
+  const rootDir = _getCodexCliInstancesRootDir()
+  const prefix = `cli-${String(accountId || '').trim()}-`
+  if (!prefix || prefix === 'cli--') return []
+  try {
+    return fs.readdirSync(rootDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && entry.name.startsWith(prefix))
+      .map(entry => path.join(rootDir, entry.name))
+  } catch {
+    return []
+  }
+}
+
+function _discoverCodexSessionSources (accounts, options = {}) {
+  const sources = []
+  const seen = new Set()
+  const includeDefault = !(options && options.includeDefaultHome === false)
+  const includeDefaultForFilter = !String(options && options.accountId ? options.accountId : '').trim()
+
+  if (includeDefault && includeDefaultForFilter) {
+    const defaultDir = _getDefaultCodexHomeDir(options)
+    _pushCodexSessionSource(sources, seen, {
+      id: 'default',
+      sourceType: 'default',
+      sourceName: '默认 ~/.codex',
+      account: {
+        id: '',
+        email: '默认 ~/.codex',
+        account_name: '默认 ~/.codex'
+      },
+      instanceDir: defaultDir
+    })
+  }
+
+  for (const account of accounts) {
+    const accountId = String(account && account.id ? account.id : '').trim()
+    const saved = String(account && account[CODEX_CLI_INSTANCE_DIR_FIELD] ? account[CODEX_CLI_INSTANCE_DIR_FIELD] : '').trim()
+    if (saved) {
+      _pushCodexSessionSource(sources, seen, {
+        id: accountId || saved,
+        sourceType: 'account',
+        sourceName: account.email || accountId,
+        account,
+        instanceDir: saved
+      })
+    }
+
+    const managed = _buildCodexCliInstanceDir(accountId)
+    _pushCodexSessionSource(sources, seen, {
+      id: accountId || managed,
+      sourceType: 'account',
+      sourceName: account.email || accountId,
+      account,
+      instanceDir: managed
+    })
+
+    for (const legacyDir of _discoverLegacyCodexCliInstanceDirs(accountId)) {
+      _pushCodexSessionSource(sources, seen, {
+        id: `${accountId}:${path.basename(legacyDir)}`,
+        sourceType: 'legacy',
+        sourceName: `${account.email || accountId} 旧实例`,
+        account,
+        instanceDir: legacyDir
+      })
+    }
+  }
+
+  return sources
+}
+
+function _getCodexSessionTrashRootDir () {
+  return path.join(dataRoot.ensureDataRootLayout(), 'trash', 'codex-sessions')
+}
+
+function _isCodexProjectlessWorkspaceDir (workspacePath) {
+  const targetPath = String(workspacePath || '').trim()
+  if (!targetPath || !path.isAbsolute(targetPath)) return false
+  const normalized = path.normalize(targetPath)
+  const leaf = path.basename(normalized)
+  const dateDir = path.basename(path.dirname(normalized))
+  const codexDir = path.basename(path.dirname(path.dirname(normalized)))
+  const documentsDir = path.basename(path.dirname(path.dirname(path.dirname(normalized))))
+  return !!leaf && /^\d{4}-\d{2}-\d{2}$/.test(dateDir) && codexDir === 'Codex' && documentsDir === 'Documents'
+}
+
+function _isEmptyDirectory (targetPath) {
+  try {
+    const stat = fs.lstatSync(targetPath)
+    return stat.isDirectory() && !stat.isSymbolicLink() && fs.readdirSync(targetPath).length === 0
+  } catch {
+    return false
+  }
+}
+
+function _isCodexWorkspaceReferencedByLiveSession (workspacePath, options = {}) {
+  const targetPath = _normalizeCodexWorkspacePath(workspacePath)
+  if (!targetPath) return false
+  const sources = _discoverCodexSessionSources(storage.listAccounts(PLATFORM), options)
+  for (const source of sources) {
+    const result = _listCodexSessionsForSource(source)
+    for (const session of result.sessions) {
+      if (_normalizeCodexWorkspacePath(session.workspacePath) === targetPath) return true
+    }
+  }
+  return false
+}
+
+function _isCodexWorkspaceReferencedByTrash (workspacePath, excludedTrashIds = new Set()) {
+  const targetPath = _normalizeCodexWorkspacePath(workspacePath)
+  if (!targetPath) return false
+  const rootDir = _getCodexSessionTrashRootDir()
+  let entries = []
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || excludedTrashIds.has(entry.name)) continue
+    const manifest = fileUtils.readJsonFile(path.join(rootDir, entry.name, 'manifest.json'))
+    const workspace = manifest && manifest.session ? manifest.session.workspacePath : ''
+    if (_normalizeCodexWorkspacePath(workspace) === targetPath) return true
+  }
+  return false
+}
+
+function _tryRemoveCodexProjectlessWorkspaceDir (workspacePath, options = {}) {
+  const targetPath = _normalizeCodexWorkspacePath(workspacePath)
+  if (!_isCodexProjectlessWorkspaceDir(targetPath)) {
+    return { removed: false, path: targetPath, skippedReason: 'not_projectless_workspace' }
+  }
+  if (!_isEmptyDirectory(targetPath)) {
+    return { removed: false, path: targetPath, skippedReason: 'not_empty' }
+  }
+  if (_isCodexWorkspaceReferencedByLiveSession(targetPath, options)) {
+    return { removed: false, path: targetPath, skippedReason: 'live_session_reference' }
+  }
+  if (_isCodexWorkspaceReferencedByTrash(targetPath, options.excludedTrashIds || new Set())) {
+    return { removed: false, path: targetPath, skippedReason: 'trash_reference' }
+  }
+  try {
+    fs.rmdirSync(targetPath)
+    return { removed: true, path: targetPath }
+  } catch (err) {
+    return { removed: false, path: targetPath, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function _readCodexTrashManifest (trashId) {
+  const id = String(trashId || '').trim()
+  if (!/^[a-f0-9]{24,40}$/i.test(id)) return null
+  return fileUtils.readJsonFile(path.join(_getCodexSessionTrashRootDir(), id, 'manifest.json'))
+}
+
+function _findCodexSessionForOperation (sessionId, sourcePath, options = {}) {
+  const targetSessionId = String(sessionId || '').trim()
+  const targetPath = sourcePath ? path.resolve(String(sourcePath)) : ''
+  if (targetPath && _isCodexReservedJsonlFile(targetPath)) return null
+  const allAccounts = storage.listAccounts(PLATFORM)
+  const sources = _discoverCodexSessionSources(allAccounts, options)
+  for (const source of sources) {
+    const result = _listCodexSessionsForSource(source)
+    for (const session of result.sessions) {
+      const sameId = targetSessionId && session.sessionId === targetSessionId
+      const samePath = targetPath && session.path && path.resolve(session.path) === targetPath
+      if (targetSessionId && targetPath) {
+        if (sameId && samePath) return { source, session }
+      } else if (sameId || samePath) {
+        return { source, session }
+      }
+    }
+  }
+  return null
+}
+
+function _buildCodexTrashManifest (source, session) {
+  const sessionId = String(session && session.sessionId ? session.sessionId : '').trim()
+  const sourcePath = String(session && session.path ? session.path : '').trim()
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const thread = _getCodexThreadRowById(instanceDir, sessionId)
+  const indexEntry = _readCodexSessionIndexMap(instanceDir).get(sessionId) || null
+  const trashId = crypto.createHash('sha1').update(`${Date.now()}:${sessionId}:${sourcePath}:${Math.random()}`).digest('hex').slice(0, 24)
+  const trashDir = path.join(_getCodexSessionTrashRootDir(), trashId)
+  const fileName = path.basename(sourcePath || `session-${sessionId}.jsonl`)
+  return {
+    trashId,
+    trashedAt: Date.now(),
+    provider: PLATFORM,
+    session: {
+      sessionId,
+      title: session.title || '',
+      summary: session.summary || '',
+      workspacePath: session.workspacePath || '',
+      workspaceName: session.workspaceName || '',
+      updatedAt: session.updatedAt || 0,
+      createdAt: session.createdAt || 0,
+      resumeCommand: session.resumeCommand || (sessionId ? `codex resume ${sessionId}` : '')
+    },
+    source: {
+      sourceId: source.id || '',
+      sourceType: source.sourceType || '',
+      sourceName: source.sourceName || '',
+      accountId: source.account && source.account.id ? source.account.id : '',
+      accountEmail: source.account && source.account.email ? source.account.email : '',
+      instanceDir,
+      originalPath: sourcePath,
+      relativePath: sourcePath && instanceDir && _isPathInside(instanceDir, sourcePath)
+        ? path.relative(instanceDir, sourcePath)
+        : ''
+    },
+    trash: {
+      dir: trashDir,
+      filePath: path.join(trashDir, fileName)
+    },
+    sqlite: {
+      columns: thread.columns,
+      row: thread.row
+    },
+    sessionIndexEntry: indexEntry
+  }
+}
+
+function moveCliSessionsToTrash (options = {}) {
+  const rawItems = Array.isArray(options && options.items) ? options.items : []
+  const items = rawItems.length > 0 ? rawItems : [options]
+  const results = []
+
+  for (const item of items) {
+    const found = _findCodexSessionForOperation(item.sessionId, item.sourcePath || item.path, options)
+    if (!found) {
+      results.push({ success: false, error: '会话不存在或已被移动', sessionId: item.sessionId || '' })
+      continue
+    }
+    const { source, session } = found
+    const manifest = _buildCodexTrashManifest(source, session)
+    if (!manifest.session.sessionId || !manifest.source.originalPath || !fs.existsSync(manifest.source.originalPath)) {
+      results.push({ success: false, error: '会话文件不存在，无法移动到回收站', sessionId: manifest.session.sessionId })
+      continue
+    }
+
+    try {
+      fs.mkdirSync(manifest.trash.dir, { recursive: true })
+      fs.copyFileSync(manifest.source.originalPath, manifest.trash.filePath)
+      if (!fileUtils.writeJsonFile(path.join(manifest.trash.dir, 'manifest.json'), manifest)) {
+        throw new Error('写入回收站 manifest 失败')
+      }
+      const deletedThread = _deleteCodexThreadRow(manifest.source.instanceDir, manifest.session.sessionId)
+      if (!deletedThread.success) throw new Error(deletedThread.error || '删除 SQLite 索引失败')
+      const removedIndex = _removeCodexSessionIndexEntry(manifest.source.instanceDir, manifest.session.sessionId)
+      if (!removedIndex.success) throw new Error(removedIndex.error || '更新 session_index.jsonl 失败')
+      if (!manifest.sessionIndexEntry && removedIndex.entry) {
+        manifest.sessionIndexEntry = removedIndex.entry
+        if (!fileUtils.writeJsonFile(path.join(manifest.trash.dir, 'manifest.json'), manifest)) {
+          throw new Error('更新回收站 manifest 失败')
+        }
+      }
+      fs.unlinkSync(manifest.source.originalPath)
+      results.push({ success: true, trashId: manifest.trashId, sessionId: manifest.session.sessionId })
+    } catch (err) {
+      results.push({
+        success: false,
+        trashId: manifest.trashId,
+        sessionId: manifest.session.sessionId,
+        error: err && err.message ? err.message : String(err)
+      })
+    }
+  }
+
+  return {
+    success: results.every(item => item.success),
+    results,
+    moved: results.filter(item => item.success).length,
+    failed: results.filter(item => !item.success).length
+  }
+}
+
+function unarchiveCliSession (options = {}) {
+  const found = _findCodexSessionForOperation(options && options.sessionId, options && (options.sourcePath || options.path), options)
+  if (!found) return { success: false, error: '会话不存在或已被移动' }
+
+  const { source, session } = found
+  if (session.status !== 'archived') {
+    return { success: false, error: '会话不是已归档状态' }
+  }
+
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const sessionId = String(session && session.sessionId ? session.sessionId : '').trim()
+  const movedFile = _moveArchivedCodexSessionFileToSessions(instanceDir, session.path)
+  if (!movedFile.success) return Object.assign({ success: false, sessionId }, movedFile)
+
+  try {
+    const updatedThread = _updateCodexThreadForUnarchive(instanceDir, sessionId, movedFile.moved ? movedFile.path : '')
+    if (!updatedThread.success) throw new Error(updatedThread.error || '更新 SQLite 归档状态失败')
+    const updatedIndex = _updateCodexSessionIndexForUnarchive(instanceDir, sessionId, movedFile.moved ? movedFile.path : '')
+    if (!updatedIndex.success) throw new Error(updatedIndex.error || '更新 session_index.jsonl 归档状态失败')
+    return {
+      success: true,
+      sessionId,
+      sourcePath: session.path || '',
+      path: movedFile.path || session.path || '',
+      moved: !!movedFile.moved
+    }
+  } catch (err) {
+    if (movedFile.moved && movedFile.previousPath && movedFile.path) {
+      try {
+        fs.mkdirSync(path.dirname(movedFile.previousPath), { recursive: true })
+        if (fs.existsSync(movedFile.path) && !fs.existsSync(movedFile.previousPath)) {
+          fs.renameSync(movedFile.path, movedFile.previousPath)
+        }
+      } catch {}
+    }
+    return { success: false, sessionId, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function prepareCliSessionResume (options = {}) {
+  const found = _findCodexSessionForOperation(options && options.sessionId, options && (options.sourcePath || options.path), options)
+  if (!found) return { success: false, error: '会话不存在或已被移动' }
+
+  const { source, session } = found
+  const sessionId = String(session && session.sessionId ? session.sessionId : '').trim()
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const workspacePath = String(session && session.workspacePath ? session.workspacePath : '').trim()
+  if (!sessionId) return { success: false, error: '会话 ID 为空' }
+  if (!instanceDir) return { success: false, error: '会话实例目录为空' }
+  if (!workspacePath) return { success: false, error: '该会话缺少工作区路径，无法打开 CLI' }
+  if (session.status !== 'available' && session.status !== 'archived') {
+    return { success: false, error: '当前会话状态无法继续聊天' }
+  }
+
+  return {
+    success: true,
+    command: 'codex',
+    cwd: workspacePath,
+    args: ['resume', sessionId],
+    env: { CODEX_HOME: instanceDir },
+    sessionId,
+    sourcePath: session.path || '',
+    workspacePath,
+    workspaceName: session.workspaceName || '',
+    instanceDir,
+    sourceId: source.id || '',
+    sourceType: source.sourceType || '',
+    sourceName: source.sourceName || '',
+    accountId: source.account && source.account.id ? source.account.id : '',
+    accountEmail: source.account && source.account.email ? source.account.email : ''
+  }
+}
+
+function archiveCliSession (options = {}) {
+  const found = _findCodexSessionForOperation(options && options.sessionId, options && (options.sourcePath || options.path), options)
+  if (!found) return { success: false, error: '会话不存在或已被移动' }
+
+  const { source, session } = found
+  if (session.status !== 'available') {
+    return { success: false, error: '只有可用会话可以归档' }
+  }
+
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const sessionId = String(session && session.sessionId ? session.sessionId : '').trim()
+  const archivedAtMs = Date.now()
+  const movedFile = _moveCodexSessionFileToArchived(instanceDir, session.path)
+  if (!movedFile.success) return Object.assign({ success: false, sessionId }, movedFile)
+
+  try {
+    const updatedThread = _updateCodexThreadForArchive(instanceDir, sessionId, movedFile.moved ? movedFile.path : '', archivedAtMs)
+    if (!updatedThread.success) throw new Error(updatedThread.error || '更新 SQLite 归档状态失败')
+    const updatedIndex = _updateCodexSessionIndexForArchive(instanceDir, sessionId, movedFile.moved ? movedFile.path : '', archivedAtMs)
+    if (!updatedIndex.success) throw new Error(updatedIndex.error || '更新 session_index.jsonl 归档状态失败')
+    return {
+      success: true,
+      sessionId,
+      sourcePath: session.path || '',
+      path: movedFile.path || session.path || '',
+      moved: !!movedFile.moved,
+      archivedAt: archivedAtMs
+    }
+  } catch (err) {
+    if (movedFile.moved && movedFile.previousPath && movedFile.path) {
+      try {
+        fs.mkdirSync(path.dirname(movedFile.previousPath), { recursive: true })
+        if (fs.existsSync(movedFile.path) && !fs.existsSync(movedFile.previousPath)) {
+          fs.renameSync(movedFile.path, movedFile.previousPath)
+        }
+      } catch {}
+    }
+    return { success: false, sessionId, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function copyCliSessionToInstance (options = {}) {
+  const targetAccountId = String(options && (options.targetAccountId || options.accountId) ? (options.targetAccountId || options.accountId) : '').trim()
+  if (!targetAccountId) return { success: false, error: '请选择目标实例账号' }
+
+  const found = _findCodexSessionForOperation(options && options.sessionId, options && (options.sourcePath || options.path), options)
+  if (!found) return { success: false, error: '会话不存在或已被移动' }
+
+  const { source, session } = found
+  if (session.status === 'broken') return { success: false, error: '异常会话不能复制，请先修复索引或会话文件' }
+  if (!session.sessionId || !session.path || !fs.existsSync(session.path)) {
+    return { success: false, error: '会话文件不存在，无法复制' }
+  }
+
+  const targetAccount = storage.getAccount(PLATFORM, targetAccountId)
+  if (!targetAccount) return { success: false, error: '目标实例账号不存在' }
+
+  const sourceInstanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const targetInstanceDir = _resolveBoundCodexCliInstanceDir(targetAccountId, targetAccount)
+  if (sourceInstanceDir && path.resolve(sourceInstanceDir) === path.resolve(targetInstanceDir)) {
+    return { success: false, error: '源实例和目标实例相同，无需复制' }
+  }
+
+  const nowMs = Date.now()
+  const newSessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.createHash('sha1').update(`${session.sessionId}:${targetAccountId}:${nowMs}:${Math.random()}`).digest('hex').slice(0, 32)
+  const targetPath = _buildCodexCopiedSessionPath(targetInstanceDir, session, newSessionId, nowMs)
+  const warnings = []
+
+  try {
+    fileUtils.ensureDir(targetInstanceDir)
+    _ensureCodexCliSharedEntries(targetInstanceDir)
+    if (fs.existsSync(targetPath)) throw new Error('目标实例已存在同名会话文件')
+
+    _copyCodexSessionFileWithNewId(session.path, targetPath, session.sessionId, newSessionId)
+
+    const sourceThread = _getCodexThreadRowById(sourceInstanceDir, session.sessionId)
+    const insertedThread = _insertCodexThreadRowForCopy(targetInstanceDir, sourceThread.row, session, newSessionId, targetPath, nowMs)
+    if (!insertedThread.success) throw new Error(insertedThread.error || '写入目标 SQLite 索引失败')
+    if (insertedThread.warning) warnings.push(insertedThread.warning)
+
+    const sourceIndexEntry = _readCodexSessionIndexMap(sourceInstanceDir).get(session.sessionId) || null
+    const indexEntry = _buildCodexCopiedSessionIndexEntry(sourceIndexEntry, session, newSessionId, targetPath, nowMs)
+    const indexed = _upsertCodexSessionIndexEntry(targetInstanceDir, newSessionId, indexEntry)
+    if (!indexed.success) throw new Error(indexed.error || '写入目标 session_index.jsonl 失败')
+
+    storage.updateAccount(PLATFORM, targetAccountId, {
+      [CODEX_CLI_INSTANCE_DIR_FIELD]: targetInstanceDir
+    })
+
+    const workspacePath = String(session.workspacePath || '').trim()
+    const workspaceExists = workspacePath ? fs.existsSync(workspacePath) : false
+    if (workspacePath && !workspaceExists) warnings.push('原工作区路径不存在，继续会话前请确认工作区')
+
+    return {
+      success: true,
+      sessionId: newSessionId,
+      originalSessionId: session.sessionId,
+      sourcePath: session.path,
+      path: targetPath,
+      targetAccountId,
+      targetAccountEmail: targetAccount.email || '',
+      targetInstanceDir,
+      workspacePath,
+      workspaceExists,
+      warnings
+    }
+  } catch (err) {
+    try {
+      if (targetPath && fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+    } catch {}
+    try {
+      _deleteCodexThreadRow(targetInstanceDir, newSessionId)
+      _removeCodexSessionIndexEntry(targetInstanceDir, newSessionId)
+    } catch {}
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function moveCliSessionToInstance (options = {}) {
+  const found = _findCodexSessionForOperation(options && options.sessionId, options && (options.sourcePath || options.path), options)
+  if (!found) return { success: false, error: '会话不存在或已被移动' }
+  const { source, session } = found
+  const sourceInstanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const sourcePath = String(session && session.path ? session.path : '').trim()
+  const sessionId = String(session && session.sessionId ? session.sessionId : '').trim()
+
+  const copied = copyCliSessionToInstance(Object.assign({}, options, {
+    sessionId,
+    sourcePath
+  }))
+  if (!copied || copied.success === false) return copied
+
+  try {
+    const deletedThread = _deleteCodexThreadRow(sourceInstanceDir, sessionId)
+    if (!deletedThread.success) throw new Error(deletedThread.error || '删除源 SQLite 索引失败')
+    const removedIndex = _removeCodexSessionIndexEntry(sourceInstanceDir, sessionId)
+    if (!removedIndex.success) throw new Error(removedIndex.error || '删除源 session_index.jsonl 索引失败')
+    if (sourcePath && fs.existsSync(sourcePath)) fs.unlinkSync(sourcePath)
+    return Object.assign({}, copied, {
+      success: true,
+      moved: true,
+      removedSourcePath: sourcePath,
+      sourceSessionId: sessionId
+    })
+  } catch (err) {
+    return Object.assign({}, copied, {
+      success: false,
+      moved: false,
+      copied: true,
+      sourceCleanupFailed: true,
+      error: '目标实例副本已创建，但清理源会话失败: ' + (err && err.message ? err.message : String(err))
+    })
+  }
+}
+
+function listCliSessionTrash () {
+  const rootDir = _getCodexSessionTrashRootDir()
+  let entries = []
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true })
+  } catch {
+    entries = []
+  }
+  const items = entries
+    .filter(entry => entry.isDirectory())
+    .map(entry => _readCodexTrashManifest(entry.name))
+    .filter(Boolean)
+    .map(manifest => ({
+      trashId: manifest.trashId,
+      trashedAt: manifest.trashedAt || 0,
+      sessionId: manifest.session && manifest.session.sessionId ? manifest.session.sessionId : '',
+      title: manifest.session && manifest.session.title ? manifest.session.title : '未命名会话',
+      summary: manifest.session && manifest.session.summary ? manifest.session.summary : '',
+      workspacePath: manifest.session && manifest.session.workspacePath ? manifest.session.workspacePath : '',
+      workspaceName: manifest.session && manifest.session.workspaceName ? manifest.session.workspaceName : '未知工作区',
+      sourceName: manifest.source && manifest.source.sourceName ? manifest.source.sourceName : '',
+      sourceType: manifest.source && manifest.source.sourceType ? manifest.source.sourceType : '',
+      originalPath: manifest.source && manifest.source.originalPath ? manifest.source.originalPath : '',
+      trashPath: manifest.trash && manifest.trash.filePath ? manifest.trash.filePath : ''
+    }))
+    .sort((a, b) => Number(b.trashedAt || 0) - Number(a.trashedAt || 0))
+  return { success: true, items, total: items.length }
+}
+
+function restoreCliSessionFromTrash (options = {}) {
+  const trashId = String(options && options.trashId ? options.trashId : '').trim()
+  const manifest = _readCodexTrashManifest(trashId)
+  if (!manifest) return { success: false, error: '回收站记录不存在' }
+  const originalPath = manifest.source && manifest.source.originalPath ? manifest.source.originalPath : ''
+  const trashPath = manifest.trash && manifest.trash.filePath ? manifest.trash.filePath : ''
+  const instanceDir = manifest.source && manifest.source.instanceDir ? manifest.source.instanceDir : ''
+  const sessionId = manifest.session && manifest.session.sessionId ? manifest.session.sessionId : ''
+  if (!originalPath || !trashPath || !fs.existsSync(trashPath)) return { success: false, error: '回收站会话文件不存在' }
+  if (fs.existsSync(originalPath)) return { success: false, error: '原位置已存在同名会话文件，已取消恢复' }
+
+  try {
+    fs.mkdirSync(path.dirname(originalPath), { recursive: true })
+    fs.copyFileSync(trashPath, originalPath)
+    const restoredThread = _restoreCodexThreadRow(instanceDir, manifest.sqlite && manifest.sqlite.columns, manifest.sqlite && manifest.sqlite.row)
+    if (!restoredThread.success) throw new Error(restoredThread.error || '恢复 SQLite 索引失败')
+    const restoredIndex = _restoreCodexSessionIndexEntry(instanceDir, sessionId, manifest.sessionIndexEntry)
+    if (!restoredIndex.success) throw new Error(restoredIndex.error || '恢复 session_index.jsonl 失败')
+    fs.rmSync(path.join(_getCodexSessionTrashRootDir(), manifest.trashId), { recursive: true, force: true })
+    return { success: true, trashId: manifest.trashId, sessionId }
+  } catch (err) {
+    try {
+      if (fs.existsSync(originalPath)) fs.unlinkSync(originalPath)
+    } catch {}
+    try {
+      if (instanceDir && sessionId) _deleteCodexThreadRow(instanceDir, sessionId)
+    } catch {}
+    return { success: false, trashId: manifest.trashId, sessionId, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+function restoreCliSessionsFromTrash (options = {}) {
+  const rawIds = Array.isArray(options && options.trashIds) ? options.trashIds : []
+  const trashIds = rawIds.length > 0 ? rawIds : [options && options.trashId]
+  const results = trashIds
+    .map(id => String(id || '').trim())
+    .filter(Boolean)
+    .map(trashId => restoreCliSessionFromTrash({ trashId }))
+  return {
+    success: results.every(item => item.success),
+    results,
+    restored: results.filter(item => item.success).length,
+    failed: results.filter(item => !item.success).length
+  }
+}
+
+function deleteCliSessionTrash (options = {}) {
+  const rootDir = _getCodexSessionTrashRootDir()
+  const all = options && options.all === true
+  const rawIds = Array.isArray(options && options.trashIds) ? options.trashIds : []
+  const trashIds = all
+    ? listCliSessionTrash().items.map(item => item.trashId)
+    : (rawIds.length > 0 ? rawIds : [options && options.trashId])
+  const results = []
+
+  for (const rawId of trashIds) {
+    const trashId = String(rawId || '').trim()
+    if (!/^[a-f0-9]{24,40}$/i.test(trashId)) {
+      results.push({ success: false, trashId, error: '回收站记录 ID 无效' })
+      continue
+    }
+    const targetDir = path.join(rootDir, trashId)
+    if (!_isPathInside(rootDir, targetDir)) {
+      results.push({ success: false, trashId, error: '回收站路径无效' })
+      continue
+    }
+    try {
+      if (!fs.existsSync(targetDir)) {
+        results.push({ success: false, trashId, error: '回收站记录不存在' })
+        continue
+      }
+      const manifest = _readCodexTrashManifest(trashId)
+      fs.rmSync(targetDir, { recursive: true, force: true })
+      const workspaceCleanup = _tryRemoveCodexProjectlessWorkspaceDir(
+        manifest && manifest.session ? manifest.session.workspacePath : '',
+        Object.assign({}, options || {}, { excludedTrashIds: new Set([trashId]) })
+      )
+      results.push({
+        success: true,
+        trashId,
+        workspacePath: workspaceCleanup.path || '',
+        workspaceDirRemoved: workspaceCleanup.removed === true,
+        workspaceDirSkippedReason: workspaceCleanup.removed ? '' : (workspaceCleanup.skippedReason || workspaceCleanup.error || '')
+      })
+    } catch (err) {
+      results.push({ success: false, trashId, error: err && err.message ? err.message : String(err) })
+    }
+  }
+
+  return {
+    success: results.every(item => item.success),
+    results,
+    deleted: results.filter(item => item.success).length,
+    failed: results.filter(item => !item.success).length
+  }
+}
+
+function _isMissingCodexSessionFile (filePath) {
+  const target = String(filePath || '').trim()
+  if (!target || !target.toLowerCase().endsWith('.jsonl')) return true
+  try {
+    return !fs.existsSync(target) || !fs.statSync(target).isFile()
+  } catch {
+    return true
+  }
+}
+
+function _cleanCodexSessionIndexesForSource (source) {
+  const instanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+  const result = {
+    sourceId: source && source.id ? source.id : '',
+    sourceName: source && source.sourceName ? source.sourceName : '',
+    instanceDir,
+    sqliteRemoved: 0,
+    indexRemoved: 0,
+    failed: 0,
+    errors: []
+  }
+  if (!instanceDir || !fs.existsSync(instanceDir)) return result
+
+  for (const row of _listCodexThreadRows(instanceDir)) {
+    const sessionId = _pickCodexRecordSessionId(row)
+    const sessionPath = _getCodexRecordSessionPath(instanceDir, row)
+    if (sessionId && !_isMissingCodexSessionFile(sessionPath)) continue
+    if (!sessionId) {
+      result.failed += 1
+      result.errors.push('SQLite threads 存在缺少 id 的记录，已跳过')
+      continue
+    }
+    const removed = _deleteCodexThreadRow(instanceDir, sessionId)
+    if (removed.success) result.sqliteRemoved += 1
+    else {
+      result.failed += 1
+      result.errors.push(removed.error || `删除 SQLite 索引失败: ${sessionId}`)
+    }
+  }
+
+  const indexPath = path.join(instanceDir, 'session_index.jsonl')
+  if (fs.existsSync(indexPath)) {
+    const entries = _readCodexSessionIndexEntries(instanceDir)
+    const kept = []
+    for (const entry of entries) {
+      const sessionPath = _getCodexRecordSessionPath(instanceDir, entry)
+      if (_isMissingCodexSessionFile(sessionPath)) {
+        result.indexRemoved += 1
+      } else {
+        kept.push(entry)
+      }
+    }
+    if (kept.length !== entries.length) {
+      const written = _writeCodexSessionIndexEntries(instanceDir, kept)
+      if (!written.success) {
+        result.failed += result.indexRemoved
+        result.errors.push(written.error || '写入 session_index.jsonl 失败')
+        result.indexRemoved = 0
+      }
+    }
+  }
+
+  return result
+}
+
+function cleanCliSessionIndexes (options = {}) {
+  const accountIdFilter = String(options && options.accountId ? options.accountId : '').trim()
+  const allAccounts = storage.listAccounts(PLATFORM)
+  const accounts = accountIdFilter
+    ? allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter)
+    : allAccounts
+  const sources = _discoverCodexSessionSources(accounts, Object.assign({}, options, { accountId: accountIdFilter }))
+  const results = sources.map(_cleanCodexSessionIndexesForSource)
+  const sqliteRemoved = results.reduce((sum, item) => sum + Number(item.sqliteRemoved || 0), 0)
+  const indexRemoved = results.reduce((sum, item) => sum + Number(item.indexRemoved || 0), 0)
+  const failed = results.reduce((sum, item) => sum + Number(item.failed || 0), 0)
+  return {
+    success: failed === 0,
+    results,
+    sqliteRemoved,
+    indexRemoved,
+    removed: sqliteRemoved + indexRemoved,
+    failed,
+    errors: results.flatMap(item => Array.isArray(item.errors) ? item.errors : [])
+  }
+}
+
+function listCliSessions (options = {}) {
+  const accountIdFilter = String(options && options.accountId ? options.accountId : '').trim()
+  const allAccounts = storage.listAccounts(PLATFORM)
+  const accounts = accountIdFilter
+    ? allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter)
+    : allAccounts
+  const sourceResults = _discoverCodexSessionSources(accounts, Object.assign({}, options, { accountId: accountIdFilter }))
+    .map(_listCodexSessionsForSource)
+  const sessions = sourceResults.flatMap(item => item.sessions)
+  const savedWorkspaceRoots = _getCodexSavedWorkspaceRootsForSources(sourceResults, options)
+  const workspaceOrder = new Map(savedWorkspaceRoots.map((workspacePath, index) => [workspacePath, index]))
+  const groupMap = new Map()
+
+  for (const session of sessions) {
+    const normalizedWorkspacePath = _normalizeCodexWorkspacePath(session.workspacePath)
+    const key = `${normalizedWorkspacePath || ''}|${session.workspaceName || '未知工作区'}`
+    const existing = groupMap.get(key) || {
+      id: crypto.createHash('sha1').update(key).digest('hex').slice(0, 16),
+      workspacePath: normalizedWorkspacePath || session.workspacePath || '',
+      workspaceName: session.workspaceName || '未知工作区',
+      updatedAt: 0,
+      count: 0,
+      sessions: []
+    }
+    existing.sessions.push(session)
+    existing.count += 1
+    existing.updatedAt = Math.max(existing.updatedAt, Number(session.updatedAt || 0))
+    groupMap.set(key, existing)
+  }
+
+  for (const workspacePath of savedWorkspaceRoots) {
+    const workspaceName = _getCodexWorkspaceName(workspacePath)
+    const key = `${workspacePath}|${workspaceName}`
+    if (groupMap.has(key)) continue
+    groupMap.set(key, {
+      id: crypto.createHash('sha1').update(key).digest('hex').slice(0, 16),
+      workspacePath,
+      workspaceName,
+      updatedAt: 0,
+      count: 0,
+      sessions: [],
+      emptyWorkspace: true
+    })
+  }
+
+  const groups = Array.from(groupMap.values()).sort((a, b) => {
+    const aOrder = workspaceOrder.has(a.workspacePath) ? workspaceOrder.get(a.workspacePath) : Number.POSITIVE_INFINITY
+    const bOrder = workspaceOrder.has(b.workspacePath) ? workspaceOrder.get(b.workspacePath) : Number.POSITIVE_INFINITY
+    if (aOrder !== bOrder) return aOrder - bOrder
+    return Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+  })
+  return {
+    success: true,
+    generatedAt: Date.now(),
+    totals: {
+      accounts: accounts.length,
+      boundAccounts: sourceResults.filter(item => item.bound && item.sourceType === 'account').length,
+      sources: sourceResults.length,
+      sessions: sessions.length,
+      groups: groups.length
+    },
+    accounts: sourceResults.map(item => ({
+      accountId: item.accountId,
+      accountEmail: item.accountEmail,
+      sourceId: item.sourceId,
+      sourceType: item.sourceType,
+      sourceName: item.sourceName,
+      instanceDir: item.instanceDir,
+      bound: item.bound,
+      sessionCount: item.sessions.length
+    })),
+    groups
+  }
+}
+
+function loadCliSessionMessages (options = {}) {
+  const sourcePath = String(options && options.sourcePath ? options.sourcePath : '').trim()
+  if (!sourcePath || !sourcePath.toLowerCase().endsWith('.jsonl')) {
+    return { success: false, error: '会话文件路径无效', messages: [] }
+  }
+  try {
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+      return { success: false, error: '会话文件不存在', messages: [] }
+    }
+  } catch {
+    return { success: false, error: '无法读取会话文件', messages: [] }
+  }
+
+  const messages = []
+  try {
+    const content = fs.readFileSync(sourcePath, 'utf8')
+    for (const line of content.split(/\r?\n/)) {
+      const record = _safeParseJsonLine(line)
+      const message = _extractCodexResponseMessage(record)
+      if (!message) continue
+      messages.push(message)
+      if (messages.length >= 1500) break
+    }
+    return {
+      success: true,
+      sourcePath,
+      messages,
+      total: messages.length
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: err && err.message ? err.message : String(err),
+      messages: []
+    }
   }
 }
 
@@ -1654,6 +3695,7 @@ function _buildCodexWakeupArgs (options) {
   const args = [
     'exec',
     '--skip-git-repo-check',
+    '--ignore-rules',
     '--color',
     'never'
   ]
@@ -1782,7 +3824,8 @@ async function runWakeupTask (options = {}) {
   const reasoningEffort = _normalizeCodexWakeupReasoningEffort(opts.reasoningEffort || opts.model_reasoning_effort)
   const runId = String(opts.runId || ('codex-wakeup-' + Date.now() + '-' + fileUtils.generateId())).trim()
   const commandName = String(opts.command || 'codex').trim() || 'codex'
-  const status = terminalLauncher.getCommandStatus(commandName)
+  const commandRuntime = opts.commandRuntime || opts.command_runtime
+  const status = terminalLauncher.getCommandStatus(commandName, commandRuntime)
   const commandPath = String(status.path || commandName).trim()
   const records = []
 
@@ -4012,6 +6055,19 @@ module.exports = {
   switchAccount,
   activateAccount,
   prepareCliLaunch,
+  listCliSessions,
+  loadCliSessionMessages,
+  prepareCliSessionResume,
+  copyCliSessionToInstance,
+  moveCliSessionToInstance,
+  archiveCliSession,
+  unarchiveCliSession,
+  moveCliSessionsToTrash,
+  listCliSessionTrash,
+  restoreCliSessionFromTrash,
+  restoreCliSessionsFromTrash,
+  deleteCliSessionTrash,
+  cleanCliSessionIndexes,
   runWakeupTask,
   listWakeupSchedules,
   getWakeupSchedule,

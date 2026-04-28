@@ -12,15 +12,17 @@ import {
   TagIcon,
   PlusIcon,
   UploadIcon,
-  SettingsIcon
+  SettingsIcon,
+  FolderIcon
 } from '../components/Icons/ActionIcons'
 import CodexSettingsModal from './codex/CodexSettingsModal'
 import CodexAccountItem from './codex/CodexAccountItem'
 import CodexAddAccountModal from './codex/CodexAddAccountModal'
+import CodexSessionManager from './codex/CodexSessionManager'
 import CodexTagModals from './codex/CodexTagModals'
 import { useCodexOAuthFlow } from './codex/useCodexOAuthFlow'
 import { logRequestEvent } from '../utils/requestLogClient'
-import { copyText } from '../utils/hostBridge.js'
+import { copyText, readSharedSetting, writeSharedSetting } from '../utils/hostBridge.js'
 import { usePlatformSnapshot } from '../runtime/usePlatformSnapshot.js'
 import { usePlatformActions } from '../runtime/usePlatformActions.js'
 import { usePlatformAutoRefresh } from '../runtime/usePlatformAutoRefresh.js'
@@ -62,6 +64,7 @@ const CODEX_WAKEUP_REASONING_OPTIONS = [
 const CODEX_WAKEUP_MINI_REASONING_OPTIONS = [
   { value: 'low', label: 'low' }
 ]
+const CODEX_ACTIVE_VIEW_KEY = 'codex_active_view'
 const CODEX_WAKEUP_SCHEDULE_OPTIONS = [
   { value: 'daily', label: '每日' },
   { value: 'weekly', label: '每周' },
@@ -83,6 +86,20 @@ const CODEX_WAKEUP_QUOTA_RESET_WINDOW_OPTIONS = [
   { value: 'primary_window', label: '5 小时窗口' },
   { value: 'secondary_window', label: '每周窗口' }
 ]
+
+function normalizeCodexActiveView (value) {
+  return value === 'sessions' ? 'sessions' : 'accounts'
+}
+
+function readCodexActiveView () {
+  return normalizeCodexActiveView(readSharedSetting(CODEX_ACTIVE_VIEW_KEY, 'accounts'))
+}
+
+function writeCodexActiveView (value) {
+  const next = normalizeCodexActiveView(value)
+  writeSharedSetting(CODEX_ACTIVE_VIEW_KEY, next)
+  return next
+}
 
 function normalizeWakeupModelValue (value) {
   return String(value || '').trim()
@@ -169,7 +186,7 @@ const CODEX_JSON_IMPORT_EXAMPLE = `[
 /**
  * Codex 账号管理页
  */
-export default function Codex ({ onActivity, searchQuery = '' }) {
+export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
   const initialSettingsRef = useRef(null)
   if (!initialSettingsRef.current) {
     initialSettingsRef.current = readCodexAdvancedSettings()
@@ -181,6 +198,7 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
   const [loading, setLoading] = useState(false)
   const [importingLocal, setImportingLocal] = useState(false)
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false)
+  const [activeView, setActiveView] = useState(() => readCodexActiveView())
   const [showWakeupTask, setShowWakeupTask] = useState(false)
   const [wakeupRunning, setWakeupRunning] = useState(false)
   const [wakeupSaving, setWakeupSaving] = useState(false)
@@ -318,6 +336,10 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
   useEffect(() => {
     setAdvancedSettings(readCodexAdvancedSettings())
   }, [])
+
+  useEffect(() => {
+    onViewChange?.(activeView)
+  }, [activeView, onViewChange])
 
   useEffect(() => {
     if (!svc || quotaSchemaRefreshRef.current || accounts.length === 0 || quotaActions.batchRunning) return
@@ -830,6 +852,12 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
 
   const invalidCount = accounts.filter(a => !!a?.quota?.error || !!a?.quota_error?.message || a.invalid || a.quota?.invalid).length
   const validCount = accounts.length - invalidCount
+  const isSessionView = activeView === 'sessions'
+
+  function switchActiveView (view) {
+    setActiveView(writeCodexActiveView(view))
+  }
+
   const wakeupModelOptions = getWakeupModelOptionsForAccount(wakeupAccount)
   const wakeupModelSelectValue = resolveWakeupModelSelectValue(wakeupForm.model, wakeupCustomModelMode, wakeupModelOptions)
   const wakeupReasoningOptions = getWakeupReasoningOptions(wakeupForm.model)
@@ -853,6 +881,20 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
         <div>
           <h1 className='page-title'>
             <PlatformIcon platform="codex" size={24} /> Codex
+            <UsageGuide
+              platform='Codex'
+              title='Codex 账号管理说明'
+              description='用于管理 Codex CLI / OpenAI 账号，查看配额、切换本地登录态、导入导出账号，并可为账号绑定独立 CODEX_HOME 实例启动 Codex CLI。CLI 单独实例表示每个账号使用独立的本地配置目录，避免不同账号共享登录态、设置和会话索引。'
+              permissions={[
+                '读取并写入当前系统默认配置目录中的 `auth.json`，用于同步当前本地登录态、账户 Token 及本地应用切号。',
+                '账号绑定实例启动 Codex CLI 时，会使用独立 `CODEX_HOME` 隔离该账号的配置、会话索引和历史记录。',
+                '会话管理页会读取默认 `~/.codex` 与账号实例目录中的本地会话，用于按工作区查看、继续、归档或移入回收站。'
+              ]}
+              network={[
+                'OAuth 与凭证刷新会调用 OpenAI 官方接口（`auth.openai.com`）。',
+                '配额查询会调用 OpenAI/ChatGPT 接口（`chatgpt.com/backend-api/wham/usage`），仅发送必要的授权字段。'
+              ]}
+            />
           </h1>
           <p className='page-subtitle' style={{ marginTop: 4, color: 'var(--text-secondary)' }}>
             共 {accounts.length} 个账号, 有效 {validCount}, 失效 {invalidCount}
@@ -860,10 +902,12 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
           </p>
         </div>
         <div className='page-actions'>
-          <button className='action-bar-btn action-bar-btn-primary' onClick={() => openAddModal('oauth')} data-tip='添加账号'>
-            <PlusIcon size={18} />
-          </button>
-          {accounts.length > 0 && (
+          {!isSessionView && (
+            <button className='action-bar-btn action-bar-btn-primary' onClick={() => openAddModal('oauth')} data-tip='添加账号'>
+              <PlusIcon size={18} />
+            </button>
+          )}
+          {accounts.length > 0 && !isSessionView && (
             <>
               <button className={`action-bar-btn ${loading ? 'is-loading' : ''}`} onClick={handleRefreshAll} disabled={loading} data-tip='刷新全套配额'>
                 <RefreshIcon size={18} spinning={loading} />
@@ -882,6 +926,15 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
               )}
             </>
           )}
+          {accounts.length > 0 && (
+            <button
+              className={`action-bar-btn codex-session-toggle ${isSessionView ? 'active' : ''}`}
+              onClick={() => switchActiveView(isSessionView ? 'accounts' : 'sessions')}
+              data-tip={isSessionView ? '返回账号总览' : '会话管理'}
+            >
+              <FolderIcon size={18} />
+            </button>
+          )}
           <PrivacyToggleButton />
           <button className='action-bar-btn' onClick={() => setShowAdvancedConfig(true)} data-tip='高级偏好设置'>
             <SettingsIcon size={18} />
@@ -889,20 +942,17 @@ export default function Codex ({ onActivity, searchQuery = '' }) {
         </div>
       </div>
 
-      <UsageGuide
-        platform='Codex'
-        title='Codex 账号管理说明'
-        description='支持读取当前系统默认配置目录中的本地登录态，也支持粘贴 Token/JSON 或 OAuth 授权登录来管理 Codex (OpenAI) 账号。'
-        permissions={[
-          '读取并写入当前系统默认配置目录中的 `auth.json`，用于同步当前本地登录态、账户 Token 及本地应用切号。'
-        ]}
-        network={[
-          'OAuth 与凭证刷新会调用 OpenAI 官方接口（`auth.openai.com`）。',
-          '配额查询会调用 OpenAI/ChatGPT 接口（`chatgpt.com/backend-api/wham/usage`），仅发送必要的授权字段。'
-        ]}
-      />
-
-      {accounts.length === 0 && !localImportHint.visible
+      {isSessionView
+        ? (
+          <CodexSessionManager
+            svc={svc}
+            accounts={accounts}
+            searchQuery={searchQuery}
+            toast={toast}
+            onBack={() => switchActiveView('accounts')}
+          />
+          )
+        : accounts.length === 0 && !localImportHint.visible
         ? (
           <div className='empty-state'>
             <div className='empty-state-icon'>💻</div>

@@ -88,24 +88,7 @@ export default function SettingsGeneral ({ globalSettings, onGlobalSettingsChang
         </div>
       </div>
 
-      <div className='settings-card' style={{ marginBottom: 16 }}>
-        <div className='settings-card-row'>
-          <div className='settings-card-info'>
-            <div className='settings-card-title'>查看操作日志</div>
-            <div className='settings-card-desc'>
-              默认关闭。开启后记录插件对外的操作日志和各个关键节点日，并在首页侧边栏设置上方显示“日志”入口。日志完全保留在本地，敏感内容会自动脱敏。
-            </div>
-          </div>
-          <div className='settings-card-control'>
-            <ToggleSwitch
-              checked={requestLogEnabled}
-              onChange={(e) => onGlobalSettingsChange?.({ requestLogEnabled: e.target.checked })}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className='settings-card' style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className='settings-card' style={{ display: 'flex', flexDirection: 'column', marginBottom: 16 }}>
         <div style={{ padding: '10px 24px', borderBottom: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>配额颜色阈值</div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>控制绿色、黄色和红色的显示区间。</div>
@@ -137,6 +120,23 @@ export default function SettingsGeneral ({ globalSettings, onGlobalSettingsChang
             <span style={{ position: 'absolute', left: 0 }}>0%</span>
             <span style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>50%</span>
             <span style={{ position: 'absolute', right: 0 }}>100%</span>
+          </div>
+        </div>
+      </div>
+
+      <div className='settings-card'>
+        <div className='settings-card-row'>
+          <div className='settings-card-info'>
+            <div className='settings-card-title'>查看操作日志</div>
+            <div className='settings-card-desc'>
+              默认关闭。开启后记录插件对外的操作日志和各个关键节点日，并在首页侧边栏设置上方显示“日志”入口。日志完全保留在本地，敏感内容会自动脱敏。
+            </div>
+          </div>
+          <div className='settings-card-control'>
+            <ToggleSwitch
+              checked={requestLogEnabled}
+              onChange={(e) => onGlobalSettingsChange?.({ requestLogEnabled: e.target.checked })}
+            />
           </div>
         </div>
       </div>

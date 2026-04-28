@@ -631,7 +631,22 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
     <div>
       <div className='page-header'>
         <div>
-          <h1 className='page-title'><PlatformIcon platform="antigravity" size={24} /> Antigravity</h1>
+          <h1 className='page-title'>
+            <PlatformIcon platform="antigravity" size={24} /> Antigravity
+            <UsageGuide
+              platform='Antigravity'
+              title='Antigravity 账号管理说明'
+              description='用于管理 Antigravity 登录账号，查看模型配额和可用 AI 积分，导入本机运行态，切换当前账号，并可按账号同步设备身份以模拟更接近真实客户端的本地环境。'
+              permissions={[
+                '读取并写入 `~/.ai_deck/antigravity/token.json`，用于存储当前切换到的运行态凭证。',
+                '读取并写入本地官方客户端默认位置中的 `storage.json`、`machineid` 与 `state.vscdb`，用于导入当前本地登录账号并在启用“更换设备身份”时同步设备指纹。'
+              ]}
+              network={[
+                'OAuth 与凭证授权会调用 Google 官方接口（`accounts.google.com`、`oauth2.googleapis.com`）。',
+                '配额查询会调用 Google Cloud Code 内部接口（`cloudcode-pa.googleapis.com`），仅发送必要的认证字段。'
+              ]}
+            />
+          </h1>
           <p className='page-subtitle' style={{ marginTop: 4, color: 'var(--text-secondary)' }}>
             共 {accounts.length} 个账号, 有效 {validCount}, 失效 {invalidCount}
             {selectedCount > 0 ? ` · 已选 ${selectedCount} 个` : ''}
@@ -672,20 +687,6 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
           </button>
         </div>
       </div>
-
-      <UsageGuide
-        platform='Antigravity'
-        title='Antigravity 账号管理说明'
-        description='支持读取默认本地运行态中的当前 Antigravity 登录账号，也支持粘贴 Token/JSON 或 OAuth 授权登录。卡片中的模型配额与可用 AI 积分均来自官方运行态；模型配额会按套餐周期自动重置，启用 AI Credit Overages 后会在模型配额耗尽时继续消耗 AI 积分。'
-        permissions={[
-          '读取并写入 `~/.ai_deck/antigravity/token.json`，用于存储当前切换到的运行态凭证。',
-          '读取并写入本地官方客户端默认位置中的 `storage.json`、`machineid` 与 `state.vscdb`，用于导入当前本地登录账号并在启用“更换设备身份”时同步设备指纹。'
-        ]}
-        network={[
-          'OAuth 与凭证授权会调用 Google 官方接口（`accounts.google.com`、`oauth2.googleapis.com`）。',
-          '配额查询会调用 Google Cloud Code 内部接口（`cloudcode-pa.googleapis.com`），仅发送必要的认证字段。'
-        ]}
-      />
 
       {accounts.length === 0 && !localImportHint.visible
         ? (

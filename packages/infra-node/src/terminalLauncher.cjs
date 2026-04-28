@@ -217,6 +217,7 @@ function commandExists (commandName, runtime) {
   const name = String(commandName || '').trim()
   if (!name) return false
   if (resolveCommandPath(name, runtime)) return true
+  if (runtime && Object.prototype.hasOwnProperty.call(runtime, 'env')) return false
 
   try {
     if (resolveRuntimePlatform(runtime) === 'win32') {

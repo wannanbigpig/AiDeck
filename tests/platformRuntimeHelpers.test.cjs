@@ -721,17 +721,38 @@ test('Gemini 连续重新生成授权链接时应清理旧监听和旧会话', a
 test('Gemini 恢复旧 pending 会话时，如果回调监听无法重新启动，应判定会话失效', async () => {
   const modulePath = path.join(process.cwd(), 'packages/platforms/src/geminiService.impl.cjs')
   const gemini = require(modulePath)
-  const port = await getFreePort()
+  const blocker = net.createServer()
+  const port = await new Promise((resolve, reject) => {
+    blocker.once('error', reject)
+    blocker.listen(0, () => {
+      const address = blocker.address()
+      const value = address && typeof address === 'object' ? address.port : 0
+      resolve(value)
+    })
+  })
+  assert.ok(port > 0)
+  await new Promise((resolve, reject) => {
+    blocker.close((err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
+
   const prepared = await gemini.prepareOAuthSession(port)
   assert.equal(prepared.success, true)
+  const callbackPort = Number(new URL(prepared.session.redirectUri).port)
+  assert.ok(callbackPort > 0)
+  const savedPending = gemini.getPendingOAuthSession(prepared.session.sessionId)
+  assert.equal(String(savedPending.callbackUrl || ''), '')
+  gemini.cancelOAuthSession(prepared.session.sessionId)
+  gemini.savePendingOAuthSession(savedPending)
 
   delete require.cache[require.resolve(modulePath)]
   const reloadedGemini = require(modulePath)
 
-  const blocker = net.createServer()
   await new Promise((resolve, reject) => {
     blocker.once('error', reject)
-    blocker.listen(port, '127.0.0.1', resolve)
+    blocker.listen(callbackPort, resolve)
   })
 
   try {

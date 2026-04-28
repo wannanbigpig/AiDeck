@@ -145,6 +145,92 @@ function createPlatformApi (services) {
       return normalizedServices[platform] && typeof normalizedServices[platform].updateTags === 'function'
         ? normalizedServices[platform].updateTags(accountId, tags)
         : null
+    },
+    listCliSessions (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].listCliSessions === 'function'
+        ? normalizedServices[platform].listCliSessions(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    loadCliSessionMessages (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].loadCliSessionMessages === 'function'
+        ? normalizedServices[platform].loadCliSessionMessages(options || {})
+        : { success: false, error: 'unsupported', messages: [] }
+    },
+    prepareCliSessionResume (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].prepareCliSessionResume === 'function'
+        ? normalizedServices[platform].prepareCliSessionResume(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    copyCliSessionToInstance (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].copyCliSessionToInstance === 'function'
+        ? normalizedServices[platform].copyCliSessionToInstance(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    moveCliSessionToInstance (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].moveCliSessionToInstance === 'function'
+        ? normalizedServices[platform].moveCliSessionToInstance(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    archiveCliSession (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].archiveCliSession === 'function'
+        ? normalizedServices[platform].archiveCliSession(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    unarchiveCliSession (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].unarchiveCliSession === 'function'
+        ? normalizedServices[platform].unarchiveCliSession(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    moveCliSessionsToTrash (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].moveCliSessionsToTrash === 'function'
+        ? normalizedServices[platform].moveCliSessionsToTrash(options || {})
+        : { success: false, error: 'unsupported', results: [] }
+    },
+    listCliSessionTrash (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].listCliSessionTrash === 'function'
+        ? normalizedServices[platform].listCliSessionTrash(options || {})
+        : { success: false, error: 'unsupported', items: [] }
+    },
+    restoreCliSessionFromTrash (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].restoreCliSessionFromTrash === 'function'
+        ? normalizedServices[platform].restoreCliSessionFromTrash(options || {})
+        : { success: false, error: 'unsupported' }
+    },
+    restoreCliSessionsFromTrash (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].restoreCliSessionsFromTrash === 'function'
+        ? normalizedServices[platform].restoreCliSessionsFromTrash(options || {})
+        : { success: false, error: 'unsupported', results: [] }
+    },
+    deleteCliSessionTrash (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].deleteCliSessionTrash === 'function'
+        ? normalizedServices[platform].deleteCliSessionTrash(options || {})
+        : { success: false, error: 'unsupported', results: [] }
+    },
+    cleanCliSessionIndexes (platform, options) {
+      return normalizedServices[platform] && typeof normalizedServices[platform].cleanCliSessionIndexes === 'function'
+        ? normalizedServices[platform].cleanCliSessionIndexes(options || {})
+        : { success: false, error: 'unsupported', results: [] }
+    },
+    getCapabilities (platform) {
+      const service = normalizedServices[platform]
+      if (!service || typeof service !== 'object') return {}
+      return {
+        listCliSessions: typeof service.listCliSessions === 'function',
+        loadCliSessionMessages: typeof service.loadCliSessionMessages === 'function',
+        prepareCliSessionResume: typeof service.prepareCliSessionResume === 'function',
+        copyCliSessionToInstance: typeof service.copyCliSessionToInstance === 'function',
+        moveCliSessionToInstance: typeof service.moveCliSessionToInstance === 'function',
+        archiveCliSession: typeof service.archiveCliSession === 'function',
+        unarchiveCliSession: typeof service.unarchiveCliSession === 'function',
+        moveCliSessionsToTrash: typeof service.moveCliSessionsToTrash === 'function',
+        listCliSessionTrash: typeof service.listCliSessionTrash === 'function',
+        restoreCliSessionFromTrash: typeof service.restoreCliSessionFromTrash === 'function',
+        restoreCliSessionsFromTrash: typeof service.restoreCliSessionsFromTrash === 'function',
+        deleteCliSessionTrash: typeof service.deleteCliSessionTrash === 'function',
+        cleanCliSessionIndexes: typeof service.cleanCliSessionIndexes === 'function',
+        prepareCliLaunch: typeof service.prepareCliLaunch === 'function',
+        refreshQuotaOrUsage: typeof service.refreshQuotaOrUsage === 'function'
+      }
     }
   }
 

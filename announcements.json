@@ -9,8 +9,8 @@
       "releaseStatus": "reviewing",
       "marketVersion": "1.0.2",
       "title": "AiDeck v1.0.3 更新",
-      "summary": "v1.0.3 聚焦后台任务运行提醒、消息通知中心操作体验和刷新反馈优化。",
-      "content": "v1.0.3 本次更新：\n1. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n2. 后台任务提醒已放入消息通知中心，不再占用首页仪表盘空间。\n3. 消息通知中心的“全部已读 / 刷新 / 关闭”操作移到标题栏右侧，并统一为更紧凑的图标按钮。\n4. 刷新按钮新增加载旋转反馈，即使请求很快完成，也会至少展示 1 秒加载状态，避免操作反馈一闪而过。\n5. 同步更新版本号、README 徽章和版本变更文档。",
+      "summary": "v1.0.3 合并 Codex 会话管理、后台任务提醒、消息中心体验和刷新反馈优化。",
+      "content": "v1.0.3 本次更新：\n1. 新增 Codex 会话管理入口，可按工作区查看默认实例和账号绑定实例中的本地会话。\n2. 支持预览 Codex 会话消息，Markdown 内容、代码块、表格和图片附件可直接查看，内部指令和工具日志默认折叠到调试信息中。\n3. 支持继续会话、归档 / 取消归档、移入回收站、从回收站恢复或彻底删除会话。\n4. 支持将会话复制或移动到指定账号绑定实例，并在复制时生成新的会话 ID，避免多账号实例复用同一会话索引。\n5. 新增会话索引清理能力，可移除缺失会话文件残留的 SQLite / session_index.jsonl 索引记录。\n6. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n7. 消息通知中心操作移到标题栏右侧并统一为紧凑图标按钮，刷新按钮增加至少 1 秒的加载反馈。\n8. 使用说明改为标题旁弹窗入口，侧边栏默认收起，设置页返回会回到进入设置前的平台。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -28,14 +28,14 @@
       "locales": {
         "zh-CN": {
           "title": "AiDeck v1.0.3 更新",
-          "summary": "v1.0.3 聚焦后台任务运行提醒、消息通知中心操作体验和刷新反馈优化。",
-          "content": "v1.0.3 本次更新：\n1. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n2. 后台任务提醒已放入消息通知中心，不再占用首页仪表盘空间。\n3. 消息通知中心的“全部已读 / 刷新 / 关闭”操作移到标题栏右侧，并统一为更紧凑的图标按钮。\n4. 刷新按钮新增加载旋转反馈，即使请求很快完成，也会至少展示 1 秒加载状态，避免操作反馈一闪而过。\n5. 同步更新版本号、README 徽章和版本变更文档。",
+          "summary": "v1.0.3 合并 Codex 会话管理、后台任务提醒、消息中心体验和刷新反馈优化。",
+          "content": "v1.0.3 本次更新：\n1. 新增 Codex 会话管理入口，可按工作区查看默认实例和账号绑定实例中的本地会话。\n2. 支持预览 Codex 会话消息，Markdown 内容、代码块、表格和图片附件可直接查看，内部指令和工具日志默认折叠到调试信息中。\n3. 支持继续会话、归档 / 取消归档、移入回收站、从回收站恢复或彻底删除会话。\n4. 支持将会话复制或移动到指定账号绑定实例，并在复制时生成新的会话 ID，避免多账号实例复用同一会话索引。\n5. 新增会话索引清理能力，可移除缺失会话文件残留的 SQLite / session_index.jsonl 索引记录。\n6. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n7. 消息通知中心操作移到标题栏右侧并统一为紧凑图标按钮，刷新按钮增加至少 1 秒的加载反馈。\n8. 使用说明改为标题旁弹窗入口，侧边栏默认收起，设置页返回会回到进入设置前的平台。",
           "actionLabel": "查看项目"
         },
         "en-US": {
           "title": "AiDeck v1.0.3 Update",
-          "summary": "v1.0.3 focuses on background task reminders, message center action polish, and refresh feedback.",
-          "content": "v1.0.3 updates:\n1. Added a background task reminder: scheduled wake-up and automatic refresh tasks depend on the uTools plugin staying alive in the background. Turn off “end immediately when exiting to background” and consider enabling “start with the main app”.\n2. Moved the background task reminder into the message center so it no longer occupies Dashboard space.\n3. Moved the “mark all read / refresh / close” actions to the message center title bar and unified them as compact icon buttons.\n4. Added a refresh loading animation that stays visible for at least 1 second, even when the request finishes quickly.\n5. Updated version metadata, the README badge, and the changelog.",
+          "summary": "v1.0.3 combines Codex session management, background task reminders, message center polish, and refresh feedback.",
+          "content": "v1.0.3 updates:\n1. Added Codex session management for browsing local sessions from the default instance and account-bound instances by workspace.\n2. Added Codex session previews with Markdown, code blocks, tables, and image attachments; internal instructions and tool logs are folded into debug info by default.\n3. Added resume, archive / unarchive, move to trash, restore from trash, and permanent delete actions for sessions.\n4. Added copy or move to a selected account-bound instance with a new session ID for copied sessions, avoiding shared session indexes across accounts.\n5. Added session index cleanup for missing session files left in SQLite / session_index.jsonl.\n6. Added a background task reminder for scheduled wake-up and automatic refresh tasks that depend on the uTools plugin staying alive.\n7. Moved message center actions to the title bar as compact icon buttons and added a refresh loading state that lasts at least 1 second.\n8. Moved usage guides into title-bar modal buttons, collapsed the sidebar by default, and made Settings return to the previous platform.",
           "actionLabel": "View Project"
         }
       }

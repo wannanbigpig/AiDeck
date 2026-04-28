@@ -41,14 +41,15 @@ const SETTINGS_TAB_COMPONENTS = {
   about: SettingsAbout
 }
 
-export default function SettingsPageImpl ({ onNavigate, globalSettings, onGlobalSettingsChange }) {
+export default function SettingsPageImpl ({ onNavigate, returnPlatform = 'dashboard', globalSettings, onGlobalSettingsChange }) {
   const [activeTab, setActiveTab] = useState('general')
   const ActiveSection = SETTINGS_TAB_COMPONENTS[activeTab] || SettingsAppearance
+  const backTarget = returnPlatform && returnPlatform !== 'settings' ? returnPlatform : 'dashboard'
 
   return (
     <div className='settings-layout'>
       <div className='settings-sidebar'>
-        <div className='settings-back' onClick={() => onNavigate('dashboard')}>
+        <div className='settings-back' onClick={() => onNavigate(backTarget)}>
           <ArrowLeftIcon size={16} style={{ strokeWidth: 2.5 }} />
           返回应用
         </div>

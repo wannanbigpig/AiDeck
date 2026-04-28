@@ -56,8 +56,10 @@
 - 旧配额快照会在进入 Codex 页面后自动静默刷新一次，补齐新配额结构。
 - Codex CLI 启动不会再执行全局切号：账号首次点击 CLI 按钮时创建独立 `CODEX_HOME` 实例并绑定到该账号，后续启动复用同一个实例目录。
 - Codex 账号卡片新增唤醒任务入口，每个账号可单独设置启用 / 停用、调度模式、提示词、预设或自定义模型和推理强度，也可立即通过账号绑定实例执行 `codex exec` 轻量唤醒并刷新配额。
-- 账号绑定实例会共享默认 Codex 的 `skills`、`rules`、`vendor_imports/skills` 和 `AGENTS.md`，并共享 AiDeck 管理的 `sessions`、`archived_sessions`、`session_index.jsonl`、`history.jsonl`，但不会覆盖默认 `~/.codex/auth.json`。
-- 删除 Codex 账号时，会同步删除该账号绑定的 Codex CLI 实例目录；共享会话目录不会随单个账号删除。
+- 账号绑定实例会共享默认 Codex 的 `skills`、`rules`、`vendor_imports/skills` 和 `AGENTS.md`，但 `auth.json`、`sessions`、`archived_sessions`、`session_index.jsonl`、`history.jsonl` 等账号状态与会话数据保持实例隔离，避免多实例并发写入或会话索引不一致。
+- Codex 会话管理支持按工作区查看默认实例和账号绑定实例中的本地会话，预览 Markdown 对话内容和图片附件，并可继续、归档、取消归档、移入回收站、恢复、复制或移动到指定账号实例。
+- 会话维护工具支持清理缺失会话文件残留的 SQLite / `session_index.jsonl` 索引，降低 Codex App 本地索引异常带来的干扰。
+- 删除 Codex 账号时，会同步删除该账号绑定的 Codex CLI 实例目录。
 
 ### Antigravity 能力
 
@@ -135,7 +137,7 @@ AiDeck 默认把数据保存在用户主目录下的 `.ai_deck`：
 - `logs/`：操作日志，仅在设置中开启后记录。
 - `cache/`：公告等缓存。
 - `sync/`：同步快照相关文件。
-- `instances/codex-cli/`：Codex CLI 账号绑定实例和共享会话目录。
+- `instances/codex-cli/`：Codex CLI 账号绑定实例和共享静态配置目录。
 
 安全说明：
 

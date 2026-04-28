@@ -394,6 +394,13 @@ function createRepository ({
     return dedupeByIdentity(platform, accounts)
   }
 
+  function countAccountDetailFiles (platform) {
+    return storageDriver
+      .listFiles(accountsDir(platform))
+      .filter(file => String(file || '').endsWith('.json'))
+      .length
+  }
+
   function writeCurrentIdValue (platform, accountId, tx = storageDriver) {
     const nextId = String(accountId || '').trim()
     tx.writeJson(currentPath(platform), { id: nextId, updated_at: nowMs() })
@@ -497,6 +504,10 @@ function createRepository ({
     const index = readIndex(platform, repairIndex)
     const list = []
     let dirty = false
+    const detailFileCount = countAccountDetailFiles(platform)
+    if (detailFileCount !== index.accounts.length) {
+      dirty = true
+    }
     for (let i = 0; i < index.accounts.length; i++) {
       const summary = index.accounts[i]
       if (!summary || !summary.id) {
@@ -514,11 +525,12 @@ function createRepository ({
 
     let finalList = list
     if (dirty) {
+      const detailAccounts = loadAccountsFromDetails(platform)
       storageDriver.batch({
         reason: 'repair-index',
         detail: { platform, source: 'list-accounts' }
       }, (tx) => {
-        finalList = persistAccounts(platform, list, tx)
+        finalList = persistAccounts(platform, detailAccounts, tx)
       })
     }
     cache.setCachedList(platform, dirty ? revisionBus.getRevision() : revision, finalList)

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, useCallback } from 'react'
 import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
 import { ToastProvider, useToast } from './components/Toast'
@@ -8,7 +8,7 @@ import { ThemeProvider } from './components/ThemeToggle'
 import { PrivacyProvider } from './components/PrivacyMode'
 import { readGlobalSettings, writeGlobalSettings } from './utils/globalSettings'
 import { setRequestLogEnabled } from './utils/requestLogClient'
-import { bindPluginSubInput, subscribeHostNavigation, subscribePluginEnter } from './utils/hostBridge.js'
+import { bindPluginSubInput, readSharedSetting, subscribeHostNavigation, subscribePluginEnter, writeSharedSetting } from './utils/hostBridge.js'
 import { useDashboardPlatformData } from './runtime/useDashboardPlatformData.js'
 import { useQuotaWarningNotifications } from './runtime/useQuotaWarningNotifications.js'
 import { useAnnouncements } from './runtime/useAnnouncements.js'
@@ -19,6 +19,35 @@ const Codex = lazy(() => import('./pages/Codex.jsx'))
 const Gemini = lazy(() => import('./pages/Gemini.jsx'))
 const Settings = lazy(() => import('./pages/Settings.jsx'))
 const RequestLogModal = lazy(() => import('./components/RequestLogModal.jsx'))
+
+const LAST_ACTIVE_PLATFORM_KEY = 'aideck_last_active_platform'
+const CODEX_ACTIVE_VIEW_KEY = 'codex_active_view'
+const RESTORABLE_PLATFORMS = new Set(['dashboard', 'antigravity', 'codex', 'gemini'])
+const DEFAULT_SEARCH_PLACEHOLDER = '搜索账号或配置...'
+const CODEX_SESSION_SEARCH_PLACEHOLDER = '搜索会话或工作区...'
+
+function normalizeRestorablePlatform (value, fallback = 'dashboard') {
+  const platform = String(value || '').trim()
+  return RESTORABLE_PLATFORMS.has(platform) ? platform : fallback
+}
+
+function readLastActivePlatform () {
+  return normalizeRestorablePlatform(readSharedSetting(LAST_ACTIVE_PLATFORM_KEY, 'dashboard'))
+}
+
+function writeLastActivePlatform (platform) {
+  const normalized = normalizeRestorablePlatform(platform, '')
+  if (!normalized) return
+  writeSharedSetting(LAST_ACTIVE_PLATFORM_KEY, normalized)
+}
+
+function normalizeCodexActiveView (value) {
+  return value === 'sessions' ? 'sessions' : 'accounts'
+}
+
+function readCodexActiveView () {
+  return normalizeCodexActiveView(readSharedSetting(CODEX_ACTIVE_VIEW_KEY, 'accounts'))
+}
 
 /**
  * App — 主布局
@@ -33,17 +62,27 @@ const RequestLogModal = lazy(() => import('./components/RequestLogModal.jsx'))
  * └──────────────────────────────────────────────┘
  */
 function AppInner () {
-  const [activePlatform, setActivePlatform] = useState('dashboard')
+  const [activePlatform, setActivePlatform] = useState(() => readLastActivePlatform())
+  const [settingsReturnPlatform, setSettingsReturnPlatform] = useState(() => readLastActivePlatform())
+  const [codexActiveView, setCodexActiveView] = useState(() => readCodexActiveView())
   const [lastActivity, setLastActivity] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [globalSettings, setGlobalSettings] = useState(() => readGlobalSettings())
   const [showRequestLogModal, setShowRequestLogModal] = useState(false)
   const [showAnnouncementCenter, setShowAnnouncementCenter] = useState(false)
+  const activePlatformRef = useRef(activePlatform)
   const toast = useToast()
   const { platformData } = useDashboardPlatformData(activePlatform)
   const announcements = useAnnouncements()
+  const searchPlaceholder = activePlatform === 'codex' && codexActiveView === 'sessions'
+    ? CODEX_SESSION_SEARCH_PLACEHOLDER
+    : DEFAULT_SEARCH_PLACEHOLDER
 
   useQuotaWarningNotifications(platformData)
+
+  useEffect(() => {
+    activePlatformRef.current = activePlatform
+  }, [activePlatform])
 
   const applyGlobalSettings = useCallback((patch) => {
     const next = writeGlobalSettings(patch)
@@ -52,37 +91,53 @@ function AppInner () {
     return next
   }, [])
 
-  useEffect(() => {
-    const bindSubInput = () => {
-      bindPluginSubInput(({ text }) => {
-        setSearchQuery(String(text || ''))
-      }, '搜索账号或配置...')
-    }
+  const bindSubInput = useCallback(() => {
+    bindPluginSubInput(({ text }) => {
+      setSearchQuery(String(text || ''))
+    }, searchPlaceholder)
+  }, [searchPlaceholder])
 
+  useEffect(() => {
     bindSubInput()
 
     const unsubscribePluginEnter = subscribePluginEnter((action) => {
-      bindSubInput()
-
       const codeMap = {
-        AiDeck: 'dashboard',
         'AiDeck-antigravity': 'antigravity',
         'AiDeck-codex': 'codex',
-        'AiDeck-gemini': 'gemini',
-        aideck: 'dashboard'
+        'AiDeck-gemini': 'gemini'
       }
-      setActivePlatform(codeMap[action.code] || 'dashboard')
+      const nextPlatform = codeMap[action.code] || readLastActivePlatform()
+      if (nextPlatform === 'codex') {
+        setCodexActiveView(readCodexActiveView())
+      }
+      setActivePlatform(nextPlatform)
+      activePlatformRef.current = nextPlatform
+      if (nextPlatform !== 'settings') {
+        setSettingsReturnPlatform(nextPlatform)
+        writeLastActivePlatform(nextPlatform)
+      }
     })
     const unsubscribeHostNavigation = subscribeHostNavigation((detail) => {
       const platform = String(detail?.platform || '').trim()
       if (!platform) return
+      const currentPlatform = activePlatformRef.current
+      if (platform === 'settings' && currentPlatform !== 'settings') {
+        setSettingsReturnPlatform(currentPlatform)
+      } else if (platform !== 'settings') {
+        setSettingsReturnPlatform(platform)
+        writeLastActivePlatform(platform)
+      }
+      if (platform === 'codex') {
+        setCodexActiveView(readCodexActiveView())
+      }
       setActivePlatform(platform)
+      activePlatformRef.current = platform
     })
     return () => {
       unsubscribePluginEnter()
       unsubscribeHostNavigation()
     }
-  }, [])
+  }, [bindSubInput])
 
   useEffect(() => {
     setRequestLogEnabled(globalSettings.requestLogEnabled === true)
@@ -92,11 +147,21 @@ function AppInner () {
   }, [globalSettings.requestLogEnabled])
 
   function handleSelectPlatform (id) {
+    if (id === 'settings' && activePlatform !== 'settings') {
+      setSettingsReturnPlatform(activePlatform)
+    } else if (id !== 'settings') {
+      setSettingsReturnPlatform(id)
+      writeLastActivePlatform(id)
+    }
     setActivePlatform(id)
+    activePlatformRef.current = id
   }
 
   function handleSelectAccount (platformId, accountId) {
+    setSettingsReturnPlatform(platformId)
+    writeLastActivePlatform(platformId)
     setActivePlatform(platformId)
+    activePlatformRef.current = platformId
     // 后续可以高亮/滚动到指定账号
   }
 
@@ -140,7 +205,7 @@ function AppInner () {
         )}
         <main className={`main-content ${activePlatform === 'settings' ? 'no-padding' : ''}`}>
           <Suspense fallback={<PageLoading />}>
-            {renderPage(activePlatform, handleActivityLog, handleSelectPlatform, searchQuery, platformData, globalSettings, applyGlobalSettings)}
+            {renderPage(activePlatform, handleActivityLog, handleSelectPlatform, searchQuery, platformData, globalSettings, applyGlobalSettings, settingsReturnPlatform, setCodexActiveView)}
           </Suspense>
         </main>
       </div>
@@ -177,12 +242,13 @@ function PageLoading () {
   )
 }
 
-function renderPage (page, onActivity, onNavigate, searchQuery, platformData, globalSettings, onGlobalSettingsChange) {
+function renderPage (page, onActivity, onNavigate, searchQuery, platformData, globalSettings, onGlobalSettingsChange, settingsReturnPlatform, onCodexViewChange) {
   switch (page) {
     case 'settings':
       return (
         <Settings
           onNavigate={onNavigate}
+          returnPlatform={settingsReturnPlatform}
           globalSettings={globalSettings}
           onGlobalSettingsChange={onGlobalSettingsChange}
         />
@@ -196,7 +262,7 @@ function renderPage (page, onActivity, onNavigate, searchQuery, platformData, gl
     case 'codex':
       return (
         <PrivacyProvider key="codex" namespace="codex">
-          <Codex onActivity={onActivity} searchQuery={searchQuery} />
+          <Codex onActivity={onActivity} searchQuery={searchQuery} onViewChange={onCodexViewChange} />
         </PrivacyProvider>
       )
     case 'gemini':
