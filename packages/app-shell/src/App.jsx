@@ -148,11 +148,13 @@ function AppInner () {
         stats={stats}
         lastActivity={lastActivity}
       />
-      <RequestLogModal
-        open={showRequestLogModal && globalSettings.requestLogEnabled === true}
-        onClose={() => setShowRequestLogModal(false)}
-        toast={toast}
-      />
+      <Suspense fallback={null}>
+        <RequestLogModal
+          open={showRequestLogModal && globalSettings.requestLogEnabled === true}
+          onClose={() => setShowRequestLogModal(false)}
+          toast={toast}
+        />
+      </Suspense>
       <AnnouncementCenter
         open={showAnnouncementCenter}
         onClose={() => setShowAnnouncementCenter(false)}

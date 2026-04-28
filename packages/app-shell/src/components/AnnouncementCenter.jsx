@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { APP_VERSION } from '../runtime/useAnnouncements.js'
 import { getPlatformService } from '../utils/hostBridge.js'
+import { CheckIcon, RefreshIcon } from './Icons/ActionIcons.jsx'
 
 function parseTime (value) {
   const time = new Date(String(value || '')).getTime()
@@ -37,6 +38,12 @@ function isSafeUrl (url) {
   return /^https?:\/\//i.test(value)
 }
 
+function waitAtLeast (startTime, minMs) {
+  const elapsed = Date.now() - startTime
+  const remaining = Math.max(0, minMs - elapsed)
+  return remaining > 0 ? new Promise(resolve => setTimeout(resolve, remaining)) : Promise.resolve()
+}
+
 function normalizeVersion (value) {
   return String(value || '').trim().replace(/^v/i, '')
 }
@@ -46,14 +53,22 @@ function formatVersion (value) {
   return normalized ? `v${normalized}` : ''
 }
 
-function isVersionMismatch (announcement) {
+function isAnnouncementVersionNewer (announcement) {
   const announcementVersion = normalizeVersion(announcement?.version)
   const currentVersion = normalizeVersion(APP_VERSION)
-  return Boolean(announcementVersion && currentVersion && announcementVersion !== currentVersion)
+  if (!announcementVersion || !currentVersion) return false
+  const announcementParts = announcementVersion.split('.').map(part => Number(part) || 0)
+  const currentParts = currentVersion.split('.').map(part => Number(part) || 0)
+  const max = Math.max(announcementParts.length, currentParts.length)
+  for (let i = 0; i < max; i++) {
+    const diff = (announcementParts[i] || 0) - (currentParts[i] || 0)
+    if (diff !== 0) return diff > 0
+  }
+  return false
 }
 
 function getReleaseHint (announcement) {
-  if (!isVersionMismatch(announcement)) return null
+  if (!isAnnouncementVersionNewer(announcement)) return null
   const status = String(announcement?.releaseStatus || '').trim().toLowerCase()
   const version = formatVersion(announcement?.version)
   const currentVersion = formatVersion(APP_VERSION)
@@ -141,6 +156,7 @@ export default function AnnouncementCenter ({
   const unreadIds = Array.isArray(state.unreadIds) ? state.unreadIds : []
   const [detail, setDetail] = useState(null)
   const [handledPopupId, setHandledPopupId] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
 
   const sortedAnnouncements = useMemo(() => {
     const items = Array.isArray(state.announcements) ? state.announcements : []
@@ -175,6 +191,18 @@ export default function AnnouncementCenter ({
     setDetail(item)
   }
 
+  async function handleRefreshClick () {
+    if (refreshing || loading) return
+    const startedAt = Date.now()
+    setRefreshing(true)
+    try {
+      await onRefresh?.(true)
+    } finally {
+      await waitAtLeast(startedAt, 1000)
+      setRefreshing(false)
+    }
+  }
+
   async function runAction (action) {
     if (!action) return
     if (action.type === 'url') {
@@ -196,6 +224,7 @@ export default function AnnouncementCenter ({
   const shouldRenderList = open
   const shouldRenderDetail = !!detail
   const releaseHint = getReleaseHint(detail)
+  const refreshBusy = refreshing || loading
 
   return (
     <>
@@ -204,20 +233,36 @@ export default function AnnouncementCenter ({
           <div className='modal announcement-list-modal' onClick={(event) => event.stopPropagation()}>
             <div className='modal-header'>
               <h2>消息通知</h2>
-              <button className='modal-close' onClick={onClose} aria-label='关闭'>×</button>
+              <div className='announcement-header-actions'>
+                <button
+                  className='announcement-header-icon-btn'
+                  disabled={unreadIds.length === 0}
+                  onClick={() => { void onMarkAllAsRead?.() }}
+                  aria-label='全部已读'
+                  data-tip='全部已读'
+                >
+                  <CheckIcon size={15} />
+                </button>
+                <button
+                  className={`announcement-header-icon-btn ${refreshBusy ? 'is-loading' : ''}`}
+                  disabled={refreshBusy}
+                  onClick={() => { void handleRefreshClick() }}
+                  aria-label={refreshBusy ? '刷新中' : '刷新'}
+                  data-tip={refreshBusy ? '刷新中' : '刷新'}
+                >
+                  <RefreshIcon size={15} />
+                </button>
+                <button
+                  className='announcement-header-icon-btn announcement-header-close-btn'
+                  onClick={onClose}
+                  aria-label='关闭'
+                  data-tip='关闭'
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <div className='modal-body announcement-list-body'>
-              <div className='announcement-toolbar'>
-                <div className='announcement-toolbar-actions'>
-                  <button className='announcement-toolbar-text-btn' disabled={unreadIds.length === 0} onClick={() => { void onMarkAllAsRead?.() }}>
-                    全部已读
-                  </button>
-                  <button className='announcement-toolbar-text-btn' disabled={loading} onClick={() => { void onRefresh?.(true) }}>
-                    {loading ? '刷新中' : '刷新'}
-                  </button>
-                </div>
-              </div>
-
               {sortedAnnouncements.length === 0 && (
                 <div className='announcement-empty'>暂无消息</div>
               )}

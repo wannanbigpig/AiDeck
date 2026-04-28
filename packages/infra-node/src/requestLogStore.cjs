@@ -4,6 +4,7 @@ const ROTATION_SIZE_THRESHOLD = 1024 * 1024 // 1MB
 const ROTATION_RETAIN_LINES = 100
 const MAX_STRING_LENGTH = 600
 const MAX_OBJECT_DEPTH = 4
+const LOG_FLUSH_DELAY_MS = 120
 const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
@@ -30,6 +31,16 @@ const state = globalThis.__AIDECK_REQUEST_LOG_STATE__ || {
 
 if (!(state.listeners instanceof Set)) {
   state.listeners = new Set()
+}
+if (!Array.isArray(state.pendingFileLines)) {
+  state.pendingFileLines = []
+}
+state.pendingFlushTimer = null
+if (!state.flushBeforeExitBound && typeof process !== 'undefined' && process && typeof process.once === 'function') {
+  state.flushBeforeExitBound = true
+  process.once('beforeExit', () => {
+    flushPendingLogLines()
+  })
 }
 
 globalThis.__AIDECK_REQUEST_LOG_STATE__ = state
@@ -102,19 +113,8 @@ function stringifyLogDetail (detail) {
   }
 }
 
-function appendLogLine (entry) {
-  const line = [
-    formatTimestampWithLocalTimezone(entry.ts),
-    String(entry.level || 'info').toUpperCase(),
-    `[${entry.scope || 'system'}]`,
-    entry.message || '',
-    entry.detail ? stringifyLogDetail(entry.detail) : ''
-  ].filter(Boolean).join(' ') + '\n'
+function rotateLogFileIfNeeded (filePath) {
   try {
-    const filePath = getLogFilePath()
-    fs.appendFileSync(filePath, line, { encoding: 'utf-8' })
-
-    // 日志轮转逻辑：如果超过 1MB，则保留最后 100 条
     const stats = fs.statSync(filePath)
     if (stats.size > ROTATION_SIZE_THRESHOLD) {
       const content = fs.readFileSync(filePath, { encoding: 'utf-8' })
@@ -125,8 +125,47 @@ function appendLogLine (entry) {
   } catch (e) {}
 }
 
+function flushPendingLogLines () {
+  if (!Array.isArray(state.pendingFileLines) || state.pendingFileLines.length === 0) return
+  if (state.pendingFlushTimer) {
+    clearTimeout(state.pendingFlushTimer)
+    state.pendingFlushTimer = null
+  }
+  const lines = state.pendingFileLines.join('')
+  state.pendingFileLines = []
+  try {
+    const filePath = getLogFilePath()
+    fs.appendFileSync(filePath, lines, { encoding: 'utf-8' })
+    rotateLogFileIfNeeded(filePath)
+  } catch (e) {}
+}
+
+function scheduleLogFlush () {
+  if (state.pendingFlushTimer) return
+  state.pendingFlushTimer = setTimeout(() => {
+    state.pendingFlushTimer = null
+    flushPendingLogLines()
+  }, LOG_FLUSH_DELAY_MS)
+  if (state.pendingFlushTimer && typeof state.pendingFlushTimer.unref === 'function') {
+    state.pendingFlushTimer.unref()
+  }
+}
+
+function appendLogLine (entry) {
+  const line = [
+    formatTimestampWithLocalTimezone(entry.ts),
+    String(entry.level || 'info').toUpperCase(),
+    `[${entry.scope || 'system'}]`,
+    entry.message || '',
+    entry.detail ? stringifyLogDetail(entry.detail) : ''
+  ].filter(Boolean).join(' ') + '\n'
+  state.pendingFileLines.push(line)
+  scheduleLogFlush()
+}
+
 function _readLogFileLines (limit) {
   try {
+    flushPendingLogLines()
     const filePath = getLogFilePath()
     if (!fs.existsSync(filePath)) return []
     const content = fs.readFileSync(filePath, { encoding: 'utf-8' })
@@ -312,6 +351,11 @@ function listLogs (limit = 100) {
 
 function clearLogs () {
   state.logs = []
+  if (state.pendingFlushTimer) {
+    clearTimeout(state.pendingFlushTimer)
+    state.pendingFlushTimer = null
+  }
+  state.pendingFileLines = []
   try {
     fs.writeFileSync(getLogFilePath(), '', { encoding: 'utf-8' })
   } catch (e) {}

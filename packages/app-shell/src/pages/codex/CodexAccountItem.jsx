@@ -14,7 +14,8 @@ import {
   TrashIcon,
   CopyIcon,
   CheckIcon,
-  CommandLineIcon
+  CommandLineIcon,
+  BellIcon
 } from '../../components/Icons/ActionIcons'
 import {
   resolveQuotaErrorMeta,
@@ -102,6 +103,7 @@ export default function CodexAccountItem ({
   onEditTags,
   onReauthorize,
   onLaunchCli,
+  onWakeup,
   svc
 }) {
   const { isPrivacyMode } = usePrivacy()
@@ -111,6 +113,7 @@ export default function CodexAccountItem ({
   const [syncing, setSyncing] = useState(false)
   const [switching, setSwitching] = useState(false)
   const [launchingCli, setLaunchingCli] = useState(false)
+  const [openingWakeup, setOpeningWakeup] = useState(false)
   const [idCopied, setIdCopied] = useState(false)
 
   const handleRefreshWrap = async (e) => {
@@ -140,6 +143,14 @@ export default function CodexAccountItem ({
     setLaunchingCli(true)
     try { await onLaunchCli?.() } catch {}
     setLaunchingCli(false)
+  }
+
+  const handleWakeupWrap = async (e) => {
+    stopFlip(e)
+    if (openingWakeup) return
+    setOpeningWakeup(true)
+    try { await onWakeup?.() } catch {}
+    setOpeningWakeup(false)
   }
 
   const handleReauthorizeWrap = (e) => {
@@ -261,8 +272,13 @@ export default function CodexAccountItem ({
             <div className='account-card-divider' />
             <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
             <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
-              <span className='action-icon-tip'>在目录中启动 Codex CLI</span>
+              <span className='action-icon-tip'>以账号绑定实例启动 Codex CLI</span>
               {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
+            </button>
+
+            <button className={`action-icon-btn ${openingWakeup ? 'is-loading' : ''}`} onClick={handleWakeupWrap}>
+              <span className='action-icon-tip'>配置或立即唤醒此账号</span>
+              {openingWakeup ? <SpinnerBtnIcon /> : <BellIcon size={16} />}
             </button>
 
             {showReauthorizeAction && (

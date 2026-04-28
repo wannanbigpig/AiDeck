@@ -81,7 +81,8 @@ export function usePlatformSnapshot (platform, options = {}) {
       return next
     }
 
-    const accounts = Array.isArray(svc.list?.()) ? svc.list() : []
+    const listedAccounts = typeof svc.list === 'function' ? svc.list() : []
+    const accounts = Array.isArray(listedAccounts) ? listedAccounts : []
     const current = svc.getCurrent?.()
     const currentId = current?.id || null
 

@@ -81,6 +81,40 @@ test('announcementService 应过滤公告并返回未读弹窗项', async () => 
   })
 })
 
+test('announcementService 应过滤低于当前版本的旧更新公告', () => {
+  const service = require(path.join(process.cwd(), 'packages/infra-node/src/announcementService.cjs'))
+  const list = service.filterAnnouncements([
+    {
+      id: 'old-update',
+      type: 'feature',
+      title: 'AiDeck v1.0.2 更新',
+      version: '1.0.2',
+      targetVersions: '*',
+      targetLanguages: ['*'],
+      createdAt: '2026-04-27T00:00:00Z'
+    },
+    {
+      id: 'current-update',
+      type: 'feature',
+      title: 'AiDeck v1.0.3 更新',
+      version: '1.0.3',
+      targetVersions: '*',
+      targetLanguages: ['*'],
+      createdAt: '2026-04-28T00:00:00Z'
+    },
+    {
+      id: 'background-reminder',
+      type: 'warning',
+      title: '后台任务运行提醒',
+      targetVersions: '*',
+      targetLanguages: ['*'],
+      createdAt: '2026-04-28T00:00:00Z'
+    }
+  ], { version: '1.0.3', locale: 'zh-CN' })
+
+  assert.deepEqual(list.map(item => item.id), ['current-update', 'background-reminder'])
+})
+
 test('announcementService 应支持标记已读和全部已读', async () => {
   const service = require(path.join(process.cwd(), 'packages/infra-node/src/announcementService.cjs'))
   await withTempAnnouncementEnv({
@@ -126,7 +160,7 @@ test('announcementService 应在开发环境默认读取仓库根公告文件', 
     const localFile = service.getLocalAnnouncementFile()
     assert.equal(localFile, path.join(process.cwd(), 'announcements.json'))
     const state = await service.getAnnouncementState({ version: '1.0.1', locale: 'zh-CN' })
-    assert.ok(state.announcements.some(item => item.id === 'ann-2026-04-aideck-1-0-2-update'))
+    assert.ok(state.announcements.some(item => item.id === 'ann-2026-04-aideck-1-0-3-update'))
   })
 })
 

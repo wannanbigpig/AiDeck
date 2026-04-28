@@ -192,7 +192,7 @@ export default function GeminiAddAccountModal ({
           </div>
           <div className='oauth-action-row'>
             <button className='btn btn-primary' onClick={onImportLocal} disabled={importingLocal}>
-              {importingLocal ? '导入中...' : <><DatabaseIcon size={14} style={{ marginRight: 6 }} /> 从本机 Gemini 导入</>}
+              {importingLocal ? '导入中...' : <><DatabaseIcon size={14} style={{ marginRight: 6 }} /> 从本机 Antigravity 导入</>}
             </button>
           </div>
         </div>

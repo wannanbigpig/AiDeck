@@ -41,14 +41,22 @@ export async function launchPlatformCli ({
   const cwd = Array.isArray(picked) && picked[0] ? String(picked[0]) : ''
   if (!cwd) return false
 
-  const activated = await Promise.resolve(activate?.(account))
-  if (!activated) return false
+  const launchContext = typeof activate === 'function'
+    ? await Promise.resolve(activate(account))
+    : { success: true }
+  if (!launchContext) return false
+  if (launchContext && typeof launchContext === 'object' && launchContext.success === false) {
+    toast?.error?.(launchContext.error || '准备 CLI 启动失败')
+    return false
+  }
 
   const settings = readGlobalSettings()
   const result = await launchCliCommand({
     command: cliCommand,
     cwd,
-    terminal: settings.defaultTerminal || 'system'
+    terminal: settings.defaultTerminal || 'system',
+    env: launchContext && typeof launchContext === 'object' ? launchContext.env : undefined,
+    args: launchContext && typeof launchContext === 'object' ? launchContext.args : undefined
   })
 
   if (!result || !result.success) {
@@ -57,6 +65,9 @@ export async function launchPlatformCli ({
   }
 
   refresh?.()
+  if (Array.isArray(launchContext?.warnings) && launchContext.warnings.length > 0) {
+    toast?.warning?.(launchContext.warnings[0])
+  }
   toast?.success?.(result.message || `已启动 ${cliCommand} CLI`)
   onActivity?.(`${cliCommand} CLI -> ${account?.email || account?.id || cwd}`)
   return true

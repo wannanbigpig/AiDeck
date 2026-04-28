@@ -236,6 +236,27 @@ function removeCache () {
   fileUtils.deleteFile(getCachePath())
 }
 
+function mergeBundledAnnouncements (raw) {
+  const base = normalizeResponse(raw)
+  const bundledFile = getBundledAnnouncementFile()
+  if (!bundledFile) return base
+
+  const bundled = normalizeResponse(readJsonSafe(bundledFile, { announcements: [] }))
+  if (!Array.isArray(bundled.announcements) || bundled.announcements.length === 0) return base
+
+  const map = new Map()
+  for (const item of base.announcements) {
+    map.set(item.id, item)
+  }
+  for (const item of bundled.announcements) {
+    map.set(item.id, item)
+  }
+  return {
+    version: bundled.version || base.version,
+    announcements: Array.from(map.values())
+  }
+}
+
 function getReadIds () {
   const raw = readJsonSafe(getReadIdsPath(), [])
   if (!Array.isArray(raw)) return []
@@ -256,17 +277,17 @@ async function loadAnnouncementsRaw (forceRefresh) {
   if (!forceRefresh) {
     const cache = loadCache()
     if (cache && Date.now() - Number(cache.time || 0) < CACHE_TTL_MS) {
-      return normalizeResponse(cache.data)
+      return mergeBundledAnnouncements(cache.data)
     }
   }
 
   try {
     const remote = normalizeResponse(await fetchJson(getAnnouncementUrl()))
     saveCache(remote)
-    return remote
+    return mergeBundledAnnouncements(remote)
   } catch (err) {
     const cache = loadCache()
-    if (cache) return normalizeResponse(cache.data)
+    if (cache) return mergeBundledAnnouncements(cache.data)
     const bundledFile = getBundledAnnouncementFile()
     if (bundledFile) return normalizeResponse(readJsonSafe(bundledFile, { announcements: [] }))
     return { version: '1.0', announcements: [] }
@@ -318,6 +339,12 @@ function matchLanguage (locale, languages) {
   })
 }
 
+function isStaleVersionAnnouncement (announcement, currentVersion) {
+  const announcementVersion = String(announcement && announcement.version || '').trim()
+  if (!announcementVersion || !currentVersion) return false
+  return compareVersions(announcementVersion, currentVersion) < 0
+}
+
 function applyLocale (announcement, locale) {
   const next = { ...announcement }
   const locales = announcement.locales && typeof announcement.locales === 'object' ? announcement.locales : null
@@ -349,6 +376,7 @@ function filterAnnouncements (announcements, options = {}) {
   const now = Date.now()
   return (Array.isArray(announcements) ? announcements : [])
     .filter(item => matchVersions(currentVersion, item.targetVersions))
+    .filter(item => !isStaleVersionAnnouncement(item, currentVersion))
     .filter(item => matchLanguage(locale, item.targetLanguages))
     .filter(item => !item.expiresAt || parseTime(item.expiresAt) === 0 || parseTime(item.expiresAt) >= now)
     .map(item => applyLocale(item, locale))

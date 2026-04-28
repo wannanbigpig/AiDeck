@@ -430,6 +430,27 @@ test('三平台服务应暴露统一共享契约入口', () => {
   }
 })
 
+test('Gemini / Antigravity 服务层批量刷新应返回每个账号结果', async () => {
+  const antigravity = require(path.join(process.cwd(), 'packages/platforms/src/antigravityService.impl.cjs'))
+  const gemini = require(path.join(process.cwd(), 'packages/platforms/src/geminiService.impl.cjs'))
+
+  const geminiResults = await gemini.refreshQuotasBatch(['missing-gemini-account'], {
+    concurrency: 1,
+    delayMs: 0
+  })
+  assert.deepEqual(geminiResults, [
+    { id: 'missing-gemini-account', success: false, error: '账号不存在' }
+  ])
+
+  const antigravityResults = await antigravity.refreshQuotasBatch(['missing-antigravity-account'], {
+    concurrency: 1,
+    delayMs: 0
+  })
+  assert.deepEqual(antigravityResults, [
+    { id: 'missing-antigravity-account', success: false, error: '账号不存在' }
+  ])
+})
+
 test('Gemini 应按 expiry_date 判断是否需要提前刷新 token', () => {
   const gemini = require(path.join(process.cwd(), 'packages/platforms/src/geminiService.impl.cjs'))
 

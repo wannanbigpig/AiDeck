@@ -2801,28 +2801,27 @@ async function refreshQuotasBatch (accountIds, options = {}) {
 
   const { Semaphore } = require('./utils/semaphore.cjs')
   const semaphore = new Semaphore(concurrency)
-  const results = []
   let completed = 0
-  
+
   const tasks = accountIds.map(async (accountId) => {
     await semaphore.acquire()
-    
+
     try {
       const account = storage.getAccount(PLATFORM, accountId)
       if (!account) {
         return { id: accountId, success: false, error: '账号不存在' }
       }
-      
+
       const result = await _refreshQuotaAsync(account, accountId)
       completed++
-      
+
       onProgress?.({ completed, total: accountIds.length, accountId, result })
-      
+
       // 添加延迟，避免触发 Google API 限流
       if (delayMs > 0 && completed < accountIds.length) {
         await new Promise(resolve => setTimeout(resolve, delayMs))
       }
-      
+
       return { id: accountId, success: result.success, ...result }
     } catch (err) {
       completed++
@@ -2832,9 +2831,8 @@ async function refreshQuotasBatch (accountIds, options = {}) {
       semaphore.release()
     }
   })
-  
-  await Promise.all(tasks)
-  return results
+
+  return Promise.all(tasks)
 }
 
 function _clearAntigravityQuotaError (accountId, quotaOverride) {

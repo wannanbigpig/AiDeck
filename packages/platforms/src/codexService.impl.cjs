@@ -22,8 +22,10 @@ const http = require('http')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
+const dataRoot = require('../../infra-node/src/dataRoot.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
 const sharedSettingsStore = require('../../infra-node/src/sharedSettingsStore.cjs')
+const terminalLauncher = require('../../infra-node/src/terminalLauncher.cjs')
 
 const PLATFORM = 'codex'
 
@@ -40,12 +42,35 @@ const CODEX_OAUTH_ORIGINATOR = 'codex_vscode'
 const CODEX_OAUTH_CALLBACK_PORT = 1455
 const CODEX_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const LOCAL_SYNC_IMPORT_COOLDOWN_MS = 30 * 1000
+const CODEX_CLI_INSTANCE_DIR_FIELD = 'codex_cli_instance_dir'
+const CODEX_CLI_MANAGED_ACCOUNT_DIR = 'accounts'
+const CODEX_CLI_SHARED_DIR = '_shared'
+const CODEX_SHARED_DIRS = ['skills', 'rules', path.join('vendor_imports', 'skills')]
+const CODEX_SHARED_FILES = ['AGENTS.md']
+const CODEX_SHARED_SESSION_DIRS = ['sessions', 'archived_sessions']
+const CODEX_SHARED_SESSION_FILES = ['session_index.jsonl', 'history.jsonl']
+const CODEX_WAKEUP_DEFAULT_PROMPT = 'hi'
+const CODEX_WAKEUP_DEFAULT_DAILY_TIME = '09:00'
+const CODEX_WAKEUP_DEFAULT_TIMEOUT_MS = 120 * 1000
+const CODEX_WAKEUP_ALLOWED_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
+const CODEX_WAKEUP_ALLOWED_SCHEDULE_KINDS = new Set(['daily', 'weekly', 'interval', 'quota_reset', 'startup'])
+const CODEX_WAKEUP_ALLOWED_QUOTA_RESET_WINDOWS = new Set(['either', 'primary_window', 'secondary_window'])
+const CODEX_WAKEUP_DEFAULT_SCHEDULE_KIND = 'daily'
+const CODEX_WAKEUP_DEFAULT_WEEKLY_DAYS = [1]
+const CODEX_WAKEUP_DEFAULT_INTERVAL_HOURS = 4
+const CODEX_WAKEUP_MAX_INTERVAL_HOURS = 24
+const CODEX_WAKEUP_MAX_STARTUP_DELAY_MINUTES = 24 * 60
+const CODEX_WAKEUP_SCHEDULE_FILE = 'codex-wakeup-schedules.json'
+const CODEX_WAKEUP_SCHEDULER_INTERVAL_MS = 60 * 1000
 
 const oauthSessions = new Map()
 const localSyncState = {
   lastFingerprint: '',
   lastAttemptAt: 0
 }
+let codexWakeupSchedulerTimer = null
+let codexWakeupStartupTriggered = false
+const codexWakeupRunningScheduleIds = new Set()
 
 const DEFAULT_ADVANCED_SETTINGS = {
   codexStartupPath: '',
@@ -967,7 +992,7 @@ async function _prepareCodexAccountForSwitch (accountId, account) {
   return { success: true, error: null, account: latest || Object.assign({}, account, { tokens: nextTokens }) }
 }
 
-function _buildCodexAuthFile (account) {
+function _buildCodexAuthFile (account, baseDir) {
   const tokens = (account && account.tokens && typeof account.tokens === 'object') ? account.tokens : {}
   const accessToken = String(tokens.access_token || '').trim()
   const refreshToken = String(tokens.refresh_token || '').trim()
@@ -979,7 +1004,8 @@ function _buildCodexAuthFile (account) {
     _extractChatGptAccountId(idToken)
   )
 
-  const existing = fileUtils.readJsonFile(getAuthFilePath())
+  const existing = fileUtils.readJsonFile(baseDir ? path.join(baseDir, 'auth.json') : getAuthFilePath()) ||
+    (baseDir ? fileUtils.readJsonFile(getAuthFilePath()) : null)
   const baseUrl = existing && typeof existing === 'object' ? existing.base_url : undefined
 
   const payload = {
@@ -999,6 +1025,885 @@ function _buildCodexAuthFile (account) {
   }
 
   return payload
+}
+
+function _getCodexCliInstancesRootDir () {
+  return path.join(dataRoot.ensureDataRootLayout(), 'instances', 'codex-cli')
+}
+
+function _getCodexCliSharedRootDir () {
+  return path.join(_getCodexCliInstancesRootDir(), CODEX_CLI_SHARED_DIR)
+}
+
+function _buildCodexCliInstanceDir (accountId) {
+  const raw = String(accountId || 'account').trim() || 'account'
+  const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16)
+  return path.join(_getCodexCliInstancesRootDir(), CODEX_CLI_MANAGED_ACCOUNT_DIR, digest)
+}
+
+function _resolveBoundCodexCliInstanceDir (accountId, account) {
+  const rootDir = _getCodexCliInstancesRootDir()
+  const saved = String(account && account[CODEX_CLI_INSTANCE_DIR_FIELD] ? account[CODEX_CLI_INSTANCE_DIR_FIELD] : '').trim()
+  if (saved && _isPathInside(rootDir, saved)) return saved
+  return _buildCodexCliInstanceDir(accountId)
+}
+
+function _isPathInside (rootDir, targetPath) {
+  try {
+    const root = path.resolve(rootDir)
+    const target = path.resolve(String(targetPath || ''))
+    return target === root || target.startsWith(root + path.sep)
+  } catch {
+    return false
+  }
+}
+
+function _removePathIfExists (targetPath) {
+  try {
+    if (!fs.existsSync(targetPath)) return true
+    const stat = fs.lstatSync(targetPath)
+    if (stat.isDirectory() && !stat.isSymbolicLink()) fs.rmSync(targetPath, { recursive: true, force: true })
+    else fs.unlinkSync(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function _copyFileIfMissing (sourcePath, targetPath) {
+  try {
+    if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) return
+    fileUtils.ensureDir(path.dirname(targetPath))
+    fs.copyFileSync(sourcePath, targetPath)
+  } catch {}
+}
+
+function _copyDirEntriesIfMissing (sourceDir, targetDir) {
+  try {
+    if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) return
+    fileUtils.ensureDir(targetDir)
+    for (const name of fs.readdirSync(sourceDir)) {
+      const sourcePath = path.join(sourceDir, name)
+      const targetPath = path.join(targetDir, name)
+      if (fs.existsSync(targetPath)) continue
+      const stat = fs.lstatSync(sourcePath)
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        _copyDirEntriesIfMissing(sourcePath, targetPath)
+      } else if (stat.isFile()) {
+        fs.copyFileSync(sourcePath, targetPath)
+      }
+    }
+  } catch {}
+}
+
+function _pathExistsOrIsSymlink (targetPath) {
+  try {
+    if (fs.existsSync(targetPath)) return true
+    return fs.lstatSync(targetPath).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+function _ensureCodexSharedEntry (instanceDir, relativePath, isDir, sourceRoot = getConfigDir(), options = {}) {
+  const sourcePath = path.join(sourceRoot, relativePath)
+  const targetPath = path.join(instanceDir, relativePath)
+  try {
+    if (isDir) fileUtils.ensureDir(sourcePath)
+    if (!isDir && options.ensureFile) {
+      fileUtils.ensureDir(path.dirname(sourcePath))
+      if (!fs.existsSync(sourcePath)) fs.writeFileSync(sourcePath, '', 'utf8')
+    }
+    if (!fs.existsSync(sourcePath)) return
+    if (isDir && _pathExistsOrIsSymlink(targetPath) && !fs.lstatSync(targetPath).isSymbolicLink()) {
+      _copyDirEntriesIfMissing(targetPath, sourcePath)
+    } else if (!isDir && fs.existsSync(targetPath) && !fs.lstatSync(targetPath).isSymbolicLink()) {
+      _copyFileIfMissing(targetPath, sourcePath)
+    }
+    if (_pathExistsOrIsSymlink(targetPath)) {
+      _removePathIfExists(targetPath)
+    }
+    fileUtils.ensureDir(path.dirname(targetPath))
+    fs.symlinkSync(sourcePath, targetPath, isDir && process.platform === 'win32' ? 'junction' : undefined)
+  } catch (err) {
+    requestLogger.warn('codex.cli', '同步实例共享配置失败', {
+      relativePath,
+      error: err && err.message ? err.message : String(err)
+    })
+  }
+}
+
+function _ensureCodexCliSharedEntries (instanceDir) {
+  for (const relativePath of CODEX_SHARED_DIRS) {
+    _ensureCodexSharedEntry(instanceDir, relativePath, true)
+  }
+  for (const relativePath of CODEX_SHARED_FILES) {
+    _ensureCodexSharedEntry(instanceDir, relativePath, false)
+  }
+  const sharedRoot = _getCodexCliSharedRootDir()
+  for (const relativePath of CODEX_SHARED_SESSION_DIRS) {
+    _ensureCodexSharedEntry(instanceDir, relativePath, true, sharedRoot)
+  }
+  for (const relativePath of CODEX_SHARED_SESSION_FILES) {
+    _ensureCodexSharedEntry(instanceDir, relativePath, false, sharedRoot, { ensureFile: true })
+  }
+}
+
+function _deleteCodexCliInstanceDir (account) {
+  const instanceDir = String(account && account[CODEX_CLI_INSTANCE_DIR_FIELD] ? account[CODEX_CLI_INSTANCE_DIR_FIELD] : '').trim()
+  if (!instanceDir) return false
+  const rootDir = _getCodexCliInstancesRootDir()
+  if (!_isPathInside(rootDir, instanceDir)) return false
+  if (!_isPathInside(path.join(rootDir, CODEX_CLI_MANAGED_ACCOUNT_DIR), instanceDir)) return false
+  return _removePathIfExists(instanceDir)
+}
+
+async function prepareCliLaunch (accountId) {
+  const rawAccountId = String(accountId || '').trim()
+  if (!rawAccountId) {
+    return { success: false, error: '账号 ID 为空' }
+  }
+
+  let account = storage.getAccount(PLATFORM, rawAccountId)
+  if (!account) {
+    requestLogger.warn('codex.cli', '准备绑定实例失败：账号不存在', { accountId: rawAccountId })
+    return { success: false, error: '账号不存在' }
+  }
+
+  const prepared = await _prepareCodexAccountForSwitch(rawAccountId, account)
+  if (!prepared.success) {
+    requestLogger.warn('codex.cli', '准备绑定实例失败：账号刷新失败', {
+      account: account.email || account.id,
+      error: prepared.error
+    })
+    return { success: false, error: prepared.error || '准备账号失败' }
+  }
+  account = prepared.account
+
+  const instanceDir = _resolveBoundCodexCliInstanceDir(rawAccountId, account)
+  const isFirstBind = String(account[CODEX_CLI_INSTANCE_DIR_FIELD] || '').trim() !== instanceDir
+  fileUtils.ensureDir(instanceDir)
+  _ensureCodexCliSharedEntries(instanceDir)
+
+  const authData = _buildCodexAuthFile(account, instanceDir)
+  const written = fileUtils.writeJsonFile(path.join(instanceDir, 'auth.json'), authData)
+  if (!written) {
+    return { success: false, error: '写入 Codex CLI 实例 auth.json 失败' }
+  }
+
+  const keychainWarning = _writeCodexKeychain(instanceDir, authData)
+  storage.updateAccount(PLATFORM, rawAccountId, {
+    last_used: Date.now(),
+    [CODEX_CLI_INSTANCE_DIR_FIELD]: instanceDir
+  })
+
+  requestLogger.info('codex.cli', '已准备 Codex CLI 绑定实例', {
+    account: account.email || account.id,
+    instanceDir,
+    isFirstBind,
+    keychainWarning
+  })
+
+  return {
+    success: true,
+    error: null,
+    env: { CODEX_HOME: instanceDir },
+    instanceDir,
+    bound: true,
+    firstBind: isFirstBind,
+    warnings: keychainWarning ? [keychainWarning] : []
+  }
+}
+
+function _escapeTomlBasicString (value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function _normalizeCodexWakeupPrompt (prompt) {
+  const text = String(prompt || '').trim()
+  return text || CODEX_WAKEUP_DEFAULT_PROMPT
+}
+
+function _normalizeCodexWakeupModel (model) {
+  return String(model || '').trim()
+}
+
+function _normalizeCodexWakeupReasoningEffort (value) {
+  const text = String(value || '').trim().toLowerCase()
+  return CODEX_WAKEUP_ALLOWED_REASONING_EFFORTS.has(text) ? text : ''
+}
+
+function _normalizeCodexWakeupDailyTime (value) {
+  const text = String(value || '').trim()
+  const match = text.match(/^(\d{1,2}):(\d{2})$/)
+  if (!match) return CODEX_WAKEUP_DEFAULT_DAILY_TIME
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return CODEX_WAKEUP_DEFAULT_DAILY_TIME
+  }
+  return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0')
+}
+
+function _normalizeCodexWakeupScheduleKind (value) {
+  const text = String(value || '').trim().toLowerCase()
+  return CODEX_WAKEUP_ALLOWED_SCHEDULE_KINDS.has(text) ? text : CODEX_WAKEUP_DEFAULT_SCHEDULE_KIND
+}
+
+function _normalizeCodexWakeupWeeklyDays (value) {
+  const rawItems = Array.isArray(value) ? value : []
+  const days = Array.from(new Set(rawItems
+    .map(item => Number(item))
+    .filter(day => Number.isInteger(day) && day >= 0 && day <= 6)))
+    .sort((left, right) => left - right)
+  return days.length > 0 ? days : CODEX_WAKEUP_DEFAULT_WEEKLY_DAYS.slice()
+}
+
+function _normalizeCodexWakeupIntervalHours (value) {
+  const hours = Math.floor(Number(value || CODEX_WAKEUP_DEFAULT_INTERVAL_HOURS))
+  if (!Number.isFinite(hours)) return CODEX_WAKEUP_DEFAULT_INTERVAL_HOURS
+  return Math.max(1, Math.min(CODEX_WAKEUP_MAX_INTERVAL_HOURS, hours))
+}
+
+function _normalizeCodexWakeupQuotaResetWindow (value) {
+  const text = String(value || '').trim().toLowerCase()
+  return CODEX_WAKEUP_ALLOWED_QUOTA_RESET_WINDOWS.has(text) ? text : 'either'
+}
+
+function _normalizeCodexWakeupStartupDelayMinutes (value) {
+  const minutes = Math.floor(Number(value || 0))
+  if (!Number.isFinite(minutes)) return 0
+  return Math.max(0, Math.min(CODEX_WAKEUP_MAX_STARTUP_DELAY_MINUTES, minutes))
+}
+
+function _formatCodexWakeupLocalDateKey (date) {
+  const d = date instanceof Date ? date : new Date(date || Date.now())
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    String(d.getDate()).padStart(2, '0')
+  ].join('-')
+}
+
+function _normalizeCodexWakeupTimestampMs (value) {
+  const number = Number(value || 0)
+  if (!Number.isFinite(number) || number <= 0) return 0
+  return number < 100000000000 ? Math.floor(number * 1000) : Math.floor(number)
+}
+
+function _buildCodexWakeupScheduleRunKey (scheduleOrDailyTime, nowMs = Date.now()) {
+  const item = scheduleOrDailyTime && typeof scheduleOrDailyTime === 'object' ? scheduleOrDailyTime : { schedule_kind: 'daily', daily_time: scheduleOrDailyTime }
+  const kind = _normalizeCodexWakeupScheduleKind(item.schedule_kind || item.scheduleKind || item.kind)
+  if (kind === 'interval') return _formatCodexWakeupLocalDateKey(new Date(nowMs)) + ' interval ' + nowMs
+  if (kind === 'quota_reset') return _formatCodexWakeupLocalDateKey(new Date(nowMs)) + ' quota_reset ' + nowMs
+  if (kind === 'weekly') return _formatCodexWakeupLocalDateKey(new Date(nowMs)) + ' weekly ' + _normalizeCodexWakeupDailyTime(item.weekly_time || item.weeklyTime)
+  if (kind === 'startup') return _formatCodexWakeupLocalDateKey(new Date(nowMs)) + ' startup'
+  return _formatCodexWakeupLocalDateKey(new Date(nowMs)) + ' daily ' + _normalizeCodexWakeupDailyTime(item.daily_time || item.dailyTime)
+}
+
+function _buildCodexWakeupDateAtTime (baseMs, timeText) {
+  const normalizedTime = _normalizeCodexWakeupDailyTime(timeText)
+  const parts = normalizedTime.split(':')
+  const next = new Date(baseMs)
+  next.setHours(Number(parts[0]), Number(parts[1]), 0, 0)
+  return next
+}
+
+function _computeCodexWakeupDailyNextRunAt (dailyTime, nowMs = Date.now()) {
+  const now = new Date(nowMs)
+  const next = _buildCodexWakeupDateAtTime(nowMs, dailyTime)
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1)
+  }
+  return next.getTime()
+}
+
+function _collectCodexWakeupQuotaResetTimes (schedule) {
+  if (!schedule || !schedule.account_id) return []
+  const account = storage.getAccount(PLATFORM, schedule.account_id)
+  const quota = account && account.quota && typeof account.quota === 'object' ? account.quota : {}
+  const window = _normalizeCodexWakeupQuotaResetWindow(schedule.quota_reset_window)
+  const includePrimary = window === 'either' || window === 'primary_window'
+  const includeSecondary = window === 'either' || window === 'secondary_window'
+  const values = []
+  if (includePrimary) values.push(quota.hourly_reset_time)
+  if (includeSecondary) values.push(quota.weekly_reset_time)
+  if (quota.model_limits && typeof quota.model_limits === 'object') {
+    for (const limit of Object.values(quota.model_limits)) {
+      if (!limit || typeof limit !== 'object') continue
+      if (includePrimary) values.push(limit.hourly_reset_time)
+      if (includeSecondary) values.push(limit.weekly_reset_time)
+    }
+  }
+  if (Array.isArray(quota.additional_rate_limits)) {
+    for (const limit of quota.additional_rate_limits) {
+      if (!limit || typeof limit !== 'object') continue
+      if (includePrimary) values.push(limit.hourly_reset_time)
+      if (includeSecondary) values.push(limit.weekly_reset_time)
+    }
+  }
+  return Array.from(new Set(values
+    .map(_normalizeCodexWakeupTimestampMs)
+    .filter(value => value > 0)))
+    .sort((left, right) => left - right)
+}
+
+function _computeCodexWakeupNextRunAt (scheduleOrDailyTime, nowMs = Date.now()) {
+  const schedule = scheduleOrDailyTime && typeof scheduleOrDailyTime === 'object'
+    ? scheduleOrDailyTime
+    : { schedule_kind: 'daily', daily_time: scheduleOrDailyTime }
+  const kind = _normalizeCodexWakeupScheduleKind(schedule.schedule_kind || schedule.scheduleKind || schedule.kind)
+  if (kind === 'weekly') {
+    const weeklyTime = schedule.weekly_time || schedule.weeklyTime || schedule.daily_time || schedule.dailyTime
+    const days = _normalizeCodexWakeupWeeklyDays(schedule.weekly_days || schedule.weeklyDays)
+    for (let offset = 0; offset < 14; offset++) {
+      const candidate = _buildCodexWakeupDateAtTime(nowMs, weeklyTime)
+      candidate.setDate(candidate.getDate() + offset)
+      if (!days.includes(candidate.getDay())) continue
+      if (candidate.getTime() > nowMs) return candidate.getTime()
+    }
+    return 0
+  }
+  if (kind === 'interval') {
+    const base = Number(schedule.last_run_at || schedule.lastRunAt || schedule.created_at || schedule.createdAt || nowMs) || nowMs
+    return base + _normalizeCodexWakeupIntervalHours(schedule.interval_hours || schedule.intervalHours) * 60 * 60 * 1000
+  }
+  if (kind === 'quota_reset') {
+    return _collectCodexWakeupQuotaResetTimes(schedule).find(value => value > nowMs) || 0
+  }
+  if (kind === 'startup') return 0
+  return _computeCodexWakeupDailyNextRunAt(schedule.daily_time || schedule.dailyTime, nowMs)
+}
+
+function _getCodexWakeupScheduleFilePath () {
+  return path.join(dataRoot.getSettingsDir(), CODEX_WAKEUP_SCHEDULE_FILE)
+}
+
+function _normalizeCodexWakeupSchedule (raw, nowMs = Date.now()) {
+  const item = raw && typeof raw === 'object' ? raw : {}
+  const accountId = String(item.account_id || item.accountId || '').trim()
+  if (!accountId) return null
+  const scheduleKind = _normalizeCodexWakeupScheduleKind(item.schedule_kind || item.scheduleKind || item.kind)
+  const dailyTime = _normalizeCodexWakeupDailyTime(item.daily_time || item.dailyTime)
+  const weeklyTime = _normalizeCodexWakeupDailyTime(item.weekly_time || item.weeklyTime || dailyTime)
+  const schedule = {
+    account_id: accountId,
+    enabled: item.enabled === true,
+    schedule_kind: scheduleKind,
+    daily_time: dailyTime,
+    weekly_days: _normalizeCodexWakeupWeeklyDays(item.weekly_days || item.weeklyDays),
+    weekly_time: weeklyTime,
+    interval_hours: _normalizeCodexWakeupIntervalHours(item.interval_hours || item.intervalHours),
+    quota_reset_window: _normalizeCodexWakeupQuotaResetWindow(item.quota_reset_window || item.quotaResetWindow),
+    startup_delay_minutes: _normalizeCodexWakeupStartupDelayMinutes(item.startup_delay_minutes || item.startupDelayMinutes),
+    prompt: _normalizeCodexWakeupPrompt(item.prompt),
+    model: _normalizeCodexWakeupModel(item.model || 'gpt-5.3-codex'),
+    reasoning_effort: _normalizeCodexWakeupReasoningEffort(item.reasoning_effort || item.reasoningEffort) || 'medium',
+    created_at: Number(item.created_at || item.createdAt || nowMs) || nowMs,
+    updated_at: Number(item.updated_at || item.updatedAt || nowMs) || nowMs,
+    last_run_at: Number(item.last_run_at || item.lastRunAt || 0) || 0,
+    last_run_key: String(item.last_run_key || item.lastRunKey || '').trim(),
+    last_status: String(item.last_status || item.lastStatus || '').trim(),
+    last_message: String(item.last_message || item.lastMessage || '').trim(),
+    last_success_count: Number(item.last_success_count || item.lastSuccessCount || 0) || 0,
+    last_failure_count: Number(item.last_failure_count || item.lastFailureCount || 0) || 0
+  }
+  schedule.next_run_at = schedule.enabled ? _computeCodexWakeupNextRunAt(schedule, nowMs) : 0
+  return schedule
+}
+
+function _readCodexWakeupScheduleMap (nowMs = Date.now()) {
+  let raw = null
+  try {
+    raw = fileUtils.readJsonFile(_getCodexWakeupScheduleFilePath())
+  } catch {}
+  const items = Array.isArray(raw)
+    ? raw
+    : (raw && Array.isArray(raw.schedules) ? raw.schedules : [])
+  const map = new Map()
+  for (const item of items) {
+    const schedule = _normalizeCodexWakeupSchedule(item, nowMs)
+    if (schedule) map.set(schedule.account_id, schedule)
+  }
+  return map
+}
+
+function _writeCodexWakeupScheduleMap (map) {
+  const schedules = Array.from(map.values())
+    .map(item => _normalizeCodexWakeupSchedule(item))
+    .filter(Boolean)
+    .sort((left, right) => String(left.schedule_kind).localeCompare(String(right.schedule_kind)) || String(left.daily_time).localeCompare(String(right.daily_time)) || String(left.account_id).localeCompare(String(right.account_id)))
+  const filePath = _getCodexWakeupScheduleFilePath()
+  fileUtils.ensureDir(path.dirname(filePath))
+  return fileUtils.writeJsonFile(filePath, {
+    version: 1,
+    schedules
+  })
+}
+
+function _withCodexWakeupAccountMeta (schedule) {
+  if (!schedule) return null
+  const account = storage.getAccount(PLATFORM, schedule.account_id)
+  return Object.assign({}, schedule, {
+    account_email: account ? String(account.email || account.id || '') : '',
+    account_exists: !!account
+  })
+}
+
+function listWakeupSchedules () {
+  return Array.from(_readCodexWakeupScheduleMap().values()).map(_withCodexWakeupAccountMeta)
+}
+
+function getWakeupSchedule (accountId) {
+  const id = String(accountId || '').trim()
+  if (!id) return { success: false, error: '账号 ID 为空' }
+  const existing = _readCodexWakeupScheduleMap().get(id)
+  const fallback = _normalizeCodexWakeupSchedule({
+    account_id: id,
+    enabled: false,
+    schedule_kind: CODEX_WAKEUP_DEFAULT_SCHEDULE_KIND,
+    daily_time: CODEX_WAKEUP_DEFAULT_DAILY_TIME,
+    weekly_days: CODEX_WAKEUP_DEFAULT_WEEKLY_DAYS,
+    weekly_time: CODEX_WAKEUP_DEFAULT_DAILY_TIME,
+    interval_hours: CODEX_WAKEUP_DEFAULT_INTERVAL_HOURS,
+    quota_reset_window: 'either',
+    startup_delay_minutes: 0,
+    prompt: CODEX_WAKEUP_DEFAULT_PROMPT,
+    model: 'gpt-5.3-codex',
+    reasoning_effort: 'medium'
+  })
+  return { success: true, schedule: _withCodexWakeupAccountMeta(existing || fallback) }
+}
+
+function saveWakeupSchedule (accountId, patch = {}) {
+  const id = String(accountId || '').trim()
+  if (!id) return { success: false, error: '账号 ID 为空' }
+  const account = storage.getAccount(PLATFORM, id)
+  if (!account) return { success: false, error: '账号不存在' }
+  const now = Date.now()
+  const map = _readCodexWakeupScheduleMap(now)
+  const existing = map.get(id)
+  const schedule = _normalizeCodexWakeupSchedule(Object.assign({}, existing || {}, patch || {}, {
+    account_id: id,
+    updated_at: now,
+    created_at: existing ? existing.created_at : now
+  }), now)
+  map.set(id, schedule)
+  if (!_writeCodexWakeupScheduleMap(map)) {
+    return { success: false, error: '保存唤醒配置失败' }
+  }
+  _ensureCodexWakeupScheduler()
+  return { success: true, schedule: _withCodexWakeupAccountMeta(schedule) }
+}
+
+function deleteWakeupSchedule (accountId) {
+  const id = String(accountId || '').trim()
+  if (!id) return { success: false, error: '账号 ID 为空' }
+  const map = _readCodexWakeupScheduleMap()
+  const deleted = map.delete(id)
+  if (!_writeCodexWakeupScheduleMap(map)) {
+    return { success: false, error: '删除唤醒配置失败' }
+  }
+  return { success: true, deleted }
+}
+
+function _recordCodexWakeupScheduleRun (accountId, result, runKey, nowMs = Date.now()) {
+  const id = String(accountId || '').trim()
+  if (!id) return
+  const map = _readCodexWakeupScheduleMap(nowMs)
+  const schedule = map.get(id)
+  if (!schedule) return
+  const records = Array.isArray(result && result.records) ? result.records : []
+  const first = records[0] || {}
+  schedule.last_run_at = nowMs
+  schedule.last_run_key = runKey || _buildCodexWakeupScheduleRunKey(schedule, nowMs)
+  schedule.last_status = result && result.success ? 'success' : 'error'
+  schedule.last_message = result && result.success
+    ? (first.reply || '唤醒完成')
+    : ((first && first.error) || (result && result.error) || '唤醒失败')
+  schedule.last_success_count = Number(result && result.success_count || 0) || 0
+  schedule.last_failure_count = Number(result && result.failure_count || 0) || 0
+  schedule.updated_at = nowMs
+  schedule.next_run_at = schedule.enabled ? _computeCodexWakeupNextRunAt(schedule, nowMs) : 0
+  map.set(id, schedule)
+  _writeCodexWakeupScheduleMap(map)
+}
+
+async function runWakeupSchedule (accountId, options = {}) {
+  const id = String(accountId || '').trim()
+  if (!id) return { success: false, error: '账号 ID 为空' }
+  const schedule = _readCodexWakeupScheduleMap().get(id)
+  if (!schedule) return { success: false, error: '尚未保存此账号的唤醒配置' }
+  const result = await runWakeupTask(Object.assign({}, options || {}, {
+    accountIds: [id],
+    prompt: schedule.prompt,
+    model: schedule.model,
+    reasoningEffort: schedule.reasoning_effort
+  }))
+  _recordCodexWakeupScheduleRun(id, result)
+  return result
+}
+
+function _isCodexWakeupScheduleDue (schedule, nowMs = Date.now()) {
+  return _getCodexWakeupScheduleDueAt(schedule, nowMs) > 0
+}
+
+function _getCodexWakeupScheduleDueAt (schedule, nowMs = Date.now()) {
+  if (!schedule || schedule.enabled !== true || !schedule.account_id) return 0
+  const item = _normalizeCodexWakeupSchedule(schedule, nowMs)
+  if (!item) return 0
+  const kind = item.schedule_kind
+  const lastRunAt = Number(item.last_run_at || 0) || 0
+  if (kind === 'weekly') {
+    const now = new Date(nowMs)
+    if (!item.weekly_days.includes(now.getDay())) return 0
+    const candidate = _buildCodexWakeupDateAtTime(nowMs, item.weekly_time).getTime()
+    return candidate <= nowMs && lastRunAt < candidate ? candidate : 0
+  }
+  if (kind === 'interval') {
+    const dueAt = (lastRunAt || item.created_at || nowMs) + item.interval_hours * 60 * 60 * 1000
+    return dueAt <= nowMs ? dueAt : 0
+  }
+  if (kind === 'quota_reset') {
+    return _collectCodexWakeupQuotaResetTimes(item)
+      .filter(value => value <= nowMs && value > lastRunAt)
+      .pop() || 0
+  }
+  if (kind === 'startup') return 0
+  const candidate = _buildCodexWakeupDateAtTime(nowMs, item.daily_time).getTime()
+  return candidate <= nowMs && lastRunAt < candidate ? candidate : 0
+}
+
+async function runDueWakeupSchedules (nowMs = Date.now(), options = {}) {
+  const schedules = Array.from(_readCodexWakeupScheduleMap(nowMs).values())
+    .map(schedule => ({ schedule, dueAt: _getCodexWakeupScheduleDueAt(schedule, nowMs) }))
+    .filter(item => item.dueAt > 0)
+  const results = []
+  for (const item of schedules) {
+    const schedule = item.schedule
+    const runKey = _buildCodexWakeupScheduleRunKey(schedule, item.dueAt)
+    const key = schedule.account_id + ':' + runKey
+    if (codexWakeupRunningScheduleIds.has(key)) continue
+    codexWakeupRunningScheduleIds.add(key)
+    try {
+      const result = await runWakeupTask(Object.assign({}, options || {}, {
+        accountIds: [schedule.account_id],
+        prompt: schedule.prompt,
+        model: schedule.model,
+        reasoningEffort: schedule.reasoning_effort,
+        runId: 'codex-wakeup-scheduled-' + Date.now() + '-' + fileUtils.generateId()
+      }))
+      _recordCodexWakeupScheduleRun(schedule.account_id, result, runKey, Date.now())
+      results.push({ account_id: schedule.account_id, result })
+    } finally {
+      codexWakeupRunningScheduleIds.delete(key)
+    }
+  }
+  return { success: true, checked_at: nowMs, due_count: schedules.length, results }
+}
+
+function _triggerCodexWakeupStartupSchedules () {
+  if (codexWakeupStartupTriggered) return
+  codexWakeupStartupTriggered = true
+  const schedules = Array.from(_readCodexWakeupScheduleMap().values())
+    .filter(schedule => schedule.enabled === true && schedule.schedule_kind === 'startup')
+  for (const schedule of schedules) {
+    const delayMs = _normalizeCodexWakeupStartupDelayMinutes(schedule.startup_delay_minutes) * 60 * 1000
+    setTimeout(() => {
+      const latest = _readCodexWakeupScheduleMap().get(schedule.account_id)
+      if (!latest || latest.enabled !== true || latest.schedule_kind !== 'startup') return
+      const runKey = _buildCodexWakeupScheduleRunKey(latest, Date.now())
+      const key = latest.account_id + ':' + runKey
+      if (codexWakeupRunningScheduleIds.has(key)) return
+      codexWakeupRunningScheduleIds.add(key)
+      runWakeupSchedule(latest.account_id, {
+        runId: 'codex-wakeup-startup-' + Date.now() + '-' + fileUtils.generateId()
+      }).catch(err => {
+        requestLogger.warn('codex.wakeup', '启动后唤醒失败', {
+          accountId: latest.account_id,
+          error: err && err.message ? err.message : String(err)
+        })
+      }).finally(() => {
+        codexWakeupRunningScheduleIds.delete(key)
+      })
+    }, delayMs).unref?.()
+  }
+}
+
+function _ensureCodexWakeupScheduler () {
+  if (codexWakeupSchedulerTimer) return
+  codexWakeupSchedulerTimer = setInterval(() => {
+    runDueWakeupSchedules().catch(err => {
+      requestLogger.warn('codex.wakeup', '定时唤醒检查失败', {
+        error: err && err.message ? err.message : String(err)
+      })
+    })
+  }, CODEX_WAKEUP_SCHEDULER_INTERVAL_MS)
+  if (typeof codexWakeupSchedulerTimer.unref === 'function') {
+    codexWakeupSchedulerTimer.unref()
+  }
+}
+
+function _buildCodexWakeupArgs (options) {
+  const opts = options && typeof options === 'object' ? options : {}
+  const prompt = _normalizeCodexWakeupPrompt(opts.prompt)
+  const model = _normalizeCodexWakeupModel(opts.model)
+  const reasoningEffort = _normalizeCodexWakeupReasoningEffort(opts.reasoningEffort || opts.model_reasoning_effort)
+  const outputPath = String(opts.outputPath || '').trim()
+  const workspaceDir = String(opts.workspaceDir || '').trim()
+  const args = [
+    'exec',
+    '--skip-git-repo-check',
+    '--color',
+    'never'
+  ]
+  if (outputPath) {
+    args.push('--output-last-message', outputPath)
+  }
+  if (workspaceDir) {
+    args.push('-C', workspaceDir)
+  }
+  if (model) {
+    args.push('-c', 'model="' + _escapeTomlBasicString(model) + '"')
+  }
+  if (reasoningEffort) {
+    args.push('-c', 'model_reasoning_effort="' + _escapeTomlBasicString(reasoningEffort) + '"')
+  }
+  args.push(prompt)
+  return args
+}
+
+function _resolveCodexWakeupAccountIds (accountIds) {
+  const ids = Array.isArray(accountIds)
+    ? accountIds.map(id => String(id || '').trim()).filter(Boolean)
+    : []
+  if (ids.length > 0) return Array.from(new Set(ids))
+  return storage.listAccounts(PLATFORM)
+    .map(account => account && account.id)
+    .filter(Boolean)
+}
+
+function _buildCodexWakeupFailureRecord (runId, account, payload) {
+  return {
+    id: 'wakeup-' + fileUtils.generateId(),
+    run_id: runId,
+    timestamp: Date.now(),
+    account_id: String((account && account.id) || payload.accountId || ''),
+    account_email: String((account && account.email) || payload.accountId || ''),
+    success: false,
+    prompt: payload.prompt,
+    model: payload.model || '',
+    model_reasoning_effort: payload.reasoningEffort || '',
+    error: payload.error || '唤醒失败',
+    duration_ms: 0,
+    cli_path: payload.cliPath || ''
+  }
+}
+
+function _buildCodexWakeupSuccessRecord (runId, account, payload) {
+  return {
+    id: 'wakeup-' + fileUtils.generateId(),
+    run_id: runId,
+    timestamp: Date.now(),
+    account_id: String(account && account.id ? account.id : ''),
+    account_email: String(account && account.email ? account.email : account && account.id ? account.id : ''),
+    success: true,
+    prompt: payload.prompt,
+    model: payload.model || '',
+    model_reasoning_effort: payload.reasoningEffort || '',
+    reply: payload.reply || 'Codex CLI 已完成唤醒任务。',
+    duration_ms: payload.durationMs || 0,
+    cli_path: payload.cliPath || ''
+  }
+}
+
+function _runCodexWakeupCommand (payload) {
+  const started = Date.now()
+  const commandPath = String(payload.commandPath || '').trim()
+  const instanceDir = String(payload.instanceDir || '').trim()
+  const prompt = _normalizeCodexWakeupPrompt(payload.prompt)
+  const model = _normalizeCodexWakeupModel(payload.model)
+  const reasoningEffort = _normalizeCodexWakeupReasoningEffort(payload.reasoningEffort)
+  const timeoutMs = Number(payload.timeoutMs || CODEX_WAKEUP_DEFAULT_TIMEOUT_MS)
+  const workspaceDir = path.join(instanceDir, 'wakeup-workspace')
+  const outputPath = path.join(instanceDir, 'wakeup-last-message.txt')
+
+  fileUtils.ensureDir(workspaceDir)
+  try {
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+  } catch {}
+
+  const args = _buildCodexWakeupArgs({
+    prompt,
+    model,
+    reasoningEffort,
+    outputPath,
+    workspaceDir
+  })
+  const result = cp.spawnSync(commandPath, args, {
+    cwd: workspaceDir,
+    env: terminalLauncher.buildRuntimeEnv
+      ? terminalLauncher.buildRuntimeEnv({ CODEX_HOME: instanceDir })
+      : Object.assign({}, process.env, { CODEX_HOME: instanceDir }),
+    encoding: 'utf8',
+    timeout: timeoutMs > 0 ? timeoutMs : CODEX_WAKEUP_DEFAULT_TIMEOUT_MS,
+    windowsHide: true
+  })
+  const durationMs = Date.now() - started
+  if (result.error) {
+    return {
+      success: false,
+      durationMs,
+      error: result.error.message || String(result.error)
+    }
+  }
+  const reply = fs.existsSync(outputPath)
+    ? String(fs.readFileSync(outputPath, 'utf8') || '').trim()
+    : String(result.stdout || '').trim()
+  if (result.status === 0) {
+    return {
+      success: true,
+      durationMs,
+      reply: reply || 'Codex CLI 已完成唤醒任务。'
+    }
+  }
+  return {
+    success: false,
+    durationMs,
+    error: String(result.stderr || result.stdout || ('Codex CLI 退出失败: ' + result.status)).trim()
+  }
+}
+
+async function runWakeupTask (options = {}) {
+  const opts = options && typeof options === 'object' ? options : {}
+  const accountIds = _resolveCodexWakeupAccountIds(opts.accountIds)
+  const prompt = _normalizeCodexWakeupPrompt(opts.prompt)
+  const model = _normalizeCodexWakeupModel(opts.model)
+  const reasoningEffort = _normalizeCodexWakeupReasoningEffort(opts.reasoningEffort || opts.model_reasoning_effort)
+  const runId = String(opts.runId || ('codex-wakeup-' + Date.now() + '-' + fileUtils.generateId())).trim()
+  const commandName = String(opts.command || 'codex').trim() || 'codex'
+  const status = terminalLauncher.getCommandStatus(commandName)
+  const commandPath = String(status.path || commandName).trim()
+  const records = []
+
+  if (accountIds.length === 0) {
+    return {
+      success: false,
+      run_id: runId,
+      records,
+      success_count: 0,
+      failure_count: 0,
+      error: '请先选择要唤醒的 Codex 账号'
+    }
+  }
+
+  if (!status.available) {
+    for (const accountId of accountIds) {
+      const account = storage.getAccount(PLATFORM, accountId)
+      records.push(_buildCodexWakeupFailureRecord(runId, account, {
+        accountId,
+        prompt,
+        model,
+        reasoningEffort,
+        error: '未检测到 codex CLI，请先安装：' + (status.installCommand || 'npm install -g @openai/codex')
+      }))
+    }
+    return {
+      success: false,
+      run_id: runId,
+      records,
+      success_count: 0,
+      failure_count: records.length,
+      runtime: status,
+      error: records[0] && records[0].error
+    }
+  }
+
+  for (const accountId of accountIds) {
+    const account = storage.getAccount(PLATFORM, accountId)
+    if (!account) {
+      records.push(_buildCodexWakeupFailureRecord(runId, null, {
+        accountId,
+        prompt,
+        model,
+        reasoningEffort,
+        cliPath: commandPath,
+        error: '账号不存在'
+      }))
+      continue
+    }
+
+    const prepared = await prepareCliLaunch(accountId)
+    if (!prepared || !prepared.success) {
+      records.push(_buildCodexWakeupFailureRecord(runId, account, {
+        accountId,
+        prompt,
+        model,
+        reasoningEffort,
+        cliPath: commandPath,
+        error: (prepared && prepared.error) || '准备 Codex CLI 账号绑定实例失败'
+      }))
+      continue
+    }
+
+    const output = _runCodexWakeupCommand({
+      commandPath,
+      instanceDir: prepared.instanceDir || (prepared.env && prepared.env.CODEX_HOME),
+      prompt,
+      model,
+      reasoningEffort,
+      timeoutMs: opts.timeoutMs
+    })
+    if (output.success) {
+      records.push(_buildCodexWakeupSuccessRecord(runId, account, {
+        prompt,
+        model,
+        reasoningEffort,
+        cliPath: commandPath,
+        reply: output.reply,
+        durationMs: output.durationMs
+      }))
+      try {
+        await refreshQuota(accountId)
+      } catch (err) {
+        requestLogger.warn('codex.wakeup', '唤醒后刷新配额失败', {
+          account: account.email || account.id,
+          error: err && err.message ? err.message : String(err)
+        })
+      }
+    } else {
+      records.push(_buildCodexWakeupFailureRecord(runId, account, {
+        accountId,
+        prompt,
+        model,
+        reasoningEffort,
+        cliPath: commandPath,
+        error: output.error || 'Codex CLI 唤醒失败'
+      }))
+    }
+  }
+
+  const successCount = records.filter(item => item.success).length
+  const failureCount = records.length - successCount
+  requestLogger.info('codex.wakeup', 'Codex 唤醒任务完成', {
+    runId,
+    total: records.length,
+    successCount,
+    failureCount,
+    model,
+    reasoningEffort
+  }, failureCount > 0 ? 'warn' : 'info')
+  return {
+    success: failureCount === 0,
+    run_id: runId,
+    runtime: status,
+    records,
+    success_count: successCount,
+    failure_count: failureCount,
+    error: failureCount > 0 && successCount === 0
+      ? (records.length === 1 ? '当前账号唤醒失败' : '全部账号唤醒失败')
+      : null
+  }
 }
 
 function _buildCodexKeychainAccount (baseDir) {
@@ -1038,7 +1943,13 @@ function _writeCodexKeychain (baseDir, authData) {
  * @returns {boolean}
  */
 function deleteAccount (accountId) {
-  return storage.deleteAccount(PLATFORM, accountId)
+  const account = storage.getAccount(PLATFORM, accountId)
+  const deleted = storage.deleteAccount(PLATFORM, accountId)
+  if (deleted) {
+    _deleteCodexCliInstanceDir(account)
+    deleteWakeupSchedule(accountId)
+  }
+  return deleted
 }
 
 /**
@@ -1047,7 +1958,17 @@ function deleteAccount (accountId) {
  * @returns {number}
  */
 function deleteAccounts (accountIds) {
-  return storage.deleteAccounts(PLATFORM, accountIds)
+  const ids = Array.isArray(accountIds) ? accountIds : []
+  const accounts = ids.map(id => ({ id, account: storage.getAccount(PLATFORM, id) }))
+  const count = storage.deleteAccounts(PLATFORM, ids)
+  if (count <= 0) return count
+  for (const id of ids) {
+    if (storage.getAccount(PLATFORM, id)) continue
+    const item = accounts.find(entry => entry.id === id)
+    _deleteCodexCliInstanceDir(item && item.account)
+    deleteWakeupSchedule(id)
+  }
+  return count
 }
 
 /**
@@ -3069,6 +3990,9 @@ function _startOpenCode (customPath) {
   }
 }
 
+_ensureCodexWakeupScheduler()
+_triggerCodexWakeupStartupSchedules()
+
 module.exports = {
   list,
   getCurrent,
@@ -3087,6 +4011,14 @@ module.exports = {
   openExternalUrl,
   switchAccount,
   activateAccount,
+  prepareCliLaunch,
+  runWakeupTask,
+  listWakeupSchedules,
+  getWakeupSchedule,
+  saveWakeupSchedule,
+  deleteWakeupSchedule,
+  runWakeupSchedule,
+  runDueWakeupSchedules,
   deleteAccount,
   deleteAccounts,
   refreshToken,
@@ -3107,6 +4039,14 @@ module.exports = {
   detectOpenCodeAppPath,
   _internal: {
     parseCodexQuota: _parseCodexQuota,
+    buildCodexWakeupArgs: _buildCodexWakeupArgs,
+    normalizeCodexWakeupPrompt: _normalizeCodexWakeupPrompt,
+    normalizeCodexWakeupReasoningEffort: _normalizeCodexWakeupReasoningEffort,
+    normalizeCodexWakeupDailyTime: _normalizeCodexWakeupDailyTime,
+    normalizeCodexWakeupScheduleKind: _normalizeCodexWakeupScheduleKind,
+    isCodexWakeupScheduleDue: _isCodexWakeupScheduleDue,
+    getCodexWakeupScheduleDueAt: _getCodexWakeupScheduleDueAt,
+    computeCodexWakeupNextRunAt: _computeCodexWakeupNextRunAt,
     CODEX_QUOTA_SCHEMA_VERSION
   }
 }

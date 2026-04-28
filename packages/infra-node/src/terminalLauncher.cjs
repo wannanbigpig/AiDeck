@@ -22,6 +22,26 @@ function normalizeTerminal (value) {
   return raw || 'system'
 }
 
+function normalizeEnvAssignments (env) {
+  if (!env || typeof env !== 'object') return []
+  const entries = []
+  for (const key of Object.keys(env)) {
+    const name = String(key || '').trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue
+    const value = env[key]
+    if (value == null) continue
+    entries.push([name, String(value)])
+  }
+  return entries
+}
+
+function normalizeArgs (args) {
+  if (!Array.isArray(args)) return []
+  return args
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+}
+
 function pushUniqueDir (dirs, dir) {
   const value = String(dir || '').trim()
   if (!value) return
@@ -29,13 +49,31 @@ function pushUniqueDir (dirs, dir) {
   dirs.push(value)
 }
 
-function collectPathDirs () {
-  const raw = String(process.env.PATH || '')
-  return raw.split(path.delimiter).filter(Boolean)
+function resolveRuntimePlatform (runtime) {
+  return runtime && runtime.platform ? runtime.platform : process.platform
 }
 
-function appendHomeCliDirs (dirs) {
-  const home = os.homedir()
+function resolveRuntimeEnv (runtime) {
+  return runtime && runtime.env && typeof runtime.env === 'object' ? runtime.env : process.env
+}
+
+function resolveRuntimeHomeDir (runtime) {
+  if (runtime && runtime.homeDir) return String(runtime.homeDir)
+  return os.homedir()
+}
+
+function resolveRuntimePathDelimiter (runtime) {
+  return resolveRuntimePlatform(runtime) === 'win32' ? ';' : ':'
+}
+
+function collectPathDirs (runtime) {
+  const env = resolveRuntimeEnv(runtime)
+  const raw = String(env.PATH || env.Path || env.path || '')
+  return raw.split(resolveRuntimePathDelimiter(runtime)).filter(Boolean)
+}
+
+function appendHomeCliDirs (dirs, homeDir) {
+  const home = homeDir || os.homedir()
   if (!home) return
   const staticDirs = [
     '.npm-global/bin',
@@ -67,8 +105,31 @@ function appendHomeCliDirs (dirs) {
   } catch (err) {}
 }
 
-function appendPlatformCliDirs (dirs) {
-  if (process.platform === 'darwin') {
+function appendWindowsCliDirs (dirs, env, homeDir) {
+  if (env.APPDATA) pushUniqueDir(dirs, path.join(env.APPDATA, 'npm'))
+  if (env.LOCALAPPDATA) {
+    pushUniqueDir(dirs, path.join(env.LOCALAPPDATA, 'Programs', 'nodejs'))
+    pushUniqueDir(dirs, path.join(env.LOCALAPPDATA, 'Yarn', 'bin'))
+    pushUniqueDir(dirs, path.join(env.LOCALAPPDATA, 'pnpm'))
+  }
+  if (env.ProgramFiles) pushUniqueDir(dirs, path.join(env.ProgramFiles, 'nodejs'))
+  if (env['ProgramFiles(x86)']) pushUniqueDir(dirs, path.join(env['ProgramFiles(x86)'], 'nodejs'))
+  if (env.ProgramData) pushUniqueDir(dirs, path.join(env.ProgramData, 'chocolatey', 'bin'))
+  if (env.NVM_HOME) pushUniqueDir(dirs, env.NVM_HOME)
+  if (env.NVM_SYMLINK) pushUniqueDir(dirs, env.NVM_SYMLINK)
+  if (homeDir) {
+    pushUniqueDir(dirs, path.join(homeDir, 'scoop', 'shims'))
+    pushUniqueDir(dirs, path.join(homeDir, '.volta', 'bin'))
+    pushUniqueDir(dirs, path.join(homeDir, '.bun', 'bin'))
+  }
+}
+
+function appendPlatformCliDirs (dirs, runtime) {
+  const platform = resolveRuntimePlatform(runtime)
+  const env = resolveRuntimeEnv(runtime)
+  const homeDir = resolveRuntimeHomeDir(runtime)
+
+  if (platform === 'darwin') {
     for (const dir of [
       '/opt/homebrew/bin',
       '/opt/homebrew/sbin',
@@ -77,24 +138,44 @@ function appendPlatformCliDirs (dirs) {
     ]) {
       pushUniqueDir(dirs, dir)
     }
-    appendHomeCliDirs(dirs)
+    appendHomeCliDirs(dirs, homeDir)
     return
   }
 
-  if (process.platform === 'win32') {
-    if (process.env.APPDATA) {
-      pushUniqueDir(dirs, path.join(process.env.APPDATA, 'npm'))
-    }
+  if (platform === 'win32') {
+    appendWindowsCliDirs(dirs, env, homeDir)
     return
   }
 
-  appendHomeCliDirs(dirs)
+  for (const dir of [
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/bin',
+    '/snap/bin',
+    '/var/lib/flatpak/exports/bin'
+  ]) {
+    pushUniqueDir(dirs, dir)
+  }
+  appendHomeCliDirs(dirs, homeDir)
 }
 
-function collectRuntimeSearchDirs () {
-  const dirs = collectPathDirs()
-  appendPlatformCliDirs(dirs)
+function collectRuntimeSearchDirs (runtime) {
+  const dirs = collectPathDirs(runtime)
+  appendPlatformCliDirs(dirs, runtime)
   return dirs
+}
+
+function buildRuntimePath (runtime) {
+  return collectRuntimeSearchDirs(runtime).join(resolveRuntimePathDelimiter(runtime))
+}
+
+function buildRuntimeEnv (env, runtime) {
+  const extra = env && typeof env === 'object' ? env : {}
+  const baseEnv = resolveRuntimeEnv(runtime)
+  return Object.assign({}, baseEnv, extra, {
+    PATH: buildRuntimePath(runtime)
+  })
 }
 
 function getCommandCandidates (commandName) {
@@ -110,7 +191,7 @@ function getCommandCandidates (commandName) {
   return [name, ...pathext.map(item => name + item)]
 }
 
-function resolveCommandPath (commandName) {
+function resolveCommandPath (commandName, runtime) {
   const name = String(commandName || '').trim()
   if (!name) return ''
 
@@ -118,7 +199,7 @@ function resolveCommandPath (commandName) {
     return fs.existsSync(name) && fs.statSync(name).isFile() ? name : ''
   }
 
-  for (const dir of collectRuntimeSearchDirs()) {
+  for (const dir of collectRuntimeSearchDirs(runtime)) {
     for (const candidate of getCommandCandidates(name)) {
       const filePath = path.join(dir, candidate)
       try {
@@ -132,13 +213,13 @@ function resolveCommandPath (commandName) {
   return ''
 }
 
-function commandExists (commandName) {
+function commandExists (commandName, runtime) {
   const name = String(commandName || '').trim()
   if (!name) return false
-  if (resolveCommandPath(name)) return true
+  if (resolveCommandPath(name, runtime)) return true
 
   try {
-    if (process.platform === 'win32') {
+    if (resolveRuntimePlatform(runtime) === 'win32') {
       const result = childProcess.spawnSync('where', [name], { stdio: 'ignore', windowsHide: true })
       return result.status === 0
     }
@@ -156,12 +237,12 @@ function getCliInstallCommand (cliName) {
   return ''
 }
 
-function getCommandStatus (commandName) {
+function getCommandStatus (commandName, runtime) {
   const name = String(commandName || '').trim()
   return {
     command: name,
-    available: commandExists(name),
-    path: resolveCommandPath(name),
+    available: commandExists(name, runtime),
+    path: resolveCommandPath(name, runtime),
     installCommand: getCliInstallCommand(name)
   }
 }
@@ -185,64 +266,6 @@ function buildMacTerminalCandidates () {
         '/Applications/iTerm 2.app',
         path.join(home, 'Applications/iTerm.app'),
         path.join(home, 'Applications/iTerm 2.app')
-      ]
-    },
-    {
-      value: 'Warp',
-      label: 'Warp',
-      paths: [
-        '/Applications/Warp.app',
-        path.join(home, 'Applications/Warp.app')
-      ]
-    },
-    {
-      value: 'Ghostty',
-      label: 'Ghostty',
-      paths: [
-        '/Applications/Ghostty.app',
-        path.join(home, 'Applications/Ghostty.app')
-      ]
-    },
-    {
-      value: 'WezTerm',
-      label: 'WezTerm',
-      paths: [
-        '/Applications/WezTerm.app',
-        path.join(home, 'Applications/WezTerm.app')
-      ]
-    },
-    {
-      value: 'Kitty',
-      label: 'Kitty',
-      paths: [
-        '/Applications/kitty.app',
-        '/Applications/Kitty.app',
-        path.join(home, 'Applications/kitty.app'),
-        path.join(home, 'Applications/Kitty.app')
-      ]
-    },
-    {
-      value: 'Alacritty',
-      label: 'Alacritty',
-      paths: [
-        '/Applications/Alacritty.app',
-        path.join(home, 'Applications/Alacritty.app')
-      ]
-    },
-    {
-      value: 'Tabby',
-      label: 'Tabby',
-      paths: [
-        '/Applications/Tabby.app',
-        path.join(home, 'Applications/Tabby.app')
-      ]
-    },
-    {
-      value: 'Hyper',
-      label: 'Hyper',
-      paths: [
-        '/Applications/Hyper.app',
-        path.join(home, 'Applications/Hyper.app')
       ]
     }
   ]
@@ -343,11 +366,23 @@ function launchOnMac (command, terminal) {
   return { success: true, message: `已在 ${target.appName} 执行命令` }
 }
 
-function launchOnWindows (command, terminal, cwd, commandName, executableCommand) {
+function launchOnWindows (command, terminal, cwd, commandName, executableCommand, payload) {
   const selected = normalizeTerminal(terminal)
   let executable = 'cmd'
   let args = ['/C', 'start', '', 'cmd', '/K', command]
-  const powershellCommand = "Set-Location -LiteralPath '" + escapePowerShellSingleQuoted(cwd) + "'; & '" + escapePowerShellSingleQuoted(executableCommand || commandName) + "'"
+  const envEntries = normalizeEnvAssignments(payload && payload.env)
+  const cliArgs = normalizeArgs(payload && payload.args)
+  const powershellEnv = envEntries
+    .map(([key, value]) => "$env:" + key + "='" + escapePowerShellSingleQuoted(value) + "'")
+    .join('; ')
+  const powershellArgs = cliArgs
+    .map(arg => "'" + escapePowerShellSingleQuoted(arg) + "'")
+    .join(' ')
+  const powershellCommand = [
+    powershellEnv,
+    "Set-Location -LiteralPath '" + escapePowerShellSingleQuoted(cwd) + "'",
+    "& '" + escapePowerShellSingleQuoted(executableCommand || commandName) + "'" + (powershellArgs ? ' ' + powershellArgs : '')
+  ].filter(Boolean).join('; ')
 
   if (selected === 'powershell') {
     executable = 'powershell'
@@ -390,6 +425,32 @@ function launchOnLinux (command, terminal) {
   }
 }
 
+function buildShellCommand (payload) {
+  const commandName = String(payload && payload.commandName ? payload.commandName : '').trim()
+  const executableCommand = String(payload && payload.executableCommand ? payload.executableCommand : commandName).trim()
+  const cwd = String(payload && payload.cwd ? payload.cwd : '').trim()
+  const envEntries = normalizeEnvAssignments(payload && payload.env)
+  const args = normalizeArgs(payload && payload.args)
+
+  if (process.platform === 'win32') {
+    const escapedCwd = cwd.replace(/"/g, '\\"')
+    const escapedExecutable = executableCommand.replace(/"/g, '\\"')
+    const setEnv = envEntries
+      .map(([key, value]) => 'set "' + key + '=' + String(value).replace(/"/g, '\\"') + '"')
+      .join(' && ')
+    const argText = args.map(arg => '"' + arg.replace(/"/g, '\\"') + '"').join(' ')
+    const run = '"' + escapedExecutable + '"' + (argText ? ' ' + argText : '')
+    return 'cd /d "' + escapedCwd + '"' + (setEnv ? ' && ' + setEnv : '') + ' && ' + run
+  }
+
+  const envText = envEntries
+    .map(([key, value]) => key + '=' + shellQuote(value))
+    .join(' ')
+  const argText = args.map(arg => shellQuote(arg)).join(' ')
+  const run = (envText ? envText + ' ' : '') + shellQuote(executableCommand) + (argText ? ' ' + argText : '')
+  return 'cd ' + shellQuote(cwd) + ' && ' + run
+}
+
 function launchCliCommand (payload) {
   const commandName = String(payload && payload.command ? payload.command : '').trim()
   const cwd = String(payload && payload.cwd ? payload.cwd : '').trim()
@@ -408,12 +469,19 @@ function launchCliCommand (payload) {
     }
   }
   const executableCommand = resolvedCommandPath || commandName
+  const launchEnv = Object.assign({ PATH: buildRuntimePath() }, payload && payload.env)
 
-  const shellCommand = process.platform === 'win32'
-    ? 'cd /d "' + cwd.replace(/"/g, '\\"') + '" && "' + executableCommand.replace(/"/g, '\\"') + '"'
-    : 'cd ' + shellQuote(cwd) + ' && ' + shellQuote(executableCommand)
+  const shellCommand = buildShellCommand({
+    commandName,
+    executableCommand,
+    cwd,
+    env: launchEnv,
+    args: payload && payload.args
+  })
   if (process.platform === 'darwin') return launchOnMac(shellCommand, terminal)
-  if (process.platform === 'win32') return launchOnWindows(shellCommand, terminal, cwd, commandName, executableCommand)
+  if (process.platform === 'win32') {
+    return launchOnWindows(shellCommand, terminal, cwd, commandName, executableCommand, Object.assign({}, payload || {}, { env: launchEnv }))
+  }
   return launchOnLinux(shellCommand, terminal)
 }
 
@@ -421,8 +489,14 @@ module.exports = {
   commandExists,
   resolveCommandPath,
   collectRuntimeSearchDirs,
+  buildRuntimePath,
+  buildRuntimeEnv,
   getCommandStatus,
   getCliInstallCommand,
   getAvailableTerminals,
-  launchCliCommand
+  launchCliCommand,
+  _internal: {
+    buildShellCommand,
+    normalizeEnvAssignments
+  }
 }
