@@ -55,7 +55,7 @@ export default function SettingsAbout () {
   const quickEntries = [
     { key: 'author', title: '主作者', desc: 'wannanbigpig', className: 'is-author', icon: <AboutUserIcon />, onClick: () => openExternalLink(PROJECT_AUTHOR_URL, '打开作者主页失败') },
     { key: 'github', title: '开源仓库', desc: 'github.com/wannanbigpig/AiDeck', className: 'is-github', icon: <AboutGithubIcon />, onClick: () => openExternalLink(PROJECT_GITHUB_URL, '打开 GitHub 失败') },
-    { key: 'donate', title: '赞助支持', desc: '支持项目持续开发', className: 'is-donate', icon: <AboutHeartIcon />, onClick: () => openExternalLink(PROJECT_DONATE_URL, '打开赞助页面失败') },
+    { key: 'donate', title: '赞赏说明', desc: '查看赞赏方式，支持项目维护', className: 'is-donate', icon: <AboutHeartIcon />, onClick: () => openExternalLink(PROJECT_DONATE_URL, '打开赞赏说明失败') },
     { key: 'issues', title: '意见反馈', desc: '报告问题或提交建议', className: 'is-feedback', icon: <AboutFeedbackIcon />, onClick: () => openExternalLink(PROJECT_GITHUB_ISSUES_URL, '打开 Issues 页面失败') }
   ]
 

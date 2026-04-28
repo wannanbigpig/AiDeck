@@ -8,17 +8,17 @@
 
 ## 支付宝
 
-![支付宝收款码](./images/alipay.jpg)
+<img src="./images/alipay.jpg" alt="支付宝收款码" width="260" />
 
 ## 微信支付
 
-![微信收款码](./images/wechat_pay.jpg)
+<img src="./images/wechat_pay.jpg" alt="微信收款码" width="260" />
 
 ## ETH
 
 钱包地址：`0xf7bC2dc45f433D1Fa29D337Badc7174fE8251da3`
 
-![ETH QR Code](./images/eth.jpg)
+<img src="./images/eth.jpg" alt="ETH QR Code" width="260" />
 
 ---
 
