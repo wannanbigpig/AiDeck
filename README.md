@@ -148,6 +148,33 @@ AiDeck 默认把数据保存在用户主目录下的 `.ai_deck`：
 
 ---
 
+## 安装插件
+
+AiDeck 是 uTools 插件，使用前需要先安装 uTools 桌面端。
+
+### 通过 uTools 应用市场安装
+
+1. 前往 uTools 官网下载并安装 uTools：`https://u.tools`
+2. 打开 uTools，进入插件应用市场。
+3. 搜索 `AiDeck`。
+4. 点击安装，安装完成后即可在 uTools 中打开使用。
+
+如果应用市场中的版本仍在审核中，请等待审核通过后再安装或更新。
+
+### 通过本地构建产物导入
+
+适合开发调试或提前体验未上架版本：
+
+1. 先安装 uTools 桌面端。
+2. 在本项目中执行 `npm install` 和 `npm run build`。
+3. 打开 uTools 开发者工具。
+4. 选择导入插件，目录选择仓库根目录下的 `dist/`。
+5. 导入后即可在 uTools 中启动 AiDeck。
+
+开发模式下也可以先执行 `npm run dev`，再在 uTools 开发者工具中导入仓库根目录的 `plugin.json`。
+
+---
+
 ## 启动与构建
 
 ### 环境要求
