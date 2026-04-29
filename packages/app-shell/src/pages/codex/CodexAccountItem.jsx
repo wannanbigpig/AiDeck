@@ -103,6 +103,7 @@ export default function CodexAccountItem ({
   onEditTags,
   onReauthorize,
   onLaunchCli,
+  launchCliTip,
   onWakeup,
   svc
 }) {
@@ -272,7 +273,7 @@ export default function CodexAccountItem ({
             <div className='account-card-divider' />
             <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
             <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
-              <span className='action-icon-tip'>以账号绑定实例启动 Codex CLI</span>
+              <span className='action-icon-tip'>{launchCliTip || '以账号绑定实例启动 Codex CLI'}</span>
               {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
             </button>
 

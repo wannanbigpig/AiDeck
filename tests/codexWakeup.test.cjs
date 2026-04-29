@@ -4,6 +4,16 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
+async function waitForCondition (fn, timeoutMs = 2000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const value = await fn()
+    if (value) return value
+    await new Promise(resolve => setTimeout(resolve, 40))
+  }
+  return null
+}
+
 test('Codex 唤醒参数应复用 codex exec 安全参数', () => {
   const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
   const args = codex._internal.buildCodexWakeupArgs({
@@ -107,6 +117,214 @@ test('Codex 单账号唤醒失败应返回当前账号失败文案', async () =>
     assert.equal(result.error, '当前账号唤醒失败')
     assert.equal(result.records[0].account_email, 'current-fail@example.com')
     assert.match(result.records[0].error, /fake wakeup failed/)
+  } finally {
+    if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
+    else process.env.AIDECK_DATA_DIR = previousDataDir
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Codex 唤醒任务应优先使用设置中的自定义 CLI 命令', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-wakeup-custom-cli-'))
+  const previousDataDir = process.env.AIDECK_DATA_DIR
+  process.env.AIDECK_DATA_DIR = root
+
+  try {
+    const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
+    const sharedSettingsStore = require(path.join(process.cwd(), 'packages/infra-node/src/sharedSettingsStore.cjs'))
+    const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+    storage.initStorage()
+    const account = storage.addAccount('codex', {
+      id: 'codex-custom-cli-target',
+      email: 'custom-cli@example.com',
+      tokens: {
+        access_token: 'header.' + Buffer.from('{}').toString('base64url') + '.signature',
+        refresh_token: 'refresh'
+      }
+    })
+    const fakeCodex = path.join(root, 'custom-codex')
+    fs.writeFileSync(fakeCodex, '#!/bin/sh\necho "custom cli from settings" >&2\nexit 1\n')
+    fs.chmodSync(fakeCodex, 0o755)
+    sharedSettingsStore.writeValue('codex_advanced_settings', {
+      codexCliPath: fakeCodex
+    })
+
+    const result = await codex.runWakeupTask({
+      accountIds: [account.id],
+      prompt: 'hi',
+      model: 'gpt-5.3-codex',
+      reasoningEffort: 'medium'
+    })
+
+    assert.equal(result.success, false)
+    assert.equal(result.failure_count, 1)
+    assert.equal(result.records[0].cli_path, fakeCodex)
+    assert.match(result.records[0].error, /custom cli from settings/)
+  } finally {
+    if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
+    else process.env.AIDECK_DATA_DIR = previousDataDir
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Codex 后台唤醒应立即返回 run_id 并写入最近历史状态', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-wakeup-history-'))
+  const previousDataDir = process.env.AIDECK_DATA_DIR
+  process.env.AIDECK_DATA_DIR = root
+
+  try {
+    const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
+    const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+    storage.initStorage()
+    const account = storage.addAccount('codex', {
+      id: 'codex-history-target',
+      email: 'history@example.com',
+      tokens: {
+        access_token: 'token',
+        refresh_token: 'refresh'
+      }
+    })
+
+    const started = await codex.runWakeupTask({
+      command: 'definitely-not-aideck-codex',
+      commandRuntime: { env: { PATH: '' } },
+      accountIds: [account.id],
+      prompt: 'hi',
+      triggerType: 'manual',
+      background: true
+    })
+
+    assert.equal(started.running, true)
+    assert.match(started.run_id, /^codex-wakeup-/)
+
+    const finished = await waitForCondition(() => {
+      const run = codex.getWakeupRun(started.run_id)
+      return run.success && run.item.status !== 'running' ? run.item : null
+    })
+    assert.ok(finished)
+    assert.equal(finished.trigger_label, '立即唤醒')
+    assert.equal(finished.status, 'error')
+    assert.equal(finished.failure_count, 1)
+    assert.match(finished.records[0].error, /未检测到 codex CLI/)
+
+    const overview = codex.getWakeupOverview(account.id)
+    assert.equal(overview.success, true)
+    assert.equal(overview.latest.run_id, started.run_id)
+    assert.equal(overview.latest.trigger_label, '立即唤醒')
+  } finally {
+    if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
+    else process.env.AIDECK_DATA_DIR = previousDataDir
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Codex 唤醒不应读取账号实例中的全局 AGENTS.md', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-wakeup-no-agents-'))
+  const previousDataDir = process.env.AIDECK_DATA_DIR
+  process.env.AIDECK_DATA_DIR = root
+
+  try {
+    const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
+    const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+    storage.initStorage()
+    const account = storage.addAccount('codex', {
+      id: 'codex-no-agents-target',
+      email: 'no-agents@example.com',
+      tokens: {
+        access_token: 'header.' + Buffer.from('{}').toString('base64url') + '.signature',
+        refresh_token: 'refresh'
+      }
+    })
+    const prepared = await codex.prepareCliLaunch(account.id)
+    assert.equal(prepared.success, true)
+    fs.writeFileSync(path.join(prepared.instanceDir, 'AGENTS.md'), 'global rules should not be read', 'utf8')
+
+    const fakeCodex = path.join(root, 'fake-codex-no-agents')
+    fs.writeFileSync(fakeCodex, '#!/bin/sh\nif [ -e "$CODEX_HOME/AGENTS.md" ]; then echo "AGENTS.md exists" >&2; exit 1; fi\nexit 0\n')
+    fs.chmodSync(fakeCodex, 0o755)
+
+    const result = await codex.runWakeupTask({
+      command: fakeCodex,
+      accountIds: [account.id],
+      prompt: 'hi',
+      model: '',
+      reasoningEffort: ''
+    })
+
+    assert.equal(result.success, true)
+    assert.equal(fs.existsSync(path.join(prepared.instanceDir, 'AGENTS.md')), true)
+    const wakeupDir = codex._internal.buildCodexWakeupInstanceDir(account.id)
+    assert.notEqual(wakeupDir, prepared.instanceDir)
+    assert.equal(fs.existsSync(path.join(wakeupDir, 'AGENTS.md')), false)
+  } finally {
+    if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
+    else process.env.AIDECK_DATA_DIR = previousDataDir
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('Codex 会话管理应单独显示唤醒会话来源区', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-wakeup-sessions-'))
+  const previousDataDir = process.env.AIDECK_DATA_DIR
+  process.env.AIDECK_DATA_DIR = root
+
+  try {
+    const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
+    const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+    storage.initStorage()
+    const account = storage.addAccount('codex', {
+      id: 'codex-wakeup-session-target',
+      email: 'wakeup-session@example.com',
+      tokens: {
+        access_token: 'token',
+        refresh_token: 'refresh'
+      }
+    })
+    const secondAccount = storage.addAccount('codex', {
+      id: 'codex-wakeup-session-second',
+      email: 'wakeup-second@example.com',
+      tokens: {
+        access_token: 'token-2',
+        refresh_token: 'refresh-2'
+      }
+    })
+    const wakeupDir = codex._internal.buildCodexWakeupInstanceDir(account.id)
+    const sessionPath = path.join(wakeupDir, 'sessions', '2026', '04', '29', 'rollout-wakeup-session.jsonl')
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    fs.writeFileSync(sessionPath, JSON.stringify({ type: 'metadata', cwd: path.join(wakeupDir, 'wakeup-workspace'), title: '唤醒测试' }) + '\n', 'utf8')
+    fs.writeFileSync(path.join(wakeupDir, 'session_index.jsonl'), JSON.stringify({
+      id: 'wakeup-session',
+      title: '唤醒测试',
+      cwd: path.join(wakeupDir, 'wakeup-workspace'),
+      rollout_path: sessionPath,
+      updated_at_ms: 1777372800000
+    }) + '\n', 'utf8')
+    const secondWakeupDir = codex._internal.buildCodexWakeupInstanceDir(secondAccount.id)
+    const secondSessionPath = path.join(secondWakeupDir, 'sessions', '2026', '04', '29', 'rollout-wakeup-session-second.jsonl')
+    fs.mkdirSync(path.dirname(secondSessionPath), { recursive: true })
+    fs.writeFileSync(secondSessionPath, JSON.stringify({ type: 'metadata', cwd: path.join(secondWakeupDir, 'wakeup-workspace'), title: '唤醒测试 2' }) + '\n', 'utf8')
+    fs.writeFileSync(path.join(secondWakeupDir, 'session_index.jsonl'), JSON.stringify({
+      id: 'wakeup-session-second',
+      title: '唤醒测试 2',
+      cwd: path.join(secondWakeupDir, 'wakeup-workspace'),
+      rollout_path: secondSessionPath,
+      updated_at_ms: 1777372810000
+    }) + '\n', 'utf8')
+
+    const result = codex.listCliSessions({ includeDefaultHome: false })
+    assert.equal(result.success, true)
+    const wakeupAccount = result.accounts.find(item => item.sourceType === 'wakeup')
+    assert.ok(wakeupAccount)
+    assert.equal(wakeupAccount.sourceName, 'wakeup-session@example.com 唤醒会话')
+    const wakeupGroups = result.groups.filter(group => group.workspaceName === '唤醒会话')
+    assert.equal(wakeupGroups.length, 1)
+    const wakeupGroup = wakeupGroups[0]
+    assert.ok(wakeupGroup)
+    assert.equal(wakeupGroup.workspacePath, '')
+    assert.equal(wakeupGroup.sessions.length, 2)
+    assert.equal(wakeupGroup.sessions.every(session => session.sourceType === 'wakeup'), true)
+    assert.equal(wakeupGroup.sessions.some(session => session.sourceName === 'wakeup-session@example.com 唤醒会话'), true)
+    assert.equal(wakeupGroup.sessions.some(session => session.sourceName === 'wakeup-second@example.com 唤醒会话'), true)
   } finally {
     if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
     else process.env.AIDECK_DATA_DIR = previousDataDir

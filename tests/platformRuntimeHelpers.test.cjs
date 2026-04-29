@@ -140,16 +140,23 @@ test('normalizePlatformService 应为旧 service 补齐共享契约 fallback', a
 test('normalizeCodexAdvancedSettings 应清理旧触发模型配置并保留优先切同邮箱开关', async () => {
   const codexUtils = await import(pathToFileURL(path.join(process.cwd(), 'packages/app-shell/src/utils/codex.js')).href)
   const normalized = codexUtils.normalizeCodexAdvancedSettings({
+    codexCliPath: ' /tmp/custom-codex ',
+    codexCliInstanceMode: 'default',
     autoSwitch: true,
     autoSwitchModelGroup: 'codex',
     autoSwitchPreferSameEmail: false,
     showCodeReviewQuota: true
   })
 
+  assert.equal(normalized.codexCliPath, '/tmp/custom-codex')
+  assert.equal(normalized.codexCliInstanceMode, 'default')
   assert.equal(normalized.autoSwitch, true)
   assert.equal(normalized.autoSwitchPreferSameEmail, false)
   assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'autoSwitchModelGroup'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'showCodeReviewQuota'), false)
+
+  const fallback = codexUtils.normalizeCodexAdvancedSettings({ codexCliInstanceMode: 'bad-value' })
+  assert.equal(fallback.codexCliInstanceMode, 'bound')
 })
 
 test('Codex 配额解析应忽略代码审查额度并保留额外模型与积分', () => {

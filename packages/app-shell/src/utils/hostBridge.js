@@ -179,6 +179,20 @@ export function getCommandStatus (commandName) {
   return { command, available: false, installCommand: '' }
 }
 
+export function getCommandVersion (commandName) {
+  const command = String(commandName || '').trim()
+  const host = getHostApi()
+  if (host && typeof host.getCommandVersion === 'function') {
+    try {
+      const result = host.getCommandVersion(command)
+      return result && typeof result === 'object'
+        ? result
+        : { command, success: false, version: '', error: '读取版本失败' }
+    } catch (e) {}
+  }
+  return { command, success: false, version: '', error: '当前环境不支持读取命令版本' }
+}
+
 export async function launchCliCommand (payload) {
   const host = getHostApi()
   if (host && typeof host.launchCliCommand === 'function') {

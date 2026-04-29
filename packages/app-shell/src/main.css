@@ -1194,6 +1194,47 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   border: 1px solid rgba(63, 185, 80, 0.2);
 }
 
+.codex-cli-choice-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.codex-cli-choice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 112px;
+  padding: 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.codex-cli-choice-card strong {
+  font-size: 15px;
+}
+
+.codex-cli-choice-card span {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.codex-cli-choice-card.active {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 1px var(--accent-blue);
+}
+
+.codex-cli-choice-card:hover {
+  border-color: var(--accent-blue);
+  background: var(--bg-hover);
+}
+
 .badge-danger {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
@@ -1288,6 +1329,8 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 .codex-session-mode-tabs {
   display: inline-flex;
   align-items: center;
+  box-sizing: border-box;
+  height: 34px;
   padding: 2px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -1312,7 +1355,8 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 }
 
 .codex-session-filter select {
-  height: 32px;
+  box-sizing: border-box;
+  height: 34px;
   min-width: 190px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -1330,7 +1374,7 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 }
 
 .codex-session-toolbar > .btn {
-  height: 32px;
+  height: 34px;
 }
 
 .codex-session-toolbar-actions {
@@ -1343,8 +1387,9 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 .codex-session-toolbar > .action-bar-btn,
 .codex-session-toolbar-actions > .action-bar-btn,
 .codex-session-opsbar .action-bar-btn {
-  width: 30px;
-  height: 30px;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -1448,7 +1493,8 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
+  box-sizing: border-box;
+  min-height: 34px;
   color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
@@ -1464,6 +1510,8 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 .codex-session-mini-stats {
   display: inline-flex;
   align-items: center;
+  box-sizing: border-box;
+  height: 34px;
   gap: 2px;
   margin-left: auto;
   overflow: hidden;
@@ -1474,9 +1522,11 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
 
 .codex-session-mini-stats span {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
+  box-sizing: border-box;
+  height: 100%;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 0 10px;
   border-left: 1px solid var(--border-muted);
   color: var(--text-secondary);
   font-size: 11px;
@@ -3168,6 +3218,10 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   max-width: 720px;
 }
 
+.codex-wakeup-modal .modal-body {
+  padding-bottom: 4px;
+}
+
 .codex-wakeup-form {
   display: flex;
   flex-direction: column;
@@ -3197,6 +3251,86 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   font-size: 14px;
   font-weight: 600;
   word-break: break-all;
+}
+
+.codex-wakeup-run-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 112px;
+}
+
+.codex-wakeup-run-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: codexWakeupSpin 0.8s linear infinite;
+}
+
+.codex-wakeup-overview {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-base) 94%, transparent);
+  backdrop-filter: blur(10px);
+  color: var(--text-secondary);
+  padding: 12px;
+  margin-top: 12px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.codex-wakeup-overview.is-running {
+  border-color: rgba(31, 111, 235, 0.45);
+}
+
+.codex-wakeup-progress-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(31, 111, 235, 0.12);
+}
+
+.codex-wakeup-progress-bar::before {
+  content: '';
+  position: absolute;
+  width: 42%;
+  height: 100%;
+  left: -42%;
+  top: 0;
+  background: var(--accent-blue);
+  animation: codexWakeupProgress 1.1s ease-in-out infinite;
+}
+
+.codex-wakeup-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 18px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.codex-wakeup-overview-grid strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+@keyframes codexWakeupSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes codexWakeupProgress {
+  0% { left: -42%; }
+  100% { left: 100%; }
 }
 
 .codex-wakeup-grid {
@@ -3349,6 +3483,10 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   }
 
   .codex-wakeup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .codex-wakeup-overview-grid {
     grid-template-columns: 1fr;
   }
 

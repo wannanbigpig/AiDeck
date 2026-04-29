@@ -339,6 +339,7 @@ const services = {
     openExternalUrl: function (url) { return codexService.openExternalUrl(url) },
     switchAccount: function (id, options) { return codexService.switchAccount(id, options) },
     prepareCliLaunch: function (id) { return codexService.prepareCliLaunch(id) },
+    prepareWakeupCliLaunch: function (id) { return codexService.prepareWakeupCliLaunch(id) },
     listCliSessions: function (options) { return codexService.listCliSessions(options || {}) },
     loadCliSessionMessages: function (options) { return codexService.loadCliSessionMessages(options || {}) },
     prepareCliSessionResume: function (options) { return codexService.prepareCliSessionResume(options || {}) },
@@ -353,6 +354,9 @@ const services = {
     deleteCliSessionTrash: function (options) { return codexService.deleteCliSessionTrash(options || {}) },
     cleanCliSessionIndexes: function (options) { return codexService.cleanCliSessionIndexes(options || {}) },
     runWakeupTask: function (options) { return codexService.runWakeupTask(options) },
+    listWakeupHistory: function (options) { return codexService.listWakeupHistory(options || {}) },
+    getWakeupRun: function (runId) { return codexService.getWakeupRun(runId) },
+    getWakeupOverview: function (id) { return codexService.getWakeupOverview(id) },
     listWakeupSchedules: function () { return codexService.listWakeupSchedules() },
     getWakeupSchedule: function (id) { return codexService.getWakeupSchedule(id) },
     saveWakeupSchedule: function (id, patch) { return codexService.saveWakeupSchedule(id, patch) },
@@ -498,6 +502,9 @@ const host = {
   },
   getCommandStatus: function (commandName) {
     return terminalLauncher.getCommandStatus(commandName)
+  },
+  getCommandVersion: function (commandName) {
+    return terminalLauncher.getCommandVersion(commandName)
   },
   launchCliCommand: function (payload) {
     return terminalLauncher.launchCliCommand(payload || {})

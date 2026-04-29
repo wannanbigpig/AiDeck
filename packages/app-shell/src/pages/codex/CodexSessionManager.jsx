@@ -17,6 +17,7 @@ import {
 import { usePrivacy } from '../../components/PrivacyMode'
 import { getHostBridge, launchCliCommand, showItemInFolder } from '../../utils/hostBridge.js'
 import { readGlobalSettings } from '../../utils/globalSettings.js'
+import { readCodexAdvancedSettings } from '../../utils/codex.js'
 import { maskText } from '../../utils/format.js'
 
 function formatRelativeTime (value) {
@@ -216,12 +217,22 @@ function getSessionSearchText (session) {
     session?.sourceName,
     session?.accountEmail,
     session?.accountId,
+    session?.originalWorkspaceName,
+    session?.originalWorkspacePath,
     session?.workspaceName,
     session?.workspacePath,
     session?.path,
     session?.statusLabel,
     session?.statusReason
   ].join(' ')
+}
+
+function getSessionWorkspaceSourceText (session) {
+  const name = String(session?.originalWorkspaceName || '').trim()
+  const workspacePath = String(session?.originalWorkspacePath || '').trim()
+  if (!name && !workspacePath) return ''
+  if (name && workspacePath) return `${name} · ${workspacePath}`
+  return name || workspacePath
 }
 
 function escapeRegExp (value) {
@@ -308,6 +319,7 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
   }
 
   function displaySessionInstance (session) {
+    if (session?.sourceType === 'wakeup') return '唤醒会话'
     const name = displaySource(session)
     if (name === '默认' && session?.sourceType === 'default') return '默认实例'
     return name
@@ -640,8 +652,9 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
     }
 
     const settings = readGlobalSettings()
+    const codexSettings = readCodexAdvancedSettings()
     const result = await launchCliCommand({
-      command: prepared.command || 'codex',
+      command: codexSettings.codexCliPath || prepared.command || 'codex',
       cwd: prepared.cwd || prepared.workspacePath,
       terminal: settings.defaultTerminal || 'system',
       env: prepared.env || (prepared.instanceDir ? { CODEX_HOME: prepared.instanceDir } : undefined),
@@ -1161,6 +1174,11 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
                               {(session.status === 'broken' || session.status === 'unindexed') && session.statusReason && (
                                 <div className='codex-session-row-source'>
                                   <span><HighlightText text={displayText(session.statusReason)} query={sessionSearchQuery} /></span>
+                                </div>
+                              )}
+                              {session.detachedWorkspace && (
+                                <div className='codex-session-row-source'>
+                                  <span>原工作区：<HighlightText text={getSessionWorkspaceSourceText(session)} query={sessionSearchQuery} /></span>
                                 </div>
                               )}
                             </div>

@@ -6,7 +6,7 @@ import {
   markAnnouncementAsRead
 } from '../utils/hostBridge.js'
 
-export const APP_VERSION = '1.0.3'
+export const APP_VERSION = '1.0.4'
 
 const EMPTY_STATE = {
   announcements: [],

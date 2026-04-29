@@ -44,6 +44,7 @@ const CODEX_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000
 const LOCAL_SYNC_IMPORT_COOLDOWN_MS = 30 * 1000
 const CODEX_CLI_INSTANCE_DIR_FIELD = 'codex_cli_instance_dir'
 const CODEX_CLI_MANAGED_ACCOUNT_DIR = 'accounts'
+const CODEX_CLI_WAKEUP_ACCOUNT_DIR = 'wakeup'
 const CODEX_CLI_SHARED_DIR = '_shared'
 const CODEX_SHARED_DIRS = ['skills', 'rules', path.join('vendor_imports', 'skills')]
 const CODEX_SHARED_FILES = ['AGENTS.md']
@@ -52,6 +53,9 @@ const CODEX_INSTANCE_SESSION_FILES = ['session_index.jsonl', 'history.jsonl']
 const CODEX_WAKEUP_DEFAULT_PROMPT = 'hi'
 const CODEX_WAKEUP_DEFAULT_DAILY_TIME = '09:00'
 const CODEX_WAKEUP_DEFAULT_TIMEOUT_MS = 120 * 1000
+const CODEX_WAKEUP_BACKGROUND_TIMEOUT_MS = 30 * 60 * 1000
+const CODEX_WAKEUP_HISTORY_FILE = 'codex-wakeup-history.json'
+const CODEX_WAKEUP_HISTORY_LIMIT = 100
 const CODEX_WAKEUP_ALLOWED_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
 const CODEX_WAKEUP_ALLOWED_SCHEDULE_KINDS = new Set(['daily', 'weekly', 'interval', 'quota_reset', 'startup'])
 const CODEX_WAKEUP_ALLOWED_QUOTA_RESET_WINDOWS = new Set(['either', 'primary_window', 'secondary_window'])
@@ -79,6 +83,7 @@ const codexThreadRowsCache = new Map()
 const codexThreadColumnsCache = new Map()
 
 const DEFAULT_ADVANCED_SETTINGS = {
+  codexCliPath: '',
   codexStartupPath: '',
   openCodeStartupPath: '',
   autoRestartCodexApp: false,
@@ -1053,6 +1058,12 @@ function _buildCodexCliInstanceDir (accountId) {
   return path.join(_getCodexCliInstancesRootDir(), CODEX_CLI_MANAGED_ACCOUNT_DIR, digest)
 }
 
+function _buildCodexWakeupInstanceDir (accountId) {
+  const raw = String(accountId || 'account').trim() || 'account'
+  const digest = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16)
+  return path.join(_getCodexCliInstancesRootDir(), CODEX_CLI_WAKEUP_ACCOUNT_DIR, digest)
+}
+
 function _resolveBoundCodexCliInstanceDir (accountId, account) {
   const rootDir = _getCodexCliInstancesRootDir()
   const saved = String(account && account[CODEX_CLI_INSTANCE_DIR_FIELD] ? account[CODEX_CLI_INSTANCE_DIR_FIELD] : '').trim()
@@ -1185,6 +1196,18 @@ function _ensureCodexCliSharedEntries (instanceDir) {
   }
   for (const relativePath of CODEX_SHARED_FILES) {
     _ensureCodexSharedEntry(instanceDir, relativePath, false)
+  }
+  for (const relativePath of CODEX_INSTANCE_SESSION_DIRS) {
+    _ensureCodexInstanceEntry(instanceDir, relativePath, true)
+  }
+  for (const relativePath of CODEX_INSTANCE_SESSION_FILES) {
+    _ensureCodexInstanceEntry(instanceDir, relativePath, false, { ensureFile: true })
+  }
+}
+
+function _ensureCodexWakeupInstanceEntries (instanceDir) {
+  for (const relativePath of CODEX_SHARED_DIRS.concat(CODEX_SHARED_FILES)) {
+    _removePathIfExists(path.join(instanceDir, relativePath))
   }
   for (const relativePath of CODEX_INSTANCE_SESSION_DIRS) {
     _ensureCodexInstanceEntry(instanceDir, relativePath, true)
@@ -2253,6 +2276,9 @@ function _buildCodexSessionSourceItem (source, sourcePath, record, fallbackStat)
   item.id = `${source.id || item.accountId || 'codex'}:${item.sessionId}`
   item.summary = String(enriched.summary || '').trim()
   item.resumeCommand = item.sessionId ? `codex resume ${item.sessionId}` : ''
+  if (item.sourceType === 'wakeup') {
+    item.workspaceName = '唤醒会话'
+  }
   return item
 }
 
@@ -2425,6 +2451,15 @@ function _discoverCodexSessionSources (accounts, options = {}) {
         instanceDir: legacyDir
       })
     }
+
+    const wakeupDir = _buildCodexWakeupInstanceDir(accountId)
+    _pushCodexSessionSource(sources, seen, {
+      id: `${accountId}:wakeup`,
+      sourceType: 'wakeup',
+      sourceName: `${account.email || accountId} 唤醒会话`,
+      account,
+      instanceDir: wakeupDir
+    })
   }
 
   return sources
@@ -2692,7 +2727,7 @@ function prepareCliSessionResume (options = {}) {
 
   return {
     success: true,
-    command: 'codex',
+    command: _resolveCodexCliCommand('codex'),
     cwd: workspacePath,
     args: ['resume', sessionId],
     env: { CODEX_HOME: instanceDir },
@@ -3088,19 +3123,39 @@ function listCliSessions (options = {}) {
   const sessions = sourceResults.flatMap(item => item.sessions)
   const savedWorkspaceRoots = _getCodexSavedWorkspaceRootsForSources(sourceResults, options)
   const workspaceOrder = new Map(savedWorkspaceRoots.map((workspacePath, index) => [workspacePath, index]))
+  const savedWorkspaceRootSet = new Set(savedWorkspaceRoots)
   const groupMap = new Map()
 
   for (const session of sessions) {
-    const normalizedWorkspacePath = _normalizeCodexWorkspacePath(session.workspacePath)
-    const key = `${normalizedWorkspacePath || ''}|${session.workspaceName || '未知工作区'}`
+    const isWakeupSession = session && session.sourceType === 'wakeup'
+    const rawWorkspacePath = _normalizeCodexWorkspacePath(session.workspacePath)
+    const isDetachedDefaultHistory = !isWakeupSession &&
+      session &&
+      session.sourceType === 'default' &&
+      savedWorkspaceRootSet.size > 0 &&
+      rawWorkspacePath &&
+      !savedWorkspaceRootSet.has(rawWorkspacePath)
+    const normalizedWorkspacePath = isWakeupSession || isDetachedDefaultHistory ? '' : rawWorkspacePath
+    const workspaceName = isWakeupSession
+      ? '唤醒会话'
+      : (isDetachedDefaultHistory ? '历史会话' : (session.workspaceName || '未知工作区'))
+    const key = isWakeupSession
+      ? '__codex_wakeup_sessions__'
+      : (isDetachedDefaultHistory ? '__codex_default_history_sessions__' : `${normalizedWorkspacePath || ''}|${workspaceName}`)
+    if (isDetachedDefaultHistory) {
+      session.detachedWorkspace = true
+      session.originalWorkspacePath = rawWorkspacePath
+      session.originalWorkspaceName = session.workspaceName || _getCodexWorkspaceName(rawWorkspacePath)
+    }
     const existing = groupMap.get(key) || {
       id: crypto.createHash('sha1').update(key).digest('hex').slice(0, 16),
       workspacePath: normalizedWorkspacePath || session.workspacePath || '',
-      workspaceName: session.workspaceName || '未知工作区',
+      workspaceName,
       updatedAt: 0,
       count: 0,
       sessions: []
     }
+    if (isWakeupSession || isDetachedDefaultHistory) existing.workspacePath = ''
     existing.sessions.push(session)
     existing.count += 1
     existing.updatedAt = Math.max(existing.updatedAt, Number(session.updatedAt || 0))
@@ -3252,6 +3307,55 @@ async function prepareCliLaunch (accountId) {
     instanceDir,
     bound: true,
     firstBind: isFirstBind,
+    warnings: keychainWarning ? [keychainWarning] : []
+  }
+}
+
+async function prepareWakeupCliLaunch (accountId) {
+  const rawAccountId = String(accountId || '').trim()
+  if (!rawAccountId) {
+    return { success: false, error: '账号 ID 为空' }
+  }
+
+  let account = storage.getAccount(PLATFORM, rawAccountId)
+  if (!account) {
+    requestLogger.warn('codex.wakeup', '准备唤醒实例失败：账号不存在', { accountId: rawAccountId })
+    return { success: false, error: '账号不存在' }
+  }
+
+  const prepared = await _prepareCodexAccountForSwitch(rawAccountId, account)
+  if (!prepared.success) {
+    requestLogger.warn('codex.wakeup', '准备唤醒实例失败：账号刷新失败', {
+      account: account.email || account.id,
+      error: prepared.error
+    })
+    return { success: false, error: prepared.error || '准备账号失败' }
+  }
+  account = prepared.account
+
+  const instanceDir = _buildCodexWakeupInstanceDir(rawAccountId)
+  fileUtils.ensureDir(instanceDir)
+  _ensureCodexWakeupInstanceEntries(instanceDir)
+
+  const authData = _buildCodexAuthFile(account, instanceDir)
+  const written = fileUtils.writeJsonFile(path.join(instanceDir, 'auth.json'), authData)
+  if (!written) {
+    return { success: false, error: '写入 Codex CLI 唤醒实例 auth.json 失败' }
+  }
+
+  const keychainWarning = _writeCodexKeychain(instanceDir, authData)
+  requestLogger.info('codex.wakeup', '已准备 Codex CLI 唤醒实例', {
+    account: account.email || account.id,
+    instanceDir,
+    keychainWarning
+  })
+
+  return {
+    success: true,
+    error: null,
+    env: { CODEX_HOME: instanceDir },
+    instanceDir,
+    wakeup: true,
     warnings: keychainWarning ? [keychainWarning] : []
   }
 }
@@ -3420,6 +3524,152 @@ function _getCodexWakeupScheduleFilePath () {
   return path.join(dataRoot.getSettingsDir(), CODEX_WAKEUP_SCHEDULE_FILE)
 }
 
+function _getCodexWakeupHistoryFilePath () {
+  return path.join(dataRoot.getSettingsDir(), CODEX_WAKEUP_HISTORY_FILE)
+}
+
+function _normalizeCodexWakeupTriggerType (value, fallback) {
+  const raw = String(value || fallback || 'manual').trim()
+  if (['manual', 'daily', 'weekly', 'interval', 'quota_reset', 'startup'].includes(raw)) return raw
+  if (raw === 'scheduled') return 'daily'
+  return 'manual'
+}
+
+function _resolveCodexWakeupTriggerLabel (triggerType) {
+  const type = _normalizeCodexWakeupTriggerType(triggerType)
+  if (type === 'daily') return '每日定时'
+  if (type === 'weekly') return '每周定时'
+  if (type === 'interval') return '间隔触发'
+  if (type === 'quota_reset') return '配额重置触发'
+  if (type === 'startup') return '启动后触发'
+  return '立即唤醒'
+}
+
+function _readCodexWakeupHistoryItems () {
+  let raw = null
+  try {
+    raw = fileUtils.readJsonFile(_getCodexWakeupHistoryFilePath())
+  } catch {}
+  const items = Array.isArray(raw)
+    ? raw
+    : (raw && Array.isArray(raw.items) ? raw.items : [])
+  return items
+    .filter(item => item && typeof item === 'object')
+    .map(item => {
+      const startedAt = Number(item.started_at || item.startedAt || item.timestamp || 0) || 0
+      const status = String(item.status || '').trim() || (item.success ? 'success' : 'error')
+      const staleRunning = status === 'running' && startedAt > 0 && Date.now() - startedAt > CODEX_WAKEUP_BACKGROUND_TIMEOUT_MS
+      return Object.assign({}, item, {
+        run_id: String(item.run_id || item.runId || '').trim(),
+        status: staleRunning ? 'error' : status,
+        trigger_type: _normalizeCodexWakeupTriggerType(item.trigger_type || item.triggerType),
+        trigger_label: String(item.trigger_label || item.triggerLabel || '').trim() || _resolveCodexWakeupTriggerLabel(item.trigger_type || item.triggerType),
+        account_ids: Array.isArray(item.account_ids || item.accountIds) ? (item.account_ids || item.accountIds).map(id => String(id || '').trim()).filter(Boolean) : [],
+        records: Array.isArray(item.records) ? item.records : [],
+        started_at: startedAt,
+        finished_at: Number(item.finished_at || item.finishedAt || 0) || 0,
+        duration_ms: Number(item.duration_ms || item.durationMs || 0) || 0,
+        success_count: Number(item.success_count || item.successCount || 0) || 0,
+        failure_count: Number(item.failure_count || item.failureCount || 0) || 0,
+        error: staleRunning ? '唤醒任务未正常结束' : (item.error || null),
+        next_run_at: Number(item.next_run_at || item.nextRunAt || 0) || 0
+      })
+    })
+    .filter(item => item.run_id)
+}
+
+function _writeCodexWakeupHistoryItems (items) {
+  const filePath = _getCodexWakeupHistoryFilePath()
+  fileUtils.ensureDir(path.dirname(filePath))
+  const normalized = (Array.isArray(items) ? items : [])
+    .filter(item => item && item.run_id)
+    .sort((left, right) => Number(right.started_at || 0) - Number(left.started_at || 0))
+    .slice(0, CODEX_WAKEUP_HISTORY_LIMIT)
+  return fileUtils.writeJsonFile(filePath, {
+    version: 1,
+    items: normalized
+  })
+}
+
+function _upsertCodexWakeupHistoryItem (item) {
+  if (!item || !item.run_id) return null
+  const items = _readCodexWakeupHistoryItems().filter(existing => existing.run_id !== item.run_id)
+  const normalized = Object.assign({}, item, {
+    trigger_type: _normalizeCodexWakeupTriggerType(item.trigger_type),
+    trigger_label: item.trigger_label || _resolveCodexWakeupTriggerLabel(item.trigger_type),
+    account_ids: Array.isArray(item.account_ids) ? item.account_ids.map(id => String(id || '').trim()).filter(Boolean) : [],
+    records: Array.isArray(item.records) ? item.records : []
+  })
+  items.unshift(normalized)
+  _writeCodexWakeupHistoryItems(items)
+  return normalized
+}
+
+function _buildCodexWakeupHistoryItem (payload) {
+  const startedAt = Number(payload.startedAt || Date.now()) || Date.now()
+  const finishedAt = Number(payload.finishedAt || 0) || 0
+  const triggerType = _normalizeCodexWakeupTriggerType(payload.triggerType)
+  return {
+    run_id: String(payload.runId || '').trim(),
+    status: String(payload.status || 'running').trim(),
+    phase: String(payload.phase || '').trim(),
+    trigger_type: triggerType,
+    trigger_label: _resolveCodexWakeupTriggerLabel(triggerType),
+    account_ids: Array.isArray(payload.accountIds) ? payload.accountIds.map(id => String(id || '').trim()).filter(Boolean) : [],
+    account_email: String(payload.accountEmail || '').trim(),
+    prompt: payload.prompt,
+    model: payload.model || '',
+    model_reasoning_effort: payload.reasoningEffort || '',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    duration_ms: Number(payload.durationMs || (finishedAt ? finishedAt - startedAt : 0)) || 0,
+    success_count: Number(payload.successCount || 0) || 0,
+    failure_count: Number(payload.failureCount || 0) || 0,
+    records: Array.isArray(payload.records) ? payload.records : [],
+    error: payload.error || null,
+    next_run_at: Number(payload.nextRunAt || 0) || 0
+  }
+}
+
+function _recordCodexWakeupHistoryStart (payload) {
+  return _upsertCodexWakeupHistoryItem(_buildCodexWakeupHistoryItem(Object.assign({}, payload, {
+    status: 'running',
+    phase: payload.phase || 'queued'
+  })))
+}
+
+function _recordCodexWakeupHistoryFinish (payload, result) {
+  const now = Date.now()
+  return _upsertCodexWakeupHistoryItem(_buildCodexWakeupHistoryItem(Object.assign({}, payload, {
+    status: result && result.success ? 'success' : 'error',
+    phase: 'completed',
+    finishedAt: now,
+    durationMs: now - (Number(payload.startedAt || now) || now),
+    successCount: Number(result && result.success_count || 0) || 0,
+    failureCount: Number(result && result.failure_count || 0) || 0,
+    records: Array.isArray(result && result.records) ? result.records : [],
+    error: result && result.error
+  })))
+}
+
+function listWakeupHistory (options = {}) {
+  const opts = options && typeof options === 'object' ? options : {}
+  const accountId = String(opts.accountId || opts.account_id || '').trim()
+  const limit = Math.max(1, Math.min(Number(opts.limit || CODEX_WAKEUP_HISTORY_LIMIT) || CODEX_WAKEUP_HISTORY_LIMIT, CODEX_WAKEUP_HISTORY_LIMIT))
+  let items = _readCodexWakeupHistoryItems()
+  if (accountId) {
+    items = items.filter(item => item.account_ids.includes(accountId) || (item.records || []).some(record => String(record.account_id || '') === accountId))
+  }
+  return items.slice(0, limit)
+}
+
+function getWakeupRun (runId) {
+  const id = String(runId || '').trim()
+  if (!id) return { success: false, error: 'run_id 为空' }
+  const item = _readCodexWakeupHistoryItems().find(entry => entry.run_id === id)
+  return item ? { success: true, item } : { success: false, error: '唤醒记录不存在' }
+}
+
 function _normalizeCodexWakeupSchedule (raw, nowMs = Date.now()) {
   const item = raw && typeof raw === 'object' ? raw : {}
   const accountId = String(item.account_id || item.accountId || '').trim()
@@ -3516,6 +3766,21 @@ function getWakeupSchedule (accountId) {
   return { success: true, schedule: _withCodexWakeupAccountMeta(existing || fallback) }
 }
 
+function getWakeupOverview (accountId) {
+  const id = String(accountId || '').trim()
+  if (!id) return { success: false, error: '账号 ID 为空' }
+  const scheduleResult = getWakeupSchedule(id)
+  const schedule = scheduleResult && scheduleResult.schedule ? scheduleResult.schedule : null
+  const latest = listWakeupHistory({ accountId: id, limit: 1 })[0] || null
+  return {
+    success: true,
+    schedule,
+    latest,
+    running: !!(latest && latest.status === 'running'),
+    next_run_at: schedule ? Number(schedule.next_run_at || 0) || 0 : 0
+  }
+}
+
 function saveWakeupSchedule (accountId, patch = {}) {
   const id = String(accountId || '').trim()
   if (!id) return { success: false, error: '账号 ID 为空' }
@@ -3579,7 +3844,9 @@ async function runWakeupSchedule (accountId, options = {}) {
     accountIds: [id],
     prompt: schedule.prompt,
     model: schedule.model,
-    reasoningEffort: schedule.reasoning_effort
+    reasoningEffort: schedule.reasoning_effort,
+    triggerType: schedule.schedule_kind,
+    nextRunAt: schedule.next_run_at
   }))
   _recordCodexWakeupScheduleRun(id, result)
   return result
@@ -3632,6 +3899,8 @@ async function runDueWakeupSchedules (nowMs = Date.now(), options = {}) {
         prompt: schedule.prompt,
         model: schedule.model,
         reasoningEffort: schedule.reasoning_effort,
+        triggerType: schedule.schedule_kind,
+        nextRunAt: schedule.next_run_at,
         runId: 'codex-wakeup-scheduled-' + Date.now() + '-' + fileUtils.generateId()
       }))
       _recordCodexWakeupScheduleRun(schedule.account_id, result, runKey, Date.now())
@@ -3762,6 +4031,7 @@ function _buildCodexWakeupSuccessRecord (runId, account, payload) {
 function _runCodexWakeupCommand (payload) {
   const started = Date.now()
   const commandPath = String(payload.commandPath || '').trim()
+  const commandDir = path.isAbsolute(commandPath) ? path.dirname(commandPath) : ''
   const instanceDir = String(payload.instanceDir || '').trim()
   const prompt = _normalizeCodexWakeupPrompt(payload.prompt)
   const model = _normalizeCodexWakeupModel(payload.model)
@@ -3785,7 +4055,10 @@ function _runCodexWakeupCommand (payload) {
   const result = cp.spawnSync(commandPath, args, {
     cwd: workspaceDir,
     env: terminalLauncher.buildRuntimeEnv
-      ? terminalLauncher.buildRuntimeEnv({ CODEX_HOME: instanceDir })
+      ? terminalLauncher.buildRuntimeEnv(Object.assign(
+        { CODEX_HOME: instanceDir },
+        commandDir ? { PATH: commandDir } : {}
+      ))
       : Object.assign({}, process.env, { CODEX_HOME: instanceDir }),
     encoding: 'utf8',
     timeout: timeoutMs > 0 ? timeoutMs : CODEX_WAKEUP_DEFAULT_TIMEOUT_MS,
@@ -3816,14 +4089,114 @@ function _runCodexWakeupCommand (payload) {
   }
 }
 
-async function runWakeupTask (options = {}) {
+function _runCodexWakeupCommandAsync (payload) {
+  return new Promise(resolve => {
+    const started = Date.now()
+    const commandPath = String(payload.commandPath || '').trim()
+    const commandDir = path.isAbsolute(commandPath) ? path.dirname(commandPath) : ''
+    const instanceDir = String(payload.instanceDir || '').trim()
+    const prompt = _normalizeCodexWakeupPrompt(payload.prompt)
+    const model = _normalizeCodexWakeupModel(payload.model)
+    const reasoningEffort = _normalizeCodexWakeupReasoningEffort(payload.reasoningEffort)
+    const timeoutMs = Number(payload.timeoutMs || CODEX_WAKEUP_BACKGROUND_TIMEOUT_MS)
+    const workspaceDir = path.join(instanceDir, 'wakeup-workspace')
+    const outputPath = path.join(instanceDir, 'wakeup-last-message.txt')
+
+    fileUtils.ensureDir(workspaceDir)
+    try {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+    } catch {}
+
+    const args = _buildCodexWakeupArgs({
+      prompt,
+      model,
+      reasoningEffort,
+      outputPath,
+      workspaceDir
+    })
+    const child = cp.spawn(commandPath, args, {
+      cwd: workspaceDir,
+      env: terminalLauncher.buildRuntimeEnv
+        ? terminalLauncher.buildRuntimeEnv(Object.assign(
+          { CODEX_HOME: instanceDir },
+          commandDir ? { PATH: commandDir } : {}
+        ))
+        : Object.assign({}, process.env, { CODEX_HOME: instanceDir }),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timedOut = false
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true
+          try { child.kill('SIGTERM') } catch {}
+        }, timeoutMs)
+      : null
+    if (timer && typeof timer.unref === 'function') timer.unref()
+
+    child.stdout && child.stdout.on('data', chunk => {
+      stdout += String(chunk || '')
+      if (stdout.length > 20000) stdout = stdout.slice(-20000)
+    })
+    child.stderr && child.stderr.on('data', chunk => {
+      stderr += String(chunk || '')
+      if (stderr.length > 20000) stderr = stderr.slice(-20000)
+    })
+    child.on('error', err => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve({
+        success: false,
+        durationMs: Date.now() - started,
+        error: err && err.message ? err.message : String(err)
+      })
+    })
+    child.on('close', status => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      const durationMs = Date.now() - started
+      const reply = fs.existsSync(outputPath)
+        ? String(fs.readFileSync(outputPath, 'utf8') || '').trim()
+        : String(stdout || '').trim()
+      if (status === 0) {
+        resolve({
+          success: true,
+          durationMs,
+          reply: reply || 'Codex CLI 已完成唤醒任务。'
+        })
+        return
+      }
+      if (timedOut && reply) {
+        resolve({
+          success: true,
+          durationMs,
+          reply,
+          warning: 'Codex CLI 已返回消息，但进程退出超时'
+        })
+        return
+      }
+      resolve({
+        success: false,
+        durationMs,
+        error: String(stderr || stdout || (timedOut ? 'Codex CLI 执行超时' : ('Codex CLI 退出失败: ' + status))).trim()
+      })
+    })
+  })
+}
+
+async function _runWakeupTaskForeground (options = {}) {
   const opts = options && typeof options === 'object' ? options : {}
   const accountIds = _resolveCodexWakeupAccountIds(opts.accountIds)
   const prompt = _normalizeCodexWakeupPrompt(opts.prompt)
   const model = _normalizeCodexWakeupModel(opts.model)
   const reasoningEffort = _normalizeCodexWakeupReasoningEffort(opts.reasoningEffort || opts.model_reasoning_effort)
   const runId = String(opts.runId || ('codex-wakeup-' + Date.now() + '-' + fileUtils.generateId())).trim()
-  const commandName = String(opts.command || 'codex').trim() || 'codex'
+  const commandName = String(opts.command || _resolveCodexCliCommand('codex')).trim() || 'codex'
   const commandRuntime = opts.commandRuntime || opts.command_runtime
   const status = terminalLauncher.getCommandStatus(commandName, commandRuntime)
   const commandPath = String(status.path || commandName).trim()
@@ -3876,7 +4249,7 @@ async function runWakeupTask (options = {}) {
       continue
     }
 
-    const prepared = await prepareCliLaunch(accountId)
+    const prepared = await prepareWakeupCliLaunch(accountId)
     if (!prepared || !prepared.success) {
       records.push(_buildCodexWakeupFailureRecord(runId, account, {
         accountId,
@@ -3884,19 +4257,28 @@ async function runWakeupTask (options = {}) {
         model,
         reasoningEffort,
         cliPath: commandPath,
-        error: (prepared && prepared.error) || '准备 Codex CLI 账号绑定实例失败'
+        error: (prepared && prepared.error) || '准备 Codex CLI 唤醒实例失败'
       }))
       continue
     }
 
-    const output = _runCodexWakeupCommand({
-      commandPath,
-      instanceDir: prepared.instanceDir || (prepared.env && prepared.env.CODEX_HOME),
-      prompt,
-      model,
-      reasoningEffort,
-      timeoutMs: opts.timeoutMs
-    })
+    const output = opts.useAsyncCommand
+      ? await _runCodexWakeupCommandAsync({
+          commandPath,
+          instanceDir: prepared.instanceDir || (prepared.env && prepared.env.CODEX_HOME),
+          prompt,
+          model,
+          reasoningEffort,
+          timeoutMs: opts.timeoutMs
+        })
+      : _runCodexWakeupCommand({
+          commandPath,
+          instanceDir: prepared.instanceDir || (prepared.env && prepared.env.CODEX_HOME),
+          prompt,
+          model,
+          reasoningEffort,
+          timeoutMs: opts.timeoutMs
+        })
     if (output.success) {
       records.push(_buildCodexWakeupSuccessRecord(runId, account, {
         prompt,
@@ -3936,7 +4318,7 @@ async function runWakeupTask (options = {}) {
     model,
     reasoningEffort
   }, failureCount > 0 ? 'warn' : 'info')
-  return {
+  const result = {
     success: failureCount === 0,
     run_id: runId,
     runtime: status,
@@ -3947,6 +4329,67 @@ async function runWakeupTask (options = {}) {
       ? (records.length === 1 ? '当前账号唤醒失败' : '全部账号唤醒失败')
       : null
   }
+  return result
+}
+
+async function runWakeupTask (options = {}) {
+  const opts = options && typeof options === 'object' ? options : {}
+  const accountIds = _resolveCodexWakeupAccountIds(opts.accountIds)
+  const prompt = _normalizeCodexWakeupPrompt(opts.prompt)
+  const model = _normalizeCodexWakeupModel(opts.model)
+  const reasoningEffort = _normalizeCodexWakeupReasoningEffort(opts.reasoningEffort || opts.model_reasoning_effort)
+  const runId = String(opts.runId || ('codex-wakeup-' + Date.now() + '-' + fileUtils.generateId())).trim()
+  const triggerType = _normalizeCodexWakeupTriggerType(opts.triggerType || opts.trigger_type)
+  const startedAt = Date.now()
+  const historyPayload = {
+    runId,
+    triggerType,
+    accountIds,
+    prompt,
+    model,
+    reasoningEffort,
+    startedAt,
+    nextRunAt: Number(opts.nextRunAt || opts.next_run_at || 0) || 0
+  }
+
+  if (opts.background === true) {
+    _recordCodexWakeupHistoryStart(historyPayload)
+    setTimeout(() => {
+      _runWakeupTaskForeground(Object.assign({}, opts, {
+        background: false,
+        runId,
+        triggerType,
+        useAsyncCommand: true,
+        startedAt
+      })).then(result => {
+        _recordCodexWakeupHistoryFinish(historyPayload, result)
+      }).catch(err => {
+        _recordCodexWakeupHistoryFinish(historyPayload, {
+          success: false,
+          success_count: 0,
+          failure_count: accountIds.length,
+          records: [],
+          error: err && err.message ? err.message : String(err)
+        })
+      })
+    }, 0).unref?.()
+    return {
+      success: true,
+      running: true,
+      status: 'running',
+      run_id: runId,
+      records: [],
+      success_count: 0,
+      failure_count: 0
+    }
+  }
+
+  const result = await _runWakeupTaskForeground(Object.assign({}, opts, {
+    runId,
+    triggerType
+  }))
+  _recordCodexWakeupHistoryFinish(historyPayload, result)
+  return result
 }
 
 function _buildCodexKeychainAccount (baseDir) {
@@ -5484,6 +5927,7 @@ function _resolveAdvancedSettings (options) {
   merged.overrideOpenCode = Boolean(merged.overrideOpenCode)
   merged.autoRestartOpenCode = Boolean(merged.autoRestartOpenCode)
   merged.autoStartOpenCodeWhenClosed = Boolean(merged.autoStartOpenCodeWhenClosed)
+  merged.codexCliPath = typeof merged.codexCliPath === 'string' ? merged.codexCliPath.trim() : ''
   merged.codexStartupPath = typeof merged.codexStartupPath === 'string' ? merged.codexStartupPath : ''
   merged.openCodeStartupPath = typeof merged.openCodeStartupPath === 'string' ? merged.openCodeStartupPath : ''
   delete merged.autoStartCodexApp
@@ -5491,6 +5935,11 @@ function _resolveAdvancedSettings (options) {
   delete merged.startupPath
   delete merged.overrideOpenClaw
   return merged
+}
+
+function _resolveCodexCliCommand (fallback) {
+  const settings = _resolveAdvancedSettings()
+  return String(settings.codexCliPath || fallback || 'codex').trim() || 'codex'
 }
 
 function _readAdvancedSettingsFromStorage () {
@@ -6055,6 +6504,7 @@ module.exports = {
   switchAccount,
   activateAccount,
   prepareCliLaunch,
+  prepareWakeupCliLaunch,
   listCliSessions,
   loadCliSessionMessages,
   prepareCliSessionResume,
@@ -6069,6 +6519,9 @@ module.exports = {
   deleteCliSessionTrash,
   cleanCliSessionIndexes,
   runWakeupTask,
+  listWakeupHistory,
+  getWakeupRun,
+  getWakeupOverview,
   listWakeupSchedules,
   getWakeupSchedule,
   saveWakeupSchedule,
@@ -6103,6 +6556,7 @@ module.exports = {
     isCodexWakeupScheduleDue: _isCodexWakeupScheduleDue,
     getCodexWakeupScheduleDueAt: _getCodexWakeupScheduleDueAt,
     computeCodexWakeupNextRunAt: _computeCodexWakeupNextRunAt,
+    buildCodexWakeupInstanceDir: _buildCodexWakeupInstanceDir,
     CODEX_QUOTA_SCHEMA_VERSION
   }
 }

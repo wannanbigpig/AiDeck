@@ -5,7 +5,7 @@
 <h1 align="center">AiDeck</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.3-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-v1.0.4-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Node.js-25.9.0-83CD29?style=flat-square&logo=node.js" />

@@ -326,15 +326,26 @@ test('Codex CLI 会话管理应展示默认 ~/.codex 会话', async () => {
 
     const defaultCodexHome = path.join(root, 'home', '.codex')
     const sessionPath = path.join(defaultCodexHome, 'sessions', '2026', '04', '28', 'rollout-default.jsonl')
+    const detachedSessionPath = path.join(defaultCodexHome, 'sessions', '2026', '04', '28', 'rollout-detached.jsonl')
     fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
     fs.writeFileSync(sessionPath, JSON.stringify({ type: 'metadata', cwd: '/work/default-codex', title: '默认会话' }) + '\n', 'utf8')
-    fs.writeFileSync(path.join(defaultCodexHome, 'session_index.jsonl'), JSON.stringify({
+    fs.writeFileSync(detachedSessionPath, JSON.stringify({ type: 'metadata', cwd: '/work/detached-history', title: '历史会话' }) + '\n', 'utf8')
+    fs.writeFileSync(path.join(defaultCodexHome, 'session_index.jsonl'), [
+      JSON.stringify({
       id: 'default-session',
       title: '默认 Codex 会话',
       cwd: '/work/default-codex',
       rollout_path: sessionPath,
       updated_at_ms: 1777372800000
-    }) + '\n', 'utf8')
+      }),
+      JSON.stringify({
+        id: 'detached-session',
+        title: '未保存项目会话',
+        cwd: '/work/detached-history',
+        rollout_path: detachedSessionPath,
+        updated_at_ms: 1777372810000
+      })
+    ].join('\n') + '\n', 'utf8')
     fs.writeFileSync(path.join(defaultCodexHome, '.codex-global-state.json'), JSON.stringify({
       'project-order': ['/work/default-codex', '/work/empty-project'],
       'electron-saved-workspace-roots': ['/work/default-codex', '/work/empty-project']
@@ -344,14 +355,21 @@ test('Codex CLI 会话管理应展示默认 ~/.codex 会话', async () => {
     assert.equal(result.success, true)
     assert.equal(result.totals.sources, 1)
     assert.equal(result.totals.boundAccounts, 0)
-    assert.equal(result.totals.sessions, 1)
-    assert.equal(result.totals.groups, 2)
+    assert.equal(result.totals.sessions, 2)
+    assert.equal(result.totals.groups, 3)
     assert.equal(result.accounts[0].sourceType, 'default')
     assert.equal(result.groups[0].workspaceName, 'default-codex')
     assert.equal(result.groups[0].count, 1)
     assert.equal(result.groups[1].workspaceName, 'empty-project')
     assert.equal(result.groups[1].count, 0)
     assert.equal(result.groups[1].emptyWorkspace, true)
+    assert.equal(result.groups[2].workspaceName, '历史会话')
+    assert.equal(result.groups[2].workspacePath, '')
+    assert.equal(result.groups[2].count, 1)
+    assert.equal(result.groups[2].sessions[0].workspaceName, 'detached-history')
+    assert.equal(result.groups[2].sessions[0].detachedWorkspace, true)
+    assert.equal(result.groups[2].sessions[0].originalWorkspaceName, 'detached-history')
+    assert.equal(result.groups[2].sessions[0].originalWorkspacePath, '/work/detached-history')
   } finally {
     if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
     else process.env.AIDECK_DATA_DIR = previousDataDir

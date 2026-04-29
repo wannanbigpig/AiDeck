@@ -96,8 +96,8 @@ test('announcementService 应过滤低于当前版本的旧更新公告', () => 
     {
       id: 'current-update',
       type: 'feature',
-      title: 'AiDeck v1.0.3 更新',
-      version: '1.0.3',
+      title: 'AiDeck v1.0.4 更新',
+      version: '1.0.4',
       targetVersions: '*',
       targetLanguages: ['*'],
       createdAt: '2026-04-28T00:00:00Z'
@@ -110,7 +110,7 @@ test('announcementService 应过滤低于当前版本的旧更新公告', () => 
       targetLanguages: ['*'],
       createdAt: '2026-04-28T00:00:00Z'
     }
-  ], { version: '1.0.3', locale: 'zh-CN' })
+  ], { version: '1.0.4', locale: 'zh-CN' })
 
   assert.deepEqual(list.map(item => item.id), ['current-update', 'background-reminder'])
 })
@@ -160,7 +160,7 @@ test('announcementService 应在开发环境默认读取仓库根公告文件', 
     const localFile = service.getLocalAnnouncementFile()
     assert.equal(localFile, path.join(process.cwd(), 'announcements.json'))
     const state = await service.getAnnouncementState({ version: '1.0.1', locale: 'zh-CN' })
-    assert.ok(state.announcements.some(item => item.id === 'ann-2026-04-aideck-1-0-3-update'))
+    assert.ok(state.announcements.some(item => item.id === 'ann-2026-04-aideck-1-0-4-update'))
   })
 })
 

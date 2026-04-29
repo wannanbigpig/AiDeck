@@ -22,7 +22,7 @@ import CodexSessionManager from './codex/CodexSessionManager'
 import CodexTagModals from './codex/CodexTagModals'
 import { useCodexOAuthFlow } from './codex/useCodexOAuthFlow'
 import { logRequestEvent } from '../utils/requestLogClient'
-import { copyText, readSharedSetting, writeSharedSetting } from '../utils/hostBridge.js'
+import { copyText, getCommandStatus, readSharedSetting, writeSharedSetting } from '../utils/hostBridge.js'
 import { usePlatformSnapshot } from '../runtime/usePlatformSnapshot.js'
 import { usePlatformActions } from '../runtime/usePlatformActions.js'
 import { usePlatformAutoRefresh } from '../runtime/usePlatformAutoRefresh.js'
@@ -99,6 +99,45 @@ function writeCodexActiveView (value) {
   const next = normalizeCodexActiveView(value)
   writeSharedSetting(CODEX_ACTIVE_VIEW_KEY, next)
   return next
+}
+
+function waitForNextPaint () {
+  return new Promise(resolve => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0))
+      return
+    }
+    setTimeout(resolve, 0)
+  })
+}
+
+function formatWakeupDateTime (value) {
+  const timestamp = Number(value || 0)
+  if (!timestamp) return '-'
+  try {
+    return new Date(timestamp).toLocaleString()
+  } catch {
+    return '-'
+  }
+}
+
+function formatWakeupDuration (value) {
+  const ms = Number(value || 0)
+  if (!ms) return '-'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function resolveWakeupLatestSummary (item, singleAccount = false) {
+  if (!item) return '暂无结果'
+  if (item.status === 'running') return '唤醒中'
+  const successCount = Number(item.success_count || 0)
+  const failureCount = Number(item.failure_count || 0)
+  if (singleAccount) return successCount > 0 && failureCount === 0 ? '成功' : '失败'
+  if (successCount > 0 && failureCount === 0) return `成功 ${successCount} 个账号`
+  if (successCount > 0) return `成功 ${successCount}，失败 ${failureCount}`
+  if (failureCount > 0) return `失败 ${failureCount} 个账号`
+  return item.status === 'success' ? '成功' : '失败'
 }
 
 function normalizeWakeupModelValue (value) {
@@ -203,7 +242,10 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
   const [wakeupRunning, setWakeupRunning] = useState(false)
   const [wakeupSaving, setWakeupSaving] = useState(false)
   const [wakeupAccount, setWakeupAccount] = useState(null)
+  const [cliLaunchChoiceAccount, setCliLaunchChoiceAccount] = useState(null)
   const [wakeupResult, setWakeupResult] = useState(null)
+  const [wakeupOverview, setWakeupOverview] = useState(null)
+  const [wakeupRunId, setWakeupRunId] = useState('')
   const [wakeupCustomModelMode, setWakeupCustomModelMode] = useState(false)
   const [wakeupForm, setWakeupForm] = useState({
     enabled: false,
@@ -569,19 +611,80 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     }
   }
 
-  async function handleLaunchCli (account) {
-    return await launchPlatformCli({
-      platform: 'codex',
-      command: 'codex',
-      account,
-      toast,
-      notice,
-      onActivity,
-      refresh,
-      activate: (target) => typeof svc.prepareCliLaunch === 'function'
-        ? svc.prepareCliLaunch(target.id)
-        : { success: false, error: '当前环境不支持 Codex CLI 账号绑定实例' }
-    })
+  function resolveCodexCliLaunchPath (settings) {
+    const explicitPath = String(settings?.codexCliPath || '').trim()
+    if (explicitPath) return explicitPath
+    const status = getCommandStatus('codex')
+    if (status && status.available === true) {
+      return String(status.path || 'codex').trim() || 'codex'
+    }
+    return ''
+  }
+
+  function warnMissingCodexCliPath () {
+    toast.warning('未自动检测到 Codex CLI，请在 Codex 设置中指定 Codex 命令位置')
+  }
+
+  async function handleLaunchCli (account, modeOverride = '') {
+    const settings = readCodexAdvancedSettings()
+    setAdvancedSettings(settings)
+    const codexCliPath = resolveCodexCliLaunchPath(settings)
+    if (!codexCliPath) {
+      warnMissingCodexCliPath()
+      return false
+    }
+    const isCurrentAccount = account && account.id && account.id === currentId
+    const requestedMode = modeOverride === 'default' || modeOverride === 'bound' ? modeOverride : 'bound'
+    const launchMode = requestedMode === 'default' && isCurrentAccount ? 'default' : 'bound'
+    try {
+      return await launchPlatformCli({
+        platform: 'codex',
+        command: 'codex',
+        commandPath: codexCliPath,
+        account,
+        toast,
+        notice,
+        onActivity,
+        refresh,
+        activate: launchMode === 'default'
+          ? () => ({ success: true, launchMode: 'default' })
+          : (target) => typeof svc.prepareCliLaunch === 'function'
+            ? svc.prepareCliLaunch(target.id)
+            : { success: false, error: '当前环境不支持 Codex CLI 账号绑定实例' }
+      })
+    } catch (err) {
+      toast.error(err?.message || '启动 Codex CLI 失败')
+      return false
+    }
+  }
+
+  function handleLaunchCliRequest (account) {
+    const settings = readCodexAdvancedSettings()
+    setAdvancedSettings(settings)
+    if (!resolveCodexCliLaunchPath(settings)) {
+      warnMissingCodexCliPath()
+      return false
+    }
+    if (account && account.id && account.id === currentId) {
+      setCliLaunchChoiceAccount(account)
+      return true
+    }
+    return handleLaunchCli(account, 'bound')
+  }
+
+  async function handleChooseCliInstanceMode (mode) {
+    const account = cliLaunchChoiceAccount
+    setCliLaunchChoiceAccount(null)
+    if (!account) return false
+    return await handleLaunchCli(account, mode)
+  }
+
+  function getCliLaunchTip (account) {
+    const isCurrentAccount = account && account.id && account.id === currentId
+    if (isCurrentAccount) {
+      return '选择启动实例并打开 Codex CLI'
+    }
+    return '以账号绑定实例启动 Codex CLI'
   }
 
   function handleDelete (id) {
@@ -619,6 +722,8 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
   async function openWakeupTaskModal (account) {
     if (!account || !account.id) return
     setWakeupResult(null)
+    setWakeupOverview(null)
+    setWakeupRunId('')
     setWakeupAccount(account)
     setWakeupCustomModelMode(false)
     setWakeupForm({
@@ -658,6 +763,16 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
           lastMessage: schedule.last_message || ''
         })
       }
+      if (typeof svc.getWakeupOverview === 'function') {
+        const overviewResult = await Promise.resolve(svc.getWakeupOverview(account.id))
+        if (overviewResult && overviewResult.success !== false) {
+          setWakeupOverview(overviewResult)
+          if (overviewResult.running && overviewResult.latest && overviewResult.latest.run_id) {
+            setWakeupRunId(overviewResult.latest.run_id)
+            setWakeupRunning(true)
+          }
+        }
+      }
     } catch (e) {
       toast.warning('读取唤醒配置失败: ' + (e?.message || String(e)))
     }
@@ -676,13 +791,49 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     setWakeupResult(null)
     const model = normalizeWakeupModelValue(wakeupForm.model)
     const reasoningEffort = normalizeWakeupReasoningForModel(model, wakeupForm.reasoningEffort)
+    const optimisticRunId = `codex-wakeup-ui-${Date.now()}`
+    setWakeupOverview(prev => Object.assign({}, prev || {}, {
+      running: true,
+      latest: {
+        run_id: optimisticRunId,
+        status: 'running',
+        trigger_type: 'manual',
+        trigger_label: '立即唤醒',
+        started_at: Date.now(),
+        success_count: 0,
+        failure_count: 0,
+        records: []
+      }
+    }))
+    await waitForNextPaint()
+    let backgroundStarted = false
     try {
       const result = await Promise.resolve(svc.runWakeupTask({
         accountIds: [wakeupAccount.id],
+        command: readCodexAdvancedSettings().codexCliPath || 'codex',
         prompt: wakeupForm.prompt,
         model,
-        reasoningEffort
+        reasoningEffort,
+        triggerType: 'manual',
+        background: true
       }))
+      if (result?.run_id) {
+        setWakeupRunId(result.run_id)
+        setWakeupOverview(prev => Object.assign({}, prev || {}, {
+          running: true,
+          latest: Object.assign({}, prev?.latest || {}, {
+            run_id: result.run_id,
+            status: 'running',
+            trigger_type: 'manual',
+            trigger_label: '立即唤醒'
+          })
+        }))
+      }
+      if (result?.running) {
+        backgroundStarted = true
+        onActivity?.('Codex 唤醒任务 -> 唤醒中')
+        return
+      }
       setWakeupResult(result)
       refresh()
       const successCount = Number(result?.success_count || 0)
@@ -697,10 +848,60 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
       onActivity?.(`Codex 唤醒任务 -> 成功 ${successCount} / 失败 ${failureCount}`)
     } catch (e) {
       toast.error('唤醒任务失败: ' + (e?.message || String(e)))
-    } finally {
+      setWakeupOverview(prev => Object.assign({}, prev || {}, {
+        running: false,
+        latest: Object.assign({}, prev?.latest || {}, {
+          status: 'error',
+          error: e?.message || String(e),
+          finished_at: Date.now()
+        })
+      }))
       setWakeupRunning(false)
+    } finally {
+      if (!backgroundStarted) setWakeupRunning(false)
     }
   }
+
+  useEffect(() => {
+    if (!showWakeupTask || !wakeupAccount || !wakeupRunId || !svc || typeof svc.getWakeupRun !== 'function') return undefined
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const runResult = await Promise.resolve(svc.getWakeupRun(wakeupRunId))
+        if (cancelled || !runResult || runResult.success === false || !runResult.item) return
+        const item = runResult.item
+        setWakeupOverview(prev => Object.assign({}, prev || {}, {
+          latest: item,
+          running: item.status === 'running'
+        }))
+        if (item.status !== 'running') {
+          setWakeupRunning(false)
+          setWakeupRunId('')
+          setWakeupResult({
+            success: item.status === 'success',
+            run_id: item.run_id,
+            records: item.records || [],
+            success_count: Number(item.success_count || 0),
+            failure_count: Number(item.failure_count || 0),
+            error: item.error || null
+          })
+          if (typeof svc.getWakeupOverview === 'function') {
+            const overviewResult = await Promise.resolve(svc.getWakeupOverview(wakeupAccount.id))
+            if (!cancelled && overviewResult && overviewResult.success !== false) {
+              setWakeupOverview(overviewResult)
+            }
+          }
+          refresh()
+        }
+      } catch {}
+    }
+    poll()
+    const timer = setInterval(poll, 1200)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [showWakeupTask, wakeupAccount, wakeupRunId, svc])
 
   async function handleSaveWakeupSchedule () {
     if (!svc || typeof svc.saveWakeupSchedule !== 'function') {
@@ -747,6 +948,10 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
         reasoningEffort: normalizeWakeupReasoningForModel(schedule.model || model, schedule.reasoning_effort || reasoningEffort),
         lastMessage: schedule.last_message || prev.lastMessage
       }))
+      if (typeof svc.getWakeupOverview === 'function') {
+        const overviewResult = await Promise.resolve(svc.getWakeupOverview(wakeupAccount.id))
+        if (overviewResult && overviewResult.success !== false) setWakeupOverview(overviewResult)
+      }
       toast.success(wakeupForm.enabled ? '定时唤醒已保存' : '唤醒配置已保存')
     } catch (e) {
       toast.error('保存唤醒配置失败: ' + (e?.message || String(e)))
@@ -862,6 +1067,9 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
   const wakeupModelSelectValue = resolveWakeupModelSelectValue(wakeupForm.model, wakeupCustomModelMode, wakeupModelOptions)
   const wakeupReasoningOptions = getWakeupReasoningOptions(wakeupForm.model)
   const wakeupReasoningValue = normalizeWakeupReasoningForModel(wakeupForm.model, wakeupForm.reasoningEffort)
+  const wakeupLatest = wakeupOverview?.latest || null
+  const wakeupSchedule = wakeupOverview?.schedule || null
+  const wakeupNextRunAt = Number(wakeupOverview?.next_run_at || wakeupSchedule?.next_run_at || 0) || 0
   const visibleAccounts = usePlatformSearch(accounts, searchQuery, {
     getSearchText: (acc) => {
       const tagsStr = Array.isArray(acc?.tags) ? acc.tags.join(' ') : ''
@@ -985,7 +1193,8 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
                 onDelete={() => setConfirmDelete(account.id)}
                 onEditTags={() => handleOpenTagEditor(account)}
                 onReauthorize={() => openAddModal('oauth')}
-                onLaunchCli={() => handleLaunchCli(account)}
+                onLaunchCli={() => handleLaunchCliRequest(account)}
+                launchCliTip={getCliLaunchTip(account)}
                 onWakeup={() => openWakeupTaskModal(account)}
                 svc={svc}
               />
@@ -1023,6 +1232,34 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
         onImportLocal={() => handleImportLocal({ closeAfter: true })}
         toast={toast}
       />
+
+      <Modal
+        title='选择 Codex CLI 启动实例'
+        open={!!cliLaunchChoiceAccount}
+        onClose={() => setCliLaunchChoiceAccount(null)}
+        footer={
+          <button className='btn' onClick={() => setCliLaunchChoiceAccount(null)}>取消</button>
+        }
+      >
+        <div className='codex-cli-choice-panel'>
+          <button
+            className='codex-cli-choice-card'
+            onClick={() => handleChooseCliInstanceMode('bound')}
+            type='button'
+          >
+            <strong>账号绑定实例</strong>
+            <span>使用此账号独立 CODEX_HOME，登录态与会话隔离。</span>
+          </button>
+          <button
+            className='codex-cli-choice-card'
+            onClick={() => handleChooseCliInstanceMode('default')}
+            type='button'
+          >
+            <strong>默认 ~/.codex 实例</strong>
+            <span>使用本机默认 Codex 配置，只允许当前账号选择。</span>
+          </button>
+        </div>
+      </Modal>
 
       <CodexTagModals
         tagEditor={tagEditor}
@@ -1067,8 +1304,9 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
             <button className='btn' onClick={handleSaveWakeupSchedule} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
               {wakeupSaving ? '保存中...' : '保存定时'}
             </button>
-            <button className='btn btn-primary' onClick={handleRunWakeupTask} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
-              {wakeupRunning ? '唤醒中...' : '立即唤醒'}
+            <button className={`btn btn-primary codex-wakeup-run-btn ${wakeupRunning ? 'is-running' : ''}`} onClick={handleRunWakeupTask} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
+              {wakeupRunning && <span className='codex-wakeup-run-spinner' aria-hidden='true' />}
+              <span>{wakeupRunning ? '唤醒中...' : '立即唤醒'}</span>
             </button>
           </>
         }
@@ -1248,11 +1486,6 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               disabled={wakeupRunning || wakeupSaving}
             />
           </div>
-          {wakeupForm.lastMessage && !wakeupResult && (
-            <div className='codex-wakeup-last-message'>
-              上次结果：{wakeupForm.lastMessage}
-            </div>
-          )}
           {wakeupResult && (
             <div className='codex-wakeup-result'>
               <div className='codex-wakeup-result-summary'>
@@ -1272,6 +1505,16 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               </div>
             </div>
           )}
+          <div className={`codex-wakeup-overview ${wakeupLatest?.status === 'running' ? 'is-running' : ''}`}>
+            {wakeupLatest?.status === 'running' && <div className='codex-wakeup-progress-bar' />}
+            <div className='codex-wakeup-overview-grid'>
+              <div><strong>最近结果:</strong> {resolveWakeupLatestSummary(wakeupLatest, true)}</div>
+              <div><strong>最近耗时:</strong> {formatWakeupDuration(wakeupLatest?.duration_ms)}</div>
+              <div><strong>上次执行</strong> {formatWakeupDateTime(wakeupLatest?.started_at || wakeupSchedule?.last_run_at)}</div>
+              <div><strong>下次触发</strong> {formatWakeupDateTime(wakeupNextRunAt)}</div>
+              <div><strong>触发方式</strong> {wakeupLatest?.trigger_label || '-'}</div>
+            </div>
+          </div>
         </div>
       </Modal>
 

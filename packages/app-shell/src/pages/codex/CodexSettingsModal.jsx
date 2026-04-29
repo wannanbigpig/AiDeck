@@ -6,12 +6,17 @@ import {
 import RefreshIntervalSlider from '../../components/RefreshIntervalSlider'
 import AutoSwitchThresholdSlider from '../../components/AutoSwitchThresholdSlider'
 import { normalizeCodexAdvancedSettings } from '../../utils/codex'
-import { showOpenDialog, writeSharedSetting } from '../../utils/hostBridge.js'
+import { getCommandStatus, getCommandVersion, showOpenDialog, writeSharedSetting } from '../../utils/hostBridge.js'
 
 export default function CodexSettingsModal ({ open, onClose, toast, settings: outerSettings, onSettingsChange, svc }) {
   const [settings, setSettings] = useState(() => normalizeCodexAdvancedSettings(outerSettings))
+  const [detectedCodexCliPath, setDetectedCodexCliPath] = useState('')
+  const [codexCliAvailable, setCodexCliAvailable] = useState(false)
+  const [codexCliVersion, setCodexCliVersion] = useState('')
   const [resolvedCodexStartupPath, setResolvedCodexStartupPath] = useState('')
   const [resolvedOpenCodeStartupPath, setResolvedOpenCodeStartupPath] = useState('')
+
+  const formatCodexCliVersion = (value) => String(value || '').trim()
 
   useEffect(() => {
     if (!open) return
@@ -20,6 +25,22 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
 
   useEffect(() => {
     if (!open) return
+
+    const cliCommand = String(settings.codexCliPath || 'codex').trim()
+    const status = getCommandStatus(cliCommand)
+    setCodexCliAvailable(status.available === true)
+    setDetectedCodexCliPath(String(status.path || '').trim())
+    if (status.available === true) {
+      const statusVersion = String(status.version || '').trim()
+      if (statusVersion) {
+        setCodexCliVersion(formatCodexCliVersion(statusVersion))
+      } else {
+        const versionResult = getCommandVersion(cliCommand)
+        setCodexCliVersion(formatCodexCliVersion(versionResult.version))
+      }
+    } else {
+      setCodexCliVersion('')
+    }
 
     const explicitCodex = String(settings.codexStartupPath || '').trim()
     const explicitOpenCode = String(settings.openCodeStartupPath || '').trim()
@@ -41,7 +62,7 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
         : ''
       setResolvedOpenCodeStartupPath(fallbackOpenCode)
     }
-  }, [open, settings.codexStartupPath, settings.openCodeStartupPath, svc])
+  }, [open, settings.codexCliPath, settings.codexStartupPath, settings.openCodeStartupPath, svc])
 
   useEffect(() => {
     if (!open) {
@@ -69,6 +90,32 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
     if (!files || !files[0]) return
     handleChange(key, files[0])
     toast.success('已更新启动路径')
+  }
+
+  const handlePickCommandPath = async () => {
+    const files = await showOpenDialog({
+      title: '选择 Codex CLI 命令',
+      properties: ['openFile']
+    })
+    if (!files || !files[0]) return
+    handleChange('codexCliPath', files[0])
+    toast.success('已更新 Codex CLI 命令位置')
+  }
+
+  const handleAutoDetectCommandPath = () => {
+    const status = getCommandStatus('codex')
+    const detected = String(status.path || '').trim()
+    setCodexCliAvailable(status.available === true)
+    setDetectedCodexCliPath(detected)
+    const statusVersion = String(status.version || '').trim()
+    const versionResult = status.available && !statusVersion ? getCommandVersion('codex') : null
+    setCodexCliVersion(formatCodexCliVersion(statusVersion || versionResult?.version))
+    if (!status.available || !detected) {
+      toast.warning('未检测到 Codex CLI，请先安装：npm install -g @openai/codex')
+      return
+    }
+    handleChange('codexCliPath', '')
+    toast.success('已切换为自动检测 Codex CLI')
   }
 
   const handleAutoDetectAppPath = ({ key, detectFn, emptyHint, successHint }) => {
@@ -117,6 +164,14 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
     </div>
   )
 
+  const cliDisplayPath = settings.codexCliPath || detectedCodexCliPath
+  const cliStatusText = codexCliAvailable
+    ? (settings.codexCliPath ? '使用自定义命令位置' : '已自动检测到')
+    : (settings.codexCliPath ? '自定义命令不可用' : '未自动检测到')
+  const cliVersionText = codexCliAvailable
+    ? (codexCliVersion || '版本读取失败')
+    : ''
+
   return (
     <Modal title='Codex 设置' open={open} onClose={onClose} contentClassName='settings-platform-modal'>
       <div className="settings-modal-content">
@@ -142,6 +197,34 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
             </div>
           )}
 
+        </div>
+
+        {/* CLI 设置 */}
+        <div className="settings-section">
+          <div className="settings-section-title">Codex CLI</div>
+          <div style={{ padding: '12px', background: 'var(--bg-surface)', borderRadius: 8, border: '1px solid var(--border-muted)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+              <div>
+                <div className="settings-label">Codex 命令位置</div>
+                <div className="settings-desc">
+                  {cliStatusText}
+                  {cliVersionText ? <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)' }}>{cliVersionText}</span> : null}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className='btn btn-sm' onClick={handleAutoDetectCommandPath} style={{ background: 'transparent' }}>自动</button>
+                <button className='btn btn-sm' onClick={handlePickCommandPath} style={{ background: 'var(--bg-elevated)' }}>选择</button>
+              </div>
+            </div>
+            <input
+              type="text"
+              value={settings.codexCliPath}
+              onChange={e => handleChange('codexCliPath', e.target.value)}
+              placeholder={cliDisplayPath || '未检测到，请安装 npm install -g @openai/codex 或手动输入路径'}
+              className="settings-input"
+              style={{ width: '100%', fontSize: 12, fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
         </div>
 
         {/* IDE 交互设置 */}

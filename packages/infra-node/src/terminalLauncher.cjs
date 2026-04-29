@@ -166,16 +166,50 @@ function collectRuntimeSearchDirs (runtime) {
   return dirs
 }
 
-function buildRuntimePath (runtime) {
-  return collectRuntimeSearchDirs(runtime).join(resolveRuntimePathDelimiter(runtime))
+function buildRuntimePath (runtime, leadingDirs) {
+  const dirs = []
+  if (Array.isArray(leadingDirs)) {
+    for (const dir of leadingDirs) {
+      pushUniqueDir(dirs, dir)
+    }
+  }
+  for (const dir of collectRuntimeSearchDirs(runtime)) {
+    pushUniqueDir(dirs, dir)
+  }
+  return dirs.join(resolveRuntimePathDelimiter(runtime))
 }
 
 function buildRuntimeEnv (env, runtime) {
   const extra = env && typeof env === 'object' ? env : {}
   const baseEnv = resolveRuntimeEnv(runtime)
+  const extraPath = String(extra.PATH || extra.Path || extra.path || '')
+  const leadingDirs = extraPath
+    ? extraPath.split(resolveRuntimePathDelimiter(runtime)).filter(Boolean)
+    : []
   return Object.assign({}, baseEnv, extra, {
-    PATH: buildRuntimePath(runtime)
+    PATH: buildRuntimePath(runtime, leadingDirs)
   })
+}
+
+function buildCliLaunchEnv (executableCommand, env, runtime) {
+  const extra = env && typeof env === 'object' ? env : {}
+  const delimiter = resolveRuntimePathDelimiter(runtime)
+  const isAbsoluteCommand = path.isAbsolute(String(executableCommand || ''))
+  const commandDir = isAbsoluteCommand ? path.dirname(String(executableCommand)) : ''
+  const extraPath = String(extra.PATH || extra.Path || extra.path || '')
+  const leadingDirs = []
+  if (commandDir && extraPath) leadingDirs.push(commandDir)
+  if (extraPath) leadingDirs.push(...extraPath.split(delimiter).filter(Boolean))
+
+  const launchEnv = {}
+  if (!isAbsoluteCommand || extraPath) {
+    launchEnv.PATH = buildRuntimePath(runtime, leadingDirs)
+  }
+  for (const key of Object.keys(extra)) {
+    if (key === 'PATH' || key === 'Path' || key === 'path') continue
+    launchEnv[key] = extra[key]
+  }
+  return launchEnv
 }
 
 function getCommandCandidates (commandName) {
@@ -238,14 +272,64 @@ function getCliInstallCommand (cliName) {
   return ''
 }
 
+function readCommandVersion (commandPath, runtime) {
+  const target = String(commandPath || '').trim()
+  if (!target) return { success: false, version: '', error: 'CLI 命令为空' }
+  const commandDir = path.isAbsolute(target) ? path.dirname(target) : ''
+  try {
+    const result = childProcess.spawnSync(target, ['--version'], {
+      env: buildRuntimeEnv(commandDir ? { PATH: commandDir } : {}, runtime),
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true
+    })
+    if (result.error) {
+      return { success: false, version: '', error: result.error.message || String(result.error) }
+    }
+    const version = String(result.stdout || result.stderr || '').trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean)[0] || ''
+    if (result.status === 0 && version) {
+      return { success: true, version, error: null }
+    }
+    return {
+      success: false,
+      version,
+      error: version || ('读取版本失败: ' + result.status)
+    }
+  } catch (err) {
+    return { success: false, version: '', error: err && err.message ? err.message : String(err) }
+  }
+}
+
 function getCommandStatus (commandName, runtime) {
   const name = String(commandName || '').trim()
+  const commandPath = resolveCommandPath(name, runtime)
+  const available = commandExists(name, runtime)
+  const versionResult = available ? readCommandVersion(commandPath || name, runtime) : null
   return {
     command: name,
-    available: commandExists(name, runtime),
-    path: resolveCommandPath(name, runtime),
-    installCommand: getCliInstallCommand(name)
+    available,
+    path: commandPath,
+    installCommand: getCliInstallCommand(name),
+    version: versionResult && versionResult.success ? versionResult.version : '',
+    versionError: versionResult && !versionResult.success ? versionResult.error : ''
   }
+}
+
+function getCommandVersion (commandName, runtime) {
+  const name = String(commandName || '').trim()
+  if (!name) return { success: false, command: name, version: '', error: 'CLI 命令为空' }
+  const status = getCommandStatus(name, runtime)
+  if (!status.available) {
+    return {
+      success: false,
+      command: name,
+      version: '',
+      error: `未检测到 ${name} CLI`
+    }
+  }
+  const commandPath = String(status.path || name).trim()
+  const versionResult = readCommandVersion(commandPath, runtime)
+  return Object.assign({ command: name, path: commandPath }, versionResult)
 }
 
 function buildMacTerminalCandidates () {
@@ -470,7 +554,8 @@ function launchCliCommand (payload) {
     }
   }
   const executableCommand = resolvedCommandPath || commandName
-  const launchEnv = Object.assign({ PATH: buildRuntimePath() }, payload && payload.env)
+  const payloadEnv = payload && payload.env && typeof payload.env === 'object' ? payload.env : {}
+  const launchEnv = buildCliLaunchEnv(executableCommand, payloadEnv)
 
   const shellCommand = buildShellCommand({
     commandName,
@@ -493,11 +578,13 @@ module.exports = {
   buildRuntimePath,
   buildRuntimeEnv,
   getCommandStatus,
+  getCommandVersion,
   getCliInstallCommand,
   getAvailableTerminals,
   launchCliCommand,
   _internal: {
     buildShellCommand,
+    buildCliLaunchEnv,
     normalizeEnvAssignments
   }
 }

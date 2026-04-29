@@ -7,6 +7,8 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000
 
 export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   autoRefreshMinutes: 10,
+  codexCliPath: '',
+  codexCliInstanceMode: 'bound',
   codexStartupPath: '',
   openCodeStartupPath: '',
   autoRestartCodexApp: false,
@@ -58,6 +60,9 @@ export function normalizeCodexAdvancedSettings (raw) {
   next.autoSwitchWeeklyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.autoSwitchWeeklyThreshold) || 0))
   next.quotaWarningHourlyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningHourlyThreshold) || 0))
   next.quotaWarningWeeklyThreshold = Math.max(0, Math.min(AUTO_SWITCH_THRESHOLD_MAX, Number(merged.quotaWarningWeeklyThreshold) || 0))
+
+  next.codexCliPath = typeof merged.codexCliPath === 'string' ? merged.codexCliPath.trim() : ''
+  next.codexCliInstanceMode = merged.codexCliInstanceMode === 'default' ? 'default' : 'bound'
 
   const codexPathRaw = typeof merged.codexStartupPath === 'string' && merged.codexStartupPath.trim()
     ? merged.codexStartupPath

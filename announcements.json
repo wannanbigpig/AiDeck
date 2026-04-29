@@ -2,15 +2,15 @@
   "version": "1.0",
   "announcements": [
     {
-      "id": "ann-2026-04-aideck-1-0-3-update",
+      "id": "ann-2026-04-aideck-1-0-4-update",
       "type": "feature",
-      "priority": 320,
-      "version": "1.0.3",
+      "priority": 340,
+      "version": "1.0.4",
       "releaseStatus": "reviewing",
-      "marketVersion": "1.0.2",
-      "title": "AiDeck v1.0.3 更新",
-      "summary": "v1.0.3 合并 Codex 会话管理、后台任务提醒、消息中心体验和刷新反馈优化。",
-      "content": "v1.0.3 本次更新：\n1. 新增 Codex 会话管理入口，可按工作区查看默认实例和账号绑定实例中的本地会话。\n2. 支持预览 Codex 会话消息，Markdown 内容、代码块、表格和图片附件可直接查看，内部指令和工具日志默认折叠到调试信息中。\n3. 支持继续会话、归档 / 取消归档、移入回收站、从回收站恢复或彻底删除会话。\n4. 支持将会话复制或移动到指定账号绑定实例，并在复制时生成新的会话 ID，避免多账号实例复用同一会话索引。\n5. 新增会话索引清理能力，可移除缺失会话文件残留的 SQLite / session_index.jsonl 索引记录。\n6. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n7. 消息通知中心操作移到标题栏右侧并统一为紧凑图标按钮，刷新按钮增加至少 1 秒的加载反馈。\n8. 使用说明改为标题旁弹窗入口，侧边栏默认收起，设置页返回会回到进入设置前的平台。",
+      "marketVersion": "1.0.3",
+      "title": "AiDeck v1.0.4 更新",
+      "summary": "v1.0.4 优化 Codex CLI 命令检测、唤醒状态反馈和会话管理体验。",
+      "content": "v1.0.4 本次更新：\n1. Codex 设置新增 CLI 命令位置配置，支持自动检测、手动选择和自定义输入。\n2. 自动检测或手动选择 Codex CLI 后，会显示完整版本输出，便于确认当前使用的 codex-cli 版本。\n3. 修复从 AiDeck 启动 Codex CLI 时，PATH 中旧 Node 可能抢先执行导致 CLI 报错的问题，并精简终端启动命令中的环境变量。\n4. 立即唤醒改为后台异步执行，点击后立即进入“唤醒中”状态，并展示最近结果、耗时、上次执行、下次触发和触发方式。\n5. Codex 唤醒使用独立实例和独立会话来源，避免读取普通账号规则或污染普通会话。\n6. 会话管理对齐 Codex 桌面项目列表口径，历史会话与唤醒会话分组更清晰。\n7. 调整会话管理顶部工具栏控件高度，筛选区、批量操作区和统计区显示更一致。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -23,19 +23,19 @@
       "showOnce": true,
       "popup": true,
       "pinned": true,
-      "createdAt": "2026-04-28T08:00:00Z",
+      "createdAt": "2026-04-30T00:00:00Z",
       "expiresAt": null,
       "locales": {
         "zh-CN": {
-          "title": "AiDeck v1.0.3 更新",
-          "summary": "v1.0.3 合并 Codex 会话管理、后台任务提醒、消息中心体验和刷新反馈优化。",
-          "content": "v1.0.3 本次更新：\n1. 新增 Codex 会话管理入口，可按工作区查看默认实例和账号绑定实例中的本地会话。\n2. 支持预览 Codex 会话消息，Markdown 内容、代码块、表格和图片附件可直接查看，内部指令和工具日志默认折叠到调试信息中。\n3. 支持继续会话、归档 / 取消归档、移入回收站、从回收站恢复或彻底删除会话。\n4. 支持将会话复制或移动到指定账号绑定实例，并在复制时生成新的会话 ID，避免多账号实例复用同一会话索引。\n5. 新增会话索引清理能力，可移除缺失会话文件残留的 SQLite / session_index.jsonl 索引记录。\n6. 新增后台任务运行提醒：定时唤醒、自动刷新等任务依赖 uTools 插件保持后台运行，建议关闭“退出到后台立即结束运行”，并开启“跟随主程序同时启动运行”。\n7. 消息通知中心操作移到标题栏右侧并统一为紧凑图标按钮，刷新按钮增加至少 1 秒的加载反馈。\n8. 使用说明改为标题旁弹窗入口，侧边栏默认收起，设置页返回会回到进入设置前的平台。",
+          "title": "AiDeck v1.0.4 更新",
+          "summary": "v1.0.4 优化 Codex CLI 命令检测、唤醒状态反馈和会话管理体验。",
+          "content": "v1.0.4 本次更新：\n1. Codex 设置新增 CLI 命令位置配置，支持自动检测、手动选择和自定义输入。\n2. 自动检测或手动选择 Codex CLI 后，会显示完整版本输出，便于确认当前使用的 codex-cli 版本。\n3. 修复从 AiDeck 启动 Codex CLI 时，PATH 中旧 Node 可能抢先执行导致 CLI 报错的问题，并精简终端启动命令中的环境变量。\n4. 立即唤醒改为后台异步执行，点击后立即进入“唤醒中”状态，并展示最近结果、耗时、上次执行、下次触发和触发方式。\n5. Codex 唤醒使用独立实例和独立会话来源，避免读取普通账号规则或污染普通会话。\n6. 会话管理对齐 Codex 桌面项目列表口径，历史会话与唤醒会话分组更清晰。\n7. 调整会话管理顶部工具栏控件高度，筛选区、批量操作区和统计区显示更一致。",
           "actionLabel": "查看项目"
         },
         "en-US": {
-          "title": "AiDeck v1.0.3 Update",
-          "summary": "v1.0.3 combines Codex session management, background task reminders, message center polish, and refresh feedback.",
-          "content": "v1.0.3 updates:\n1. Added Codex session management for browsing local sessions from the default instance and account-bound instances by workspace.\n2. Added Codex session previews with Markdown, code blocks, tables, and image attachments; internal instructions and tool logs are folded into debug info by default.\n3. Added resume, archive / unarchive, move to trash, restore from trash, and permanent delete actions for sessions.\n4. Added copy or move to a selected account-bound instance with a new session ID for copied sessions, avoiding shared session indexes across accounts.\n5. Added session index cleanup for missing session files left in SQLite / session_index.jsonl.\n6. Added a background task reminder for scheduled wake-up and automatic refresh tasks that depend on the uTools plugin staying alive.\n7. Moved message center actions to the title bar as compact icon buttons and added a refresh loading state that lasts at least 1 second.\n8. Moved usage guides into title-bar modal buttons, collapsed the sidebar by default, and made Settings return to the previous platform.",
+          "title": "AiDeck v1.0.4 Update",
+          "summary": "v1.0.4 improves Codex CLI command detection, wake-up feedback, and session management.",
+          "content": "v1.0.4 updates:\n1. Added a Codex CLI command location setting with auto-detection, file selection, and custom command input.\n2. Shows the full Codex CLI version output after auto-detection or manual selection.\n3. Fixed Codex CLI launches where an old Node.js earlier in PATH could execute the CLI and fail, and simplified terminal launch environment variables.\n4. Immediate wake-up now runs in the background, enters the running state right away, and shows the latest result, duration, last run, next trigger, and trigger source.\n5. Codex wake-up now uses an isolated instance and session source to avoid reading normal account rules or mixing into regular sessions.\n6. Session management now aligns closer with Codex Desktop project roots, with clearer history and wake-up session grouping.\n7. Aligned the session toolbar control heights so filters, batch actions, and stats look consistent.",
           "actionLabel": "View Project"
         }
       }

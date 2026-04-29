@@ -81,6 +81,95 @@ test('terminalLauncher 应构建包含用户 Node 目录的运行环境', () => 
   }
 })
 
+test('terminalLauncher 应将指定 CLI 目录前置到运行 PATH', () => {
+  const launcher = require(path.join(process.cwd(), 'packages/infra-node/src/terminalLauncher.cjs'))
+  const runtime = {
+    platform: 'darwin',
+    homeDir: '/Users/tester',
+    env: {
+      PATH: '/Users/tester/.nvm/versions/node/v12.22.12/bin:/usr/bin:/bin'
+    }
+  }
+  const env = launcher.buildRuntimeEnv({
+    CODEX_HOME: '/tmp/aideck-codex-home',
+    PATH: '/Users/tester/.nvm/versions/node/v20.19.5/bin'
+  }, runtime)
+  const dirs = env.PATH.split(':')
+
+  assert.equal(env.CODEX_HOME, '/tmp/aideck-codex-home')
+  assert.equal(dirs[0], '/Users/tester/.nvm/versions/node/v20.19.5/bin')
+  assert.equal(dirs.includes('/Users/tester/.nvm/versions/node/v12.22.12/bin'), true)
+  assert.equal(new Set(dirs).size, dirs.length)
+})
+
+test('terminalLauncher 应读取 CLI 版本', () => {
+  const launcher = require(path.join(process.cwd(), 'packages/infra-node/src/terminalLauncher.cjs'))
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'aideck-cli-version-'))
+  try {
+    const fakeCli = path.join(root, 'codex')
+    fs.writeFileSync(fakeCli, '#!/bin/sh\necho "codex-cli 9.9.9"\n')
+    fs.chmodSync(fakeCli, 0o755)
+    const version = launcher.getCommandVersion(fakeCli)
+
+    assert.equal(version.success, true)
+    assert.equal(version.version, 'codex-cli 9.9.9')
+    assert.equal(version.path, fakeCli)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('terminalLauncher 终端启动环境应只注入必要变量', () => {
+  const launcher = require(path.join(process.cwd(), 'packages/infra-node/src/terminalLauncher.cjs'))
+  const runtime = {
+    platform: 'darwin',
+    homeDir: '/Users/tester',
+    env: {
+      PATH: '/usr/bin:/bin',
+      USER: 'tester',
+      SECURITYSESSIONID: '123'
+    }
+  }
+  const env = launcher._internal.buildCliLaunchEnv('/Users/tester/.nvm/versions/node/v20.19.5/bin/codex', {
+    CODEX_HOME: '/tmp/aideck-codex-home'
+  }, runtime)
+  const command = launcher._internal.buildShellCommand({
+    commandName: 'codex',
+    executableCommand: '/Users/tester/.nvm/versions/node/v20.19.5/bin/codex',
+    cwd: '/tmp/aideck workspace',
+    env
+  })
+
+  assert.equal(env.USER, undefined)
+  assert.equal(env.SECURITYSESSIONID, undefined)
+  assert.equal(env.CODEX_HOME, '/tmp/aideck-codex-home')
+  assert.equal(env.PATH, undefined)
+  assert.doesNotMatch(command, / PATH=/)
+  assert.match(command, / CODEX_HOME=/)
+  assert.doesNotMatch(command, /SECURITYSESSIONID/)
+})
+
+test('terminalLauncher 绝对命令路径下显式 PATH 仍应生效', () => {
+  const launcher = require(path.join(process.cwd(), 'packages/infra-node/src/terminalLauncher.cjs'))
+  const runtime = {
+    platform: 'darwin',
+    homeDir: '/Users/tester',
+    env: {
+      PATH: '/usr/bin:/bin'
+    }
+  }
+  const env = launcher._internal.buildCliLaunchEnv('/Users/tester/.npm-global/bin/codex', {
+    CODEX_HOME: '/tmp/aideck-codex-home',
+    PATH: '/Users/tester/.nvm/versions/node/v20.19.5/bin'
+  }, runtime)
+  const dirs = env.PATH.split(':')
+
+  assert.equal(env.CODEX_HOME, '/tmp/aideck-codex-home')
+  assert.equal(dirs[0], '/Users/tester/.npm-global/bin')
+  assert.equal(dirs[1], '/Users/tester/.nvm/versions/node/v20.19.5/bin')
+  assert.equal(dirs.includes('/usr/bin'), true)
+})
+
 test('terminalLauncher 应为 Windows 补齐常见 Node 和包管理器目录', () => {
   const launcher = require(path.join(process.cwd(), 'packages/infra-node/src/terminalLauncher.cjs'))
   const runtime = {
