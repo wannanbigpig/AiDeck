@@ -2,15 +2,15 @@
   "version": "1.0",
   "announcements": [
     {
-      "id": "ann-2026-04-aideck-1-0-4-update",
+      "id": "ann-2026-05-aideck-1-0-5-update",
       "type": "feature",
-      "priority": 340,
-      "version": "1.0.4",
+      "priority": 350,
+      "version": "1.0.5",
       "releaseStatus": "reviewing",
-      "marketVersion": "1.0.3",
-      "title": "AiDeck v1.0.4 更新",
-      "summary": "v1.0.4 优化 Codex CLI 命令检测、唤醒状态反馈和会话管理体验。",
-      "content": "v1.0.4 本次更新：\n1. Codex 设置新增 CLI 命令位置配置，支持自动检测、手动选择和自定义输入。\n2. 自动检测或手动选择 Codex CLI 后，会显示完整版本输出，便于确认当前使用的 codex-cli 版本。\n3. 修复从 AiDeck 启动 Codex CLI 时，PATH 中旧 Node 可能抢先执行导致 CLI 报错的问题，并精简终端启动命令中的环境变量。\n4. 立即唤醒改为后台异步执行，点击后立即进入“唤醒中”状态，并展示最近结果、耗时、上次执行、下次触发和触发方式。\n5. Codex 唤醒使用独立实例和独立会话来源，避免读取普通账号规则或污染普通会话。\n6. 会话管理对齐 Codex 桌面项目列表口径，历史会话与唤醒会话分组更清晰。\n7. 调整会话管理顶部工具栏控件高度，筛选区、批量操作区和统计区显示更一致。",
+      "marketVersion": "1.0.4",
+      "title": "AiDeck v1.0.5 更新",
+      "summary": "新增 Antigravity 唤醒调度和系统级配额预警，并带来一些 CLI 体验优化。",
+      "content": "本次更新：\n1. Antigravity 新增唤醒调度：支持账号卡片立即唤醒、每日/每周/间隔/配额重置/启动后定时、后台执行、运行轮询、历史结果、下次触发、模型和提示词配置，并改用官方 Language Server / Cascade 执行链路。\n2. Codex / Antigravity / Gemini CLI 新增系统级配额预警，可按当前激活账号的剩余配额阈值发送系统通知。\n3. 其他体验优化：Gemini CLI 支持配置命令位置、自动检测和版本展示；Codex 唤醒弹窗支持运行中关闭，并优化默认时间和模型选项。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -23,19 +23,19 @@
       "showOnce": true,
       "popup": true,
       "pinned": true,
-      "createdAt": "2026-04-30T00:00:00Z",
+      "createdAt": "2026-05-08T00:00:00Z",
       "expiresAt": null,
       "locales": {
         "zh-CN": {
-          "title": "AiDeck v1.0.4 更新",
-          "summary": "v1.0.4 优化 Codex CLI 命令检测、唤醒状态反馈和会话管理体验。",
-          "content": "v1.0.4 本次更新：\n1. Codex 设置新增 CLI 命令位置配置，支持自动检测、手动选择和自定义输入。\n2. 自动检测或手动选择 Codex CLI 后，会显示完整版本输出，便于确认当前使用的 codex-cli 版本。\n3. 修复从 AiDeck 启动 Codex CLI 时，PATH 中旧 Node 可能抢先执行导致 CLI 报错的问题，并精简终端启动命令中的环境变量。\n4. 立即唤醒改为后台异步执行，点击后立即进入“唤醒中”状态，并展示最近结果、耗时、上次执行、下次触发和触发方式。\n5. Codex 唤醒使用独立实例和独立会话来源，避免读取普通账号规则或污染普通会话。\n6. 会话管理对齐 Codex 桌面项目列表口径，历史会话与唤醒会话分组更清晰。\n7. 调整会话管理顶部工具栏控件高度，筛选区、批量操作区和统计区显示更一致。",
+          "title": "AiDeck v1.0.5 更新",
+          "summary": "新增 Antigravity 唤醒调度和系统级配额预警，并带来一些 CLI 体验优化。",
+          "content": "本次更新：\n1. Antigravity 新增唤醒调度：支持账号卡片立即唤醒、每日/每周/间隔/配额重置/启动后定时、后台执行、运行轮询、历史结果、下次触发、模型和提示词配置，并改用官方 Language Server / Cascade 执行链路。\n2. Codex / Antigravity / Gemini CLI 新增系统级配额预警，可按当前激活账号的剩余配额阈值发送系统通知。\n3. 其他体验优化：Gemini CLI 支持配置命令位置、自动检测和版本展示；Codex 唤醒弹窗支持运行中关闭，并优化默认时间和模型选项。",
           "actionLabel": "查看项目"
         },
         "en-US": {
-          "title": "AiDeck v1.0.4 Update",
-          "summary": "v1.0.4 improves Codex CLI command detection, wake-up feedback, and session management.",
-          "content": "v1.0.4 updates:\n1. Added a Codex CLI command location setting with auto-detection, file selection, and custom command input.\n2. Shows the full Codex CLI version output after auto-detection or manual selection.\n3. Fixed Codex CLI launches where an old Node.js earlier in PATH could execute the CLI and fail, and simplified terminal launch environment variables.\n4. Immediate wake-up now runs in the background, enters the running state right away, and shows the latest result, duration, last run, next trigger, and trigger source.\n5. Codex wake-up now uses an isolated instance and session source to avoid reading normal account rules or mixing into regular sessions.\n6. Session management now aligns closer with Codex Desktop project roots, with clearer history and wake-up session grouping.\n7. Aligned the session toolbar control heights so filters, batch actions, and stats look consistent.",
+          "title": "AiDeck v1.0.5 Update",
+          "summary": "Adds Antigravity wake-up scheduling and system quota warnings, plus CLI experience improvements.",
+          "content": "Updates:\n1. Added Antigravity wake-up scheduling: account-card launch, daily/weekly/interval/quota-reset/startup schedules, background execution, running-state polling, history, next trigger display, model and prompt settings, and the official Language Server / Cascade execution path.\n2. Added system quota warnings for Codex, Antigravity, and Gemini CLI, with notifications based on the active account's remaining quota thresholds.\n3. Other experience improvements: Gemini CLI now supports command path configuration, auto-detection, and version display; Codex wake-up dialogs can be closed while running, with improved default time and model options.",
           "actionLabel": "View Project"
         }
       }

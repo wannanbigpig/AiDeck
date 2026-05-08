@@ -3,15 +3,65 @@ import Modal from '../../components/Modal'
 import RefreshIntervalSlider from '../../components/RefreshIntervalSlider'
 import AutoSwitchThresholdSlider from '../../components/AutoSwitchThresholdSlider'
 import { normalizeGeminiAdvancedSettings } from '../../utils/gemini'
-import { writeSharedSetting } from '../../utils/hostBridge.js'
+import { getCommandStatus, getCommandVersion, showOpenDialog, writeSharedSetting } from '../../utils/hostBridge.js'
 
 export default function GeminiSettingsModal ({ open, onClose, toast, settings: outerSettings, onSettingsChange }) {
   const [settings, setSettings] = useState(() => normalizeGeminiAdvancedSettings(outerSettings))
+  const [detectedGeminiCliPath, setDetectedGeminiCliPath] = useState('')
+  const [geminiCliAvailable, setGeminiCliAvailable] = useState(false)
+  const [geminiCliVersion, setGeminiCliVersion] = useState('')
+
+  const formatGeminiCliVersion = (value) => String(value || '').trim()
 
   useEffect(() => {
     if (!open) return
     setSettings(normalizeGeminiAdvancedSettings(outerSettings))
   }, [open, outerSettings])
+
+  useEffect(() => {
+    if (!open) return
+    const cliCommand = String(settings.geminiCliPath || 'gemini').trim()
+    const status = getCommandStatus(cliCommand)
+    setGeminiCliAvailable(status.available === true)
+    setDetectedGeminiCliPath(String(status.path || '').trim())
+    if (status.available === true) {
+      const statusVersion = String(status.version || '').trim()
+      if (statusVersion) {
+        setGeminiCliVersion(formatGeminiCliVersion(statusVersion))
+      } else {
+        const versionResult = getCommandVersion(cliCommand)
+        setGeminiCliVersion(formatGeminiCliVersion(versionResult.version))
+      }
+    } else {
+      setGeminiCliVersion('')
+    }
+  }, [open, settings.geminiCliPath])
+
+  const handlePickCommandPath = async () => {
+    const files = await showOpenDialog({
+      title: '选择 Gemini CLI 命令',
+      properties: ['openFile']
+    })
+    if (!files || !files[0]) return
+    handleChange('geminiCliPath', files[0])
+    toast.success('已更新 Gemini CLI 命令位置')
+  }
+
+  const handleAutoDetectCommandPath = () => {
+    const status = getCommandStatus('gemini')
+    const detected = String(status.path || '').trim()
+    setGeminiCliAvailable(status.available === true)
+    setDetectedGeminiCliPath(detected)
+    const statusVersion = String(status.version || '').trim()
+    const versionResult = status.available && !statusVersion ? getCommandVersion('gemini') : null
+    setGeminiCliVersion(formatGeminiCliVersion(statusVersion || versionResult?.version))
+    if (!status.available || !detected) {
+      toast.warning('未检测到 Gemini CLI，请先安装：npm install -g @anthropic-ai/gemini-cli')
+      return
+    }
+    handleChange('geminiCliPath', '')
+    toast.success('已切换为自动检测 Gemini CLI')
+  }
 
   const handleChange = (key, val) => {
     const next = normalizeGeminiAdvancedSettings({ ...settings, [key]: val })
@@ -54,6 +104,36 @@ export default function GeminiSettingsModal ({ open, onClose, toast, settings: o
               />
             </div>
           )}
+        </div>
+
+        {/* CLI 设置 */}
+        <div className="settings-section">
+          <div className="settings-section-title">Gemini CLI</div>
+          <div style={{ padding: '12px', background: 'var(--bg-surface)', borderRadius: 8, border: '1px solid var(--border-muted)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+              <div>
+                <div className="settings-label">Gemini 命令位置</div>
+                <div className="settings-desc">
+                  {geminiCliAvailable
+                    ? (settings.geminiCliPath ? '使用自定义命令位置' : '已自动检测到')
+                    : (settings.geminiCliPath ? '自定义命令不可用' : '未自动检测到')}
+                  {geminiCliAvailable && geminiCliVersion ? <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)' }}>{geminiCliVersion}</span> : null}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className='btn btn-sm' onClick={handleAutoDetectCommandPath} style={{ background: 'transparent' }}>自动</button>
+                <button className='btn btn-sm' onClick={handlePickCommandPath} style={{ background: 'var(--bg-elevated)' }}>选择</button>
+              </div>
+            </div>
+            <input
+              type="text"
+              value={settings.geminiCliPath}
+              onChange={e => handleChange('geminiCliPath', e.target.value)}
+              placeholder={detectedGeminiCliPath || '未检测到，请安装或手动输入路径'}
+              className="settings-input"
+              style={{ width: '100%', fontSize: 12, fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
         </div>
 
         <div className="settings-section" style={{ borderBottom: 'none' }}>

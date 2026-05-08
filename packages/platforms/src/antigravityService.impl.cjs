@@ -15,11 +15,14 @@ const cp = require('child_process')
 const crypto = require('crypto')
 const path = require('path')
 const http = require('http')
+const https = require('https')
+const zlib = require('zlib')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
 const sharedSettingsStore = require('../../infra-node/src/sharedSettingsStore.cjs')
+const { createWakeupInfrastructure, normalizePrompt: _normalizeWakeupPrompt } = require('./utils/wakeupHelper.cjs')
 
 const PLATFORM = 'antigravity'
 const DEFAULT_ADVANCED_SETTINGS = {
@@ -2406,7 +2409,7 @@ async function _refreshQuotaAsync (account, accountId) {
         CLOUD_CODE_BASE_URL + '/' + FETCH_MODELS_PATH,
         {
           Authorization: 'Bearer ' + requestAccessToken,
-          'User-Agent': 'antigravity/1.20.5 windows/amd64',
+          'User-Agent': 'antigravity',
           'Accept-Encoding': 'gzip'
         },
         payload
@@ -3314,7 +3317,7 @@ async function _loadAntigravityCodeAssist (accessToken, preferredProjectId) {
       {
         Authorization: 'Bearer ' + token,
         'Content-Type': 'application/json',
-        'User-Agent': 'antigravity/1.20.5 windows/amd64',
+        'User-Agent': 'antigravity',
         'Accept-Encoding': 'gzip'
       },
       payload
@@ -3660,6 +3663,1120 @@ function _getParentDirs (paths) {
   return parents
 }
 
+// ─── Antigravity 唤醒任务执行 ───
+// 通过 Cloud Code API 发送 AI 请求来真正唤醒账号
+
+const AG_WAKEUP_START_CASCADE_PATH = '/exa.language_server_pb.LanguageServerService/StartCascade'
+const AG_WAKEUP_SEND_MESSAGE_PATH = '/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage'
+const AG_WAKEUP_GET_TRAJECTORY_PATH = '/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory'
+const AG_WAKEUP_DELETE_TRAJECTORY_PATH = '/exa.language_server_pb.LanguageServerService/DeleteCascadeTrajectory'
+const AG_WAKEUP_CLOUD_CODE_DAILY = 'https://daily-cloudcode-pa.googleapis.com'
+const AG_WAKEUP_CLOUD_CODE_PROD = 'https://cloudcode-pa.googleapis.com'
+const AG_WAKEUP_BASE_URLS = [
+  'https://daily-cloudcode-pa.googleapis.com',
+  'https://cloudcode-pa.googleapis.com',
+  'https://daily-cloudcode-pa.sandbox.googleapis.com'
+]
+const AG_WAKEUP_DEFAULT_MODEL = 'gemini-3.1-pro-low'
+const AG_WAKEUP_MAX_ATTEMPTS = 2
+const AG_WAKEUP_BACKOFF_BASE_MS = 500
+const AG_WAKEUP_BACKOFF_MAX_MS = 4000
+const AG_WAKEUP_DEFAULT_TASK_TIMEOUT_MS = 90 * 1000
+const AG_WAKEUP_MIN_TASK_TIMEOUT_MS = 15 * 1000
+const AG_WAKEUP_MAX_TASK_TIMEOUT_MS = 10 * 60 * 1000
+const AG_WAKEUP_LS_START_TIMEOUT_MS = 60 * 1000
+const AG_WAKEUP_LS_POLL_INTERVAL_MS = 250
+const AG_WAKEUP_LS_MAX_POLL_ROUNDS = 240
+const AG_WAKEUP_UPSTREAM_RETRY_DELAY_MS = 1200
+const AG_WAKEUP_LS_APP_DATA_DIR = 'antigravity'
+const AG_WAKEUP_ERROR_JSON_PREFIX = 'AG_WAKEUP_ERROR_JSON:'
+
+function _sleep (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function _getAgWakeupBackoffDelayMs (attempt) {
+  if (attempt < 2) return 0
+  const raw = AG_WAKEUP_BACKOFF_BASE_MS * Math.pow(2, attempt - 2)
+  const jitter = Math.floor(Math.random() * 100)
+  return Math.min(raw + jitter, AG_WAKEUP_BACKOFF_MAX_MS)
+}
+
+function _normalizeAgWakeupTimeoutMs (value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return AG_WAKEUP_DEFAULT_TASK_TIMEOUT_MS
+  return Math.min(AG_WAKEUP_MAX_TASK_TIMEOUT_MS, Math.max(AG_WAKEUP_MIN_TASK_TIMEOUT_MS, Math.floor(n)))
+}
+
+function _assertAgWakeupWithinDeadline (deadline, timeoutMs, stage) {
+  const remaining = Number(deadline || 0) - Date.now()
+  if (remaining > 0) return remaining
+  const seconds = Math.round((Number(timeoutMs || 0) || AG_WAKEUP_DEFAULT_TASK_TIMEOUT_MS) / 1000)
+  throw new Error('Antigravity 唤醒超时（超过 ' + seconds + ' 秒）' + (stage ? ': ' + stage : ''))
+}
+
+function _getAgWakeupRequestTimeoutMs (deadline, timeoutMs, maxMs, stage) {
+  const remaining = _assertAgWakeupWithinDeadline(deadline, timeoutMs, stage)
+  return Math.max(1, Math.min(Math.max(1, Number(maxMs || 30000) || 30000), remaining))
+}
+
+function _normalizeAgPathFromTarget (target) {
+  const raw = String(target || '').trim()
+  if (!raw) return '/'
+  try {
+    if (/^https?:\/\//i.test(raw)) return new URL(raw).pathname
+    return new URL('http://127.0.0.1' + raw).pathname
+  } catch {
+    return raw
+  }
+}
+
+function _agRpcMethodNameFromPath (targetPath) {
+  const last = String(targetPath || '').trim().replace(/\/+$/, '').split('/').pop() || ''
+  return last.split(':')[0]
+}
+
+function _agPathMatchesRpcMethod (targetPath, methodName) {
+  return _agRpcMethodNameFromPath(targetPath) === methodName
+}
+
+function _decodeAgConnectRequestFirstMessage (body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body || [])
+  if (buf.length < 5) throw new Error('Connect 请求体过短')
+  const flags = buf[0]
+  if ((flags & 0x01) !== 0) throw new Error('暂不支持压缩的 Connect 请求')
+  const length = buf.readUInt32BE(1)
+  const start = 5
+  const end = start + length
+  if (end > buf.length) throw new Error('Connect 请求帧长度非法')
+  return buf.slice(start, end)
+}
+
+function _encodeAgConnectEnvelope (flags, payload) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || [])
+  const header = Buffer.alloc(5)
+  header[0] = flags
+  header.writeUInt32BE(body.length, 1)
+  return Buffer.concat([header, body])
+}
+
+function _encodeAgConnectMessageEnvelope (payload) {
+  return _encodeAgConnectEnvelope(0, payload)
+}
+
+function _encodeAgConnectEndOkEnvelope () {
+  return _encodeAgConnectEnvelope(0x02, Buffer.from('{}'))
+}
+
+function _buildAgOfficialLsMetadataBytes () {
+  const locale = String(process.env.LANG || '')
+    .split('.')[0]
+    .replace('_', '-') || 'zh-CN'
+  const parts = [
+    _encodeStringField(1, 'Antigravity'),
+    _encodeStringField(12, 'antigravity'),
+    _encodeStringField(17, _resolveAgOfficialExtensionPath()),
+    _encodeStringField(4, locale),
+    _encodeStringField(24, _generateUuid())
+  ]
+  const version = _readAgOfficialAppVersion()
+  if (version) parts.splice(1, 0, _encodeStringField(7, version))
+  const body = Buffer.concat(parts.filter(item => item && item.length))
+  return body.length > 0 ? body : _encodeVarint(0)
+}
+
+function _buildAgOfficialUssOauthTopicBytes (token) {
+  const oauthInfo = _createOauthInfoBuffer(
+    token.access_token || '',
+    token.refresh_token || '',
+    token.expiry_timestamp || 0,
+    token.token_type || 'Bearer'
+  )
+  const row = _encodeStringField(1, oauthInfo.toString('base64'))
+  const entry = Buffer.concat([
+    _encodeStringField(1, 'oauthTokenInfoSentinelKey'),
+    _encodeLenDelimitedField(2, row)
+  ])
+  return _encodeLenDelimitedField(1, entry)
+}
+
+function _buildAgUnifiedStateSyncInitialState (topicBytes) {
+  return _encodeLenDelimitedField(1, topicBytes || Buffer.alloc(0))
+}
+
+function _parseAgOfficialLsStartedRequest (body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body || [])
+  let offset = 0
+  let httpsPort = 0
+  let httpPort = 0
+  let lspPort = 0
+
+  while (offset < buf.length) {
+    const tagData = _readVarint(buf, offset)
+    if (!tagData) break
+    const tag = tagData.value
+    const wireType = tag & 7
+    const fieldNum = tag >> 3
+    offset = tagData.next
+
+    if ((fieldNum === 1 || fieldNum === 2 || fieldNum === 5) && wireType === 0) {
+      const valueData = _readVarint(buf, offset)
+      if (!valueData) break
+      if (fieldNum === 1) httpsPort = valueData.value
+      if (fieldNum === 2) lspPort = valueData.value
+      if (fieldNum === 5) httpPort = valueData.value
+      offset = valueData.next
+      continue
+    }
+
+    const skipped = _skipField(buf, offset, wireType)
+    if (skipped < 0) break
+    offset = skipped
+  }
+
+  if (!httpsPort) throw new Error('LanguageServerStarted 缺少 https_port')
+  return { httpsPort, httpPort, lspPort }
+}
+
+function _parseAgSubscribeTopicFromConnectBody (body) {
+  const payload = _decodeAgConnectRequestFirstMessage(body)
+  let offset = 0
+  while (offset < payload.length) {
+    const tagData = _readVarint(payload, offset)
+    if (!tagData) break
+    const tag = tagData.value
+    const wireType = tag & 7
+    const fieldNum = tag >> 3
+    offset = tagData.next
+    if (fieldNum === 1 && wireType === 2) {
+      const lengthData = _readVarint(payload, offset)
+      if (!lengthData) break
+      const start = lengthData.next
+      const end = start + lengthData.value
+      if (end > payload.length) throw new Error('SubscribeToUnifiedStateSyncTopic 请求体长度非法')
+      return payload.slice(start, end).toString('utf8')
+    }
+    const skipped = _skipField(payload, offset, wireType)
+    if (skipped < 0) break
+    offset = skipped
+  }
+  throw new Error('SubscribeToUnifiedStateSyncTopic 缺少 topic')
+}
+
+function _sendAgProtoResponse (res, statusCode, body, contentType) {
+  const payload = Buffer.isBuffer(body) ? body : Buffer.from(body || [])
+  res.writeHead(statusCode, {
+    'Content-Type': contentType || 'application/proto',
+    'Content-Length': payload.length
+  })
+  res.end(payload)
+}
+
+function _sendAgTextResponse (res, statusCode, body) {
+  const payload = String(body || '')
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload)
+  })
+  res.end(payload)
+}
+
+function _readAgHttpRequestBody (req) {
+  return new Promise(function (resolve, reject) {
+    const chunks = []
+    let total = 0
+    req.on('data', function (chunk) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      total += buf.length
+      if (total > 512 * 1024) {
+        reject(new Error('请求体过大'))
+        req.destroy()
+        return
+      }
+      chunks.push(buf)
+    })
+    req.on('end', function () { resolve(Buffer.concat(chunks)) })
+    req.on('error', reject)
+  })
+}
+
+function _startAgOfficialLsExtensionServer (token) {
+  return new Promise(function (resolve, reject) {
+    const csrfToken = _generateUuid()
+    const shutdownResponses = new Set()
+    let settled = false
+    let startedResolve
+    let startedReject
+    const startedPromise = new Promise(function (resolve, reject) {
+      startedResolve = resolve
+      startedReject = reject
+    })
+    const ussOauthTopicBytes = _buildAgOfficialUssOauthTopicBytes(token)
+    const emptyTopicBytes = Buffer.alloc(0)
+
+    const server = http.createServer(async function (req, res) {
+      try {
+        const method = String(req.method || '').toUpperCase()
+        const targetPath = _normalizeAgPathFromTarget(req.url)
+        const contentType = String(req.headers['content-type'] || 'application/proto')
+        const requestCsrf = String(req.headers['x-codeium-csrf-token'] || '')
+
+        if (method === 'OPTIONS') {
+          res.writeHead(200)
+          res.end()
+          return
+        }
+        if (method !== 'POST') {
+          _sendAgTextResponse(res, 405, 'Only POST is supported')
+          return
+        }
+        if (requestCsrf !== csrfToken) {
+          _sendAgTextResponse(res, 403, 'Invalid CSRF token')
+          return
+        }
+
+        const body = await _readAgHttpRequestBody(req)
+        if (_agPathMatchesRpcMethod(targetPath, 'LanguageServerStarted')) {
+          try {
+            const started = _parseAgOfficialLsStartedRequest(body)
+            startedResolve(started)
+            _sendAgProtoResponse(res, 200, Buffer.alloc(0), contentType)
+          } catch (err) {
+            _sendAgTextResponse(res, 400, err && err.message ? err.message : String(err))
+          }
+          return
+        }
+
+        if (_agPathMatchesRpcMethod(targetPath, 'SubscribeToUnifiedStateSyncTopic')) {
+          let topic = ''
+          try { topic = _parseAgSubscribeTopicFromConnectBody(body) } catch (err) {
+            _sendAgTextResponse(res, 400, err && err.message ? err.message : String(err))
+            return
+          }
+          const topicBytes = topic === 'uss-oauth' ? ussOauthTopicBytes : emptyTopicBytes
+          const update = _buildAgUnifiedStateSyncInitialState(topicBytes)
+          res.writeHead(200, {
+            'Content-Type': 'application/connect+proto',
+            'Transfer-Encoding': 'chunked',
+            Connection: 'keep-alive'
+          })
+          res.write(_encodeAgConnectMessageEnvelope(update))
+          shutdownResponses.add(res)
+          res.on('close', function () { shutdownResponses.delete(res) })
+          return
+        }
+
+        if (_agPathMatchesRpcMethod(targetPath, 'IsAgentManagerEnabled')) {
+          _sendAgProtoResponse(res, 200, Buffer.concat([_encodeVarint(1 << 3), Buffer.from([1])]), contentType)
+          return
+        }
+        if (_agPathMatchesRpcMethod(targetPath, 'GetChromeDevtoolsMcpUrl')) {
+          _sendAgProtoResponse(res, 200, _encodeStringField(1, ''), contentType)
+          return
+        }
+
+        _sendAgProtoResponse(res, 200, Buffer.alloc(0), contentType)
+      } catch (err) {
+        _sendAgTextResponse(res, 500, err && err.message ? err.message : String(err))
+      }
+    })
+
+    const failTimer = setTimeout(function () {
+      const err = new Error('启动官方 LS 扩展服务超时')
+      if (!settled) {
+        settled = true
+        reject(err)
+      }
+      startedReject(err)
+      try { server.close() } catch {}
+    }, 8000)
+    if (typeof failTimer.unref === 'function') failTimer.unref()
+
+    server.on('error', function (err) {
+      clearTimeout(failTimer)
+      if (!settled) {
+        settled = true
+        reject(err)
+      } else {
+        startedReject(err)
+      }
+    })
+    server.listen(0, '127.0.0.1', function () {
+      clearTimeout(failTimer)
+      const address = server.address()
+      if (!address || typeof address.port !== 'number') {
+        const err = new Error('读取官方 LS 扩展服务端口失败')
+        settled = true
+        reject(err)
+        return
+      }
+      settled = true
+      resolve({
+        port: address.port,
+        csrfToken,
+        startedPromise,
+        shutdown: function () {
+          for (const streamRes of Array.from(shutdownResponses)) {
+            try {
+              streamRes.write(_encodeAgConnectEndOkEnvelope())
+              streamRes.end()
+            } catch {}
+          }
+          shutdownResponses.clear()
+          try { server.close() } catch {}
+        }
+      })
+    })
+  })
+}
+
+function _normalizeAgOfficialRoot (rawPath) {
+  const raw = String(rawPath || '').trim()
+  if (!raw) return ''
+  let resolved = raw
+  try { resolved = require('fs').realpathSync(raw) } catch {}
+  if (process.platform === 'darwin') {
+    const match = String(resolved).match(/^(.+?\.app)(?:\/|$)/)
+    if (match && fileUtils.fileExists(match[1])) return match[1]
+    const rawMatch = raw.match(/^(.+?\.app)(?:\/|$)/)
+    if (rawMatch && fileUtils.fileExists(rawMatch[1])) return rawMatch[1]
+  }
+  try {
+    const stat = require('fs').statSync(resolved)
+    if (stat.isFile()) return path.dirname(resolved)
+    if (stat.isDirectory()) return resolved
+  } catch {}
+  return ''
+}
+
+function _resolveAgOfficialRoot () {
+  const settings = _resolveAdvancedSettings()
+  const configured = _normalizeAgOfficialRoot(settings.startupPath)
+  if (configured) return configured
+  return _normalizeAgOfficialRoot(detectAntigravityAppPath(''))
+}
+
+function _agOfficialExtensionDir (root) {
+  if (process.platform === 'darwin') {
+    return path.join(root, 'Contents', 'Resources', 'app', 'extensions', 'antigravity')
+  }
+  return path.join(root, 'resources', 'app', 'extensions', 'antigravity')
+}
+
+function _resolveAgOfficialExtensionPath () {
+  const root = _resolveAgOfficialRoot()
+  if (!root) {
+    return process.platform === 'darwin'
+      ? '/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity'
+      : ''
+  }
+  const extensionDir = _agOfficialExtensionDir(root)
+  return fileUtils.fileExists(extensionDir) ? extensionDir : root
+}
+
+function _readAgJsonStringField (filePath, key) {
+  try {
+    const parsed = fileUtils.readJsonFile(filePath)
+    const value = parsed && parsed[key]
+    return typeof value === 'string' && value.trim() ? value.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+function _readAgOfficialAppVersion () {
+  const envVersion = String(process.env.AG_WAKEUP_OFFICIAL_APP_VERSION || '').trim()
+  if (envVersion) return envVersion
+  const root = _resolveAgOfficialRoot()
+  if (!root) return ''
+  const candidates = process.platform === 'darwin'
+    ? [
+        path.join(root, 'Contents', 'Resources', 'app', 'product.json'),
+        path.join(root, 'resources', 'app', 'product.json'),
+        path.join(root, 'app', 'product.json')
+      ]
+    : [
+        path.join(root, 'resources', 'app', 'product.json'),
+        path.join(root, 'app', 'product.json')
+      ]
+  for (const candidate of candidates) {
+    const version = _readAgJsonStringField(candidate, 'ideVersion') || _readAgJsonStringField(candidate, 'version')
+    if (version) return version
+  }
+  return ''
+}
+
+function _resolveAgOfficialLsBinaryPath () {
+  const envPath = String(process.env.AG_WAKEUP_OFFICIAL_LS_BINARY_PATH || '').trim()
+  if (envPath) return envPath
+  const root = _resolveAgOfficialRoot()
+  if (!root) throw new Error('未找到 Antigravity 应用，请先在设置中配置启动路径')
+  const binDir = path.join(_agOfficialExtensionDir(root), 'bin')
+  const preferred = process.platform === 'win32'
+    ? ['language_server_windows_x64.exe', 'language_server_windows_arm64.exe', 'language_server_windows.exe']
+    : (process.platform === 'darwin'
+        ? ['language_server_macos_arm', 'language_server_macos_x64', 'language_server_macos', 'language_server_darwin_arm64', 'language_server_darwin_x64', 'language_server_darwin', 'language_server']
+        : ['language_server_linux_x64', 'language_server_linux_arm64', 'language_server_linux', 'language_server'])
+  for (const name of preferred) {
+    const candidate = path.join(binDir, name)
+    if (fileUtils.fileExists(candidate)) return candidate
+  }
+  try {
+    const fs = require('fs')
+    const entries = fs.readdirSync(binDir)
+      .filter(name => name.toLowerCase().startsWith('language_server'))
+      .sort()
+    for (const name of entries) {
+      const candidate = path.join(binDir, name)
+      if (fs.statSync(candidate).isFile()) return candidate
+    }
+  } catch {}
+  throw new Error('未找到 Antigravity Language Server，请确认应用安装完整')
+}
+
+function _agOfficialCloudCodeEndpoint (token) {
+  return token && token.is_gcp_tos === true ? AG_WAKEUP_CLOUD_CODE_PROD : AG_WAKEUP_CLOUD_CODE_DAILY
+}
+
+function _decodeAgHttpResponseBody (buffer, encoding) {
+  const body = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || [])
+  const contentEncoding = String(encoding || '').toLowerCase()
+  if (!body.length) return ''
+  if (contentEncoding.includes('gzip')) return zlib.gunzipSync(body).toString('utf8')
+  if (contentEncoding.includes('br')) return zlib.brotliDecompressSync(body).toString('utf8')
+  if (contentEncoding.includes('deflate')) return zlib.inflateSync(body).toString('utf8')
+  return body.toString('utf8')
+}
+
+async function _startAgOfficialLsProcess (accountId, token, startTimeoutMs) {
+  let extensionServer = null
+  let child = null
+  let timeoutTimer = null
+  const cleanup = function () {
+    if (timeoutTimer) clearTimeout(timeoutTimer)
+    if (extensionServer) extensionServer.shutdown()
+    if (child) {
+      try { child.kill() } catch {}
+    }
+  }
+
+  try {
+    const binaryPath = _resolveAgOfficialLsBinaryPath()
+    extensionServer = await _startAgOfficialLsExtensionServer(token)
+    const lsCsrfToken = _generateUuid()
+    const args = [
+      '--enable_lsp',
+      '--csrf_token', lsCsrfToken,
+      '--extension_server_port', String(extensionServer.port),
+      '--extension_server_csrf_token', extensionServer.csrfToken,
+      '--cloud_code_endpoint', _agOfficialCloudCodeEndpoint(token),
+      '--app_data_dir', String(process.env.AG_WAKEUP_OFFICIAL_LS_APP_DATA_DIR || AG_WAKEUP_LS_APP_DATA_DIR)
+    ]
+    if (String(process.env.AG_WAKEUP_OFFICIAL_LS_VERSION_MODE || '').trim() === 'lt_1_21_6') {
+      args.splice(1, 0, '--random_port')
+    }
+    child = cp.spawn(binaryPath, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true
+    })
+    child.stdout.on('data', function (chunk) {
+      const text = String(chunk || '').trim()
+      if (text) requestLogger.info('antigravity.wakeup', 'Language Server 输出', { accountId, text })
+    })
+    child.stderr.on('data', function (chunk) {
+      const text = String(chunk || '').trim()
+      if (text) requestLogger.warn('antigravity.wakeup', 'Language Server 错误输出', { accountId, text })
+    })
+    const childErrorPromise = new Promise(function (resolve, reject) {
+      child.once('error', reject)
+      child.once('exit', function (code, signal) {
+        reject(new Error('Antigravity Language Server 已退出: code=' + code + ', signal=' + signal))
+      })
+    })
+    child.stdin.end(_buildAgOfficialLsMetadataBytes())
+
+    const timeoutPromise = new Promise(function (resolve, reject) {
+      timeoutTimer = setTimeout(function () {
+        reject(new Error('等待 Antigravity Language Server 启动超时'))
+      }, Math.max(1, Number(startTimeoutMs || AG_WAKEUP_LS_START_TIMEOUT_MS) || AG_WAKEUP_LS_START_TIMEOUT_MS))
+      if (typeof timeoutTimer.unref === 'function') timeoutTimer.unref()
+    })
+    const started = await Promise.race([
+      extensionServer.startedPromise,
+      childErrorPromise,
+      timeoutPromise
+    ])
+    clearTimeout(timeoutTimer)
+    return {
+      child,
+      extensionServer,
+      httpsPort: started.httpsPort,
+      lsCsrfToken,
+      shutdown: cleanup
+    }
+  } catch (err) {
+    cleanup()
+    throw err
+  }
+}
+
+function _postAgJson (url, body, headers, options) {
+  return new Promise(function (resolve, reject) {
+    const parsed = new URL(url)
+    const payload = JSON.stringify(body || {})
+    const isHttps = parsed.protocol === 'https:'
+    const reqOptions = {
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      rejectUnauthorized: !(options && options.allowInvalidCert),
+      headers: Object.assign({
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }, headers || {})
+    }
+    const req = (isHttps ? https : http).request(reqOptions, function (res) {
+      const chunks = []
+      res.on('data', function (chunk) { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)) })
+      res.on('end', function () {
+        let raw = ''
+        try {
+          raw = _decodeAgHttpResponseBody(Buffer.concat(chunks), res.headers && res.headers['content-encoding'])
+        } catch (err) {
+          reject(new Error('响应解压失败: ' + (err && err.message ? err.message : String(err))))
+          return
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error('HTTP ' + res.statusCode + ': ' + raw))
+          return
+        }
+        try {
+          resolve(raw ? JSON.parse(raw) : {})
+        } catch (err) {
+          reject(new Error('响应解析失败: ' + (err && err.message ? err.message : String(err))))
+        }
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(Number((options && options.timeoutMs) || 30000), function () {
+      req.destroy(new Error('请求超时'))
+    })
+    req.write(payload)
+    req.end()
+  })
+}
+
+function _postAgOfficialLsJson (ls, rpcPath, body, timeoutMs) {
+  return _postAgJson('https://127.0.0.1:' + ls.httpsPort + rpcPath, body, {
+    'x-codeium-csrf-token': ls.lsCsrfToken
+  }, { allowInvalidCert: true, timeoutMs: timeoutMs || 30000 })
+}
+
+function _parseAgPlaceholderModelIndex (modelConstant) {
+  const match = String(modelConstant || '').match(/PLACEHOLDER_M(\d+)/)
+  return match ? Number(match[1]) : null
+}
+
+function _parseAgModelEnumName (modelConstant) {
+  const text = String(modelConstant || '').trim()
+  const placeholderIndex = _parseAgPlaceholderModelIndex(text)
+  if (placeholderIndex !== null) return 1000 + placeholderIndex
+  if (text === 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM' || text === 'OPENAI_GPT_OSS_120B_MEDIUM') return 342
+  return null
+}
+
+async function _fetchAgAvailableModelsForWakeup (accessToken, deadline, timeoutMs) {
+  let lastError = ''
+  for (const baseUrl of AG_WAKEUP_BASE_URLS) {
+    for (let attempt = 1; attempt <= AG_WAKEUP_MAX_ATTEMPTS; attempt++) {
+      try {
+        const requestTimeoutMs = deadline
+          ? _getAgWakeupRequestTimeoutMs(deadline, timeoutMs, 15000, '获取模型列表')
+          : 15000
+        return await _postAgJson(baseUrl + '/' + FETCH_MODELS_PATH, {}, {
+          Authorization: 'Bearer ' + accessToken,
+          'User-Agent': 'antigravity',
+          'Accept-Encoding': 'gzip'
+        }, { timeoutMs: requestTimeoutMs })
+      } catch (err) {
+        lastError = err && err.message ? err.message : String(err)
+        if (attempt < AG_WAKEUP_MAX_ATTEMPTS) {
+          const delayMs = _getAgWakeupBackoffDelayMs(attempt + 1)
+          if (delayMs > 0) {
+            const remaining = deadline
+              ? _getAgWakeupRequestTimeoutMs(deadline, timeoutMs, delayMs, '模型列表重试等待')
+              : delayMs
+            await _sleep(Math.min(delayMs, remaining))
+          }
+        }
+      }
+    }
+  }
+  throw new Error(lastError || '获取模型列表失败')
+}
+
+async function _resolveAgRequestedModelForOfficialLs (accountId, accessToken, model, deadline, timeoutMs) {
+  const text = String(model || AG_WAKEUP_DEFAULT_MODEL).trim() || AG_WAKEUP_DEFAULT_MODEL
+  if (/^-?\d+$/.test(text)) return { model: Number(text) }
+  const modelsResponse = await _fetchAgAvailableModelsForWakeup(accessToken, deadline, timeoutMs)
+  const models = (modelsResponse && modelsResponse.payload && modelsResponse.payload.models) || (modelsResponse && modelsResponse.models) || {}
+  const meta = models[text]
+  const modelConstant = meta && String(meta.model || meta.modelConstant || '').trim()
+  if (!modelConstant) {
+    throw new Error('requestedModel 解析失败: account_id=' + accountId + ', model=' + text)
+  }
+  const numeric = /^-?\d+$/.test(modelConstant) ? Number(modelConstant) : _parseAgModelEnumName(modelConstant)
+  if (numeric === null || !Number.isFinite(numeric)) {
+    throw new Error('requestedModel 映射失败: model=' + text + ', model_constant=' + modelConstant)
+  }
+  return { model: numeric }
+}
+
+function _buildAgClientLikeCascadeConfig (requestedModel, maxOutputTokens) {
+  const maxTokens = Math.max(0, Math.floor(Number(maxOutputTokens || 0) || 0)) || 8192
+  return {
+    plannerConfig: {
+      requestedModel,
+      maxOutputTokens: maxTokens
+    },
+    checkpointConfig: {
+      maxOutputTokens: maxTokens
+    }
+  }
+}
+
+function _agStepCaseName (step) {
+  if (!step || typeof step !== 'object') return ''
+  const nested = step.step && step.step.case
+  if (nested) return String(nested)
+  for (const key of ['plannerResponse', 'errorMessage', 'userInput', 'toolCall', 'checkpoint', 'commandStatus', 'notifyUser', 'ephemeralMessage']) {
+    if (Object.prototype.hasOwnProperty.call(step, key)) return key
+  }
+  return ''
+}
+
+function _agStepCaseValue (step, caseName) {
+  if (_agStepCaseName(step) !== caseName) return null
+  return (step.step && step.step.value) || step[caseName] || null
+}
+
+function _extractAgWakeupResponseFromTrajectory (trajectoryResponse, durationMs) {
+  const steps = trajectoryResponse && trajectoryResponse.trajectory && Array.isArray(trajectoryResponse.trajectory.steps)
+    ? trajectoryResponse.trajectory.steps
+    : []
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]
+    if (_agStepCaseName(step) !== 'plannerResponse') continue
+    const value = _agStepCaseValue(step, 'plannerResponse') || {}
+    let rawReply = value.modifiedResponse
+    if (!rawReply && typeof value.response === 'string') rawReply = value.response
+    if (!rawReply && value.response && typeof value.response === 'object') {
+      rawReply = value.response.text ||
+        (Array.isArray(value.response.candidates) &&
+          value.response.candidates[0] &&
+          value.response.candidates[0].content &&
+          Array.isArray(value.response.candidates[0].content.parts) &&
+          value.response.candidates[0].content.parts.find(part => part && part.text)?.text) ||
+        ''
+    }
+    const reply = String(rawReply || '').trim()
+    if (reply) {
+      return { success: true, reply, duration_ms: durationMs }
+    }
+  }
+  return null
+}
+
+function _extractAgWakeupErrorFromTrajectory (trajectoryResponse) {
+  const steps = trajectoryResponse && trajectoryResponse.trajectory && Array.isArray(trajectoryResponse.trajectory.steps)
+    ? trajectoryResponse.trajectory.steps
+    : []
+  const trajectoryId = trajectoryResponse && trajectoryResponse.trajectory && trajectoryResponse.trajectory.trajectoryId
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]
+    if (_agStepCaseName(step) !== 'errorMessage') continue
+    const value = _agStepCaseValue(step, 'errorMessage') || {}
+    const errorObj = value.error && typeof value.error === 'object' ? value.error : value
+    return {
+      message: String(errorObj.userErrorMessage || errorObj.message || errorObj.shortError || errorObj.fullError || value.message || '官方 LS 返回错误'),
+      error_code: Number(errorObj.errorCode || errorObj.code || value.errorCode || value.code || 0) || null,
+      trajectory_id: trajectoryId || '',
+      error_message_json: JSON.stringify(value),
+      step_json: JSON.stringify(step)
+    }
+  }
+  return null
+}
+
+function _encodeAgWakeupErrorPayload (detail) {
+  const code = detail && detail.error_code
+  const kind = code === 429 || code === 8
+    ? 'quota'
+    : ([4, 13, 14, 408, 500, 502, 503, 504].includes(code) ? 'temporary' : (code === 403 ? 'verification_required' : 'generic'))
+  return AG_WAKEUP_ERROR_JSON_PREFIX + JSON.stringify({
+    version: 1,
+    kind,
+    message: detail && detail.message ? detail.message : 'Antigravity 唤醒失败',
+    error_code: code || null,
+    trajectory_id: detail && detail.trajectory_id ? detail.trajectory_id : '',
+    error_message_json: detail && detail.error_message_json ? detail.error_message_json : '',
+    step_json: detail && detail.step_json ? detail.step_json : ''
+  })
+}
+
+function _parseAgWakeupErrorPayload (message) {
+  const raw = String(message || '').trim()
+  if (!raw.startsWith(AG_WAKEUP_ERROR_JSON_PREFIX)) return null
+  const payload = raw.slice(AG_WAKEUP_ERROR_JSON_PREFIX.length).trim()
+  if (!payload) return null
+  try {
+    const parsed = JSON.parse(payload)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function _isAgWakeupRetryablePayload (payload) {
+  if (!payload || typeof payload !== 'object') return false
+  const kind = String(payload.kind || '').trim().toLowerCase()
+  const code = Number(payload.error_code || payload.errorCode || 0) || 0
+  return kind === 'temporary' || [4, 13, 14, 408, 500, 502, 503, 504].includes(code)
+}
+
+function _normalizeAgWakeupErrorForRecord (message) {
+  const payload = _parseAgWakeupErrorPayload(message)
+  if (!payload) return { message: String(message || 'Antigravity 唤醒请求失败'), detail: null }
+  const kind = String(payload.kind || '').trim()
+  const code = Number(payload.error_code || payload.errorCode || 0) || 0
+  const baseMessage = String(payload.message || '').trim() || 'Antigravity 唤醒失败'
+  const suffix = code ? ' (code ' + code + ')' : ''
+  const userMessage = kind === 'temporary'
+    ? '上游服务临时错误，已重试后仍失败：' + baseMessage + suffix
+    : baseMessage + suffix
+  return { message: userMessage, detail: payload }
+}
+
+function _isAgCascadeStatusRunning (status) {
+  const text = String(status || '').trim().toUpperCase()
+  return !!text && text.includes('RUNNING')
+}
+
+async function _triggerAgWakeupViaOfficialLs (accountId, token, model, prompt, maxOutputTokens, timeoutMs) {
+  const resolvedTimeoutMs = _normalizeAgWakeupTimeoutMs(timeoutMs)
+  const deadline = Date.now() + resolvedTimeoutMs
+  let ls = null
+  try {
+    ls = await _startAgOfficialLsProcess(
+      accountId,
+      token,
+      _getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, AG_WAKEUP_LS_START_TIMEOUT_MS, '启动 Language Server')
+    )
+    _assertAgWakeupWithinDeadline(deadline, resolvedTimeoutMs, '启动 Language Server')
+    const startResp = await _postAgOfficialLsJson(
+      ls,
+      AG_WAKEUP_START_CASCADE_PATH,
+      {},
+      _getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, 30000, 'StartCascade')
+    )
+    const cascadeId = String((startResp && startResp.cascadeId) || '').trim()
+    if (!cascadeId) throw new Error('StartCascade 未返回 cascadeId')
+    const started = Date.now()
+    const requestedModel = await _resolveAgRequestedModelForOfficialLs(
+      accountId,
+      token.access_token,
+      model,
+      deadline,
+      resolvedTimeoutMs
+    )
+    await _postAgOfficialLsJson(ls, AG_WAKEUP_SEND_MESSAGE_PATH, {
+      cascadeId,
+      items: [{ text: prompt }],
+      cascadeConfig: _buildAgClientLikeCascadeConfig(requestedModel, maxOutputTokens)
+    }, _getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, 30000, 'SendUserCascadeMessage'))
+
+    let lastStatus = ''
+    let lastRunningError = null
+    for (let i = 0; i < AG_WAKEUP_LS_MAX_POLL_ROUNDS; i++) {
+      _assertAgWakeupWithinDeadline(deadline, resolvedTimeoutMs, '等待唤醒结果')
+      const trajectory = await _postAgOfficialLsJson(
+        ls,
+        AG_WAKEUP_GET_TRAJECTORY_PATH,
+        { cascadeId },
+        _getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, 30000, 'GetCascadeTrajectory')
+      )
+      lastStatus = String((trajectory && trajectory.status) || '')
+      const response = _extractAgWakeupResponseFromTrajectory(trajectory, Date.now() - started)
+      if (response) {
+        try {
+          await _postAgOfficialLsJson(
+            ls,
+            AG_WAKEUP_DELETE_TRAJECTORY_PATH,
+            { cascadeId },
+            _getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, 5000, 'DeleteCascadeTrajectory')
+          )
+        } catch {}
+        return response
+      }
+      const errorDetail = _extractAgWakeupErrorFromTrajectory(trajectory)
+      if (errorDetail) {
+        if (_isAgCascadeStatusRunning(lastStatus)) {
+          lastRunningError = errorDetail
+        } else {
+          throw new Error(_encodeAgWakeupErrorPayload(errorDetail))
+        }
+      }
+      await _sleep(_getAgWakeupRequestTimeoutMs(deadline, resolvedTimeoutMs, AG_WAKEUP_LS_POLL_INTERVAL_MS, '等待下一次轨迹轮询'))
+    }
+    if (lastRunningError) throw new Error(_encodeAgWakeupErrorPayload(lastRunningError))
+    throw new Error(lastStatus ? '网关未在超时时间内返回唤醒结果，最后状态=' + lastStatus : '网关未返回唤醒结果')
+  } finally {
+    if (ls) ls.shutdown()
+  }
+}
+
+/**
+ * 为唤醒准备有效的 access_token 和 project_id
+ */
+async function _prepareAgWakeupCredentials (account, accountId) {
+  // 1. 确保 token 有效
+  const token = (account.token && typeof account.token === 'object') ? account.token : {}
+  const accessToken = String(token.access_token || '').trim()
+  const refreshTokenValue = String(token.refresh_token || '').trim()
+  const nowSec = Math.floor(Date.now() / 1000)
+  const expiryTimestamp = Math.max(0, Number(token.expiry_timestamp || 0) || 0)
+  let currentAccessToken = accessToken
+
+  // Token 过期或即将过期，需要刷新
+  if (!currentAccessToken || (expiryTimestamp > 0 && expiryTimestamp <= nowSec + 600)) {
+    if (!refreshTokenValue) {
+      return { success: false, error: 'Token 已过期且无 refresh_token，无法唤醒' }
+    }
+    const refreshed = await _refreshAntigravityToken(refreshTokenValue, {
+      account: account.email || account.id,
+      source: 'wakeup-prepare'
+    })
+    if (!refreshed.ok || !refreshed.access_token) {
+      return { success: false, error: '刷新 Token 失败: ' + (refreshed.error || '未知错误') }
+    }
+    currentAccessToken = refreshed.access_token
+    // 更新存储中的 token
+    const expiresIn = Number(refreshed.expires_in || 3600) || 3600
+    storage.updateAccount(PLATFORM, accountId, {
+      token: Object.assign({}, token, {
+        access_token: refreshed.access_token,
+        refresh_token: refreshTokenValue,
+        expires_in: expiresIn,
+        expiry_timestamp: nowSec + Math.max(0, expiresIn)
+      }),
+      last_used: Date.now()
+    })
+  }
+
+  // 2. 确保 project_id 可用
+  let projectId = String(token.project_id || '').trim()
+  if (!projectId && currentAccessToken) {
+    const codeAssist = await _loadAntigravityCodeAssist(currentAccessToken, '')
+    projectId = String(codeAssist.project_id || '').trim()
+    if (projectId) {
+      storage.updateAccount(PLATFORM, accountId, {
+        token: Object.assign({}, storage.getAccount(PLATFORM, accountId).token || token, { project_id: projectId })
+      })
+    }
+  }
+
+  if (!projectId) {
+    return { success: false, error: '无法获取 project_id，唤醒请求需要项目 ID' }
+  }
+
+  return {
+    success: true,
+    accessToken: currentAccessToken,
+    projectId,
+    token: Object.assign({}, token, {
+      access_token: currentAccessToken,
+      refresh_token: refreshTokenValue,
+      project_id: projectId
+    })
+  }
+}
+
+async function _runAntigravityWakeupTask (options) {
+  const opts = options && typeof options === 'object' ? options : {}
+  const accountIds = Array.isArray(opts.accountIds)
+    ? opts.accountIds.map(id => String(id || '').trim()).filter(Boolean)
+    : []
+  const prompt = _normalizeWakeupPrompt(opts.prompt)
+  const model = String(opts.model || '').trim()
+  const maxOutputTokens = Math.max(0, Math.floor(Number(opts.maxOutputTokens || opts.max_output_tokens || 0) || 0))
+  const wakeupTimeoutMs = _normalizeAgWakeupTimeoutMs(opts.timeoutMs || opts.timeout_ms)
+  const runId = String(opts.runId || ('antigravity-wakeup-' + Date.now() + '-' + fileUtils.generateId())).trim()
+  const records = []
+
+  if (accountIds.length === 0) {
+    return { success: false, run_id: runId, records, success_count: 0, failure_count: 0, error: '请先选择要唤醒的 Antigravity 账号' }
+  }
+
+  for (const accountId of accountIds) {
+    const account = storage.getAccount(PLATFORM, accountId)
+    if (!account) {
+      records.push({
+        id: 'wakeup-' + fileUtils.generateId(),
+        run_id: runId,
+        timestamp: Date.now(),
+        account_id: accountId,
+        success: false,
+        prompt,
+        error: '账号不存在'
+      })
+      continue
+    }
+
+    const started = Date.now()
+    try {
+      // 准备凭证：刷新 Token + 获取 project_id
+      const credentials = await _prepareAgWakeupCredentials(account, accountId)
+      if (!credentials.success) {
+        records.push({
+          id: 'wakeup-' + fileUtils.generateId(),
+          run_id: runId,
+          timestamp: Date.now(),
+          account_id: accountId,
+          account_email: account.email || accountId,
+          success: false,
+          prompt,
+          error: credentials.error || '凭证准备失败',
+          duration_ms: Date.now() - started
+        })
+        continue
+      }
+
+      let lastError = ''
+      let lastErrorDetail = null
+      let wakeupResult = null
+      const accountDeadline = Date.now() + wakeupTimeoutMs
+
+      for (let attempt = 1; attempt <= AG_WAKEUP_MAX_ATTEMPTS; attempt++) {
+        try {
+          const remainingTimeoutMs = _assertAgWakeupWithinDeadline(accountDeadline, wakeupTimeoutMs, '准备第 ' + attempt + ' 次唤醒')
+          wakeupResult = await _triggerAgWakeupViaOfficialLs(
+            accountId,
+            credentials.token,
+            model,
+            prompt,
+            maxOutputTokens,
+            remainingTimeoutMs
+          )
+          break
+        } catch (err) {
+          lastError = err && err.message ? err.message : String(err)
+          const payload = _parseAgWakeupErrorPayload(lastError)
+          lastErrorDetail = payload || lastErrorDetail
+          if (payload) {
+            if (_isAgWakeupRetryablePayload(payload) && attempt < AG_WAKEUP_MAX_ATTEMPTS) {
+              requestLogger.warn('antigravity.wakeup', '上游临时错误，延迟后重试一次', {
+                account: account.email || account.id,
+                error_code: payload.error_code || payload.errorCode || '',
+                message: payload.message || ''
+              })
+              const retryDelayMs = _getAgWakeupRequestTimeoutMs(
+                accountDeadline,
+                wakeupTimeoutMs,
+                AG_WAKEUP_UPSTREAM_RETRY_DELAY_MS,
+                '上游临时错误重试等待'
+              )
+              await _sleep(Math.min(AG_WAKEUP_UPSTREAM_RETRY_DELAY_MS, retryDelayMs))
+              continue
+            }
+            break
+          }
+          if (attempt < AG_WAKEUP_MAX_ATTEMPTS) {
+            const delayMs = _getAgWakeupBackoffDelayMs(attempt + 1)
+            if (delayMs > 0) {
+              const remainingDelayMs = _getAgWakeupRequestTimeoutMs(accountDeadline, wakeupTimeoutMs, delayMs, '普通错误重试等待')
+              await _sleep(Math.min(delayMs, remainingDelayMs))
+            }
+          }
+        }
+      }
+
+      const durationMs = Date.now() - started
+
+      if (wakeupResult && wakeupResult.success) {
+        records.push({
+          id: 'wakeup-' + fileUtils.generateId(),
+          run_id: runId,
+          timestamp: Date.now(),
+          account_id: accountId,
+          account_email: account.email || accountId,
+          success: true,
+          prompt,
+          reply: wakeupResult.reply || 'Antigravity 唤醒完成，AI 已响应。',
+          prompt_tokens: wakeupResult.prompt_tokens,
+          completion_tokens: wakeupResult.completion_tokens,
+          total_tokens: wakeupResult.total_tokens,
+          trace_id: wakeupResult.traceId,
+          response_id: wakeupResult.responseId,
+          duration_ms: durationMs
+        })
+        // 唤醒成功后刷新配额
+        try { await refreshQuotaOrUsage(accountId) } catch (e) {
+          requestLogger.warn('antigravity.wakeup', '唤醒后刷新配额失败', {
+            account: account.email || account.id,
+            error: e && e.message ? e.message : String(e)
+          })
+        }
+      } else {
+        const normalizedError = _normalizeAgWakeupErrorForRecord(lastError || 'Antigravity 唤醒请求失败')
+        records.push({
+          id: 'wakeup-' + fileUtils.generateId(),
+          run_id: runId,
+          timestamp: Date.now(),
+          account_id: accountId,
+          account_email: account.email || accountId,
+          success: false,
+          prompt,
+          error: normalizedError.message,
+          error_detail: normalizedError.detail || lastErrorDetail,
+          duration_ms: durationMs
+        })
+      }
+    } catch (err) {
+      records.push({
+        id: 'wakeup-' + fileUtils.generateId(),
+        run_id: runId,
+        timestamp: Date.now(),
+        account_id: accountId,
+        account_email: account.email || accountId,
+        success: false,
+        prompt,
+        error: err && err.message ? err.message : String(err)
+      })
+    }
+  }
+
+  const successCount = records.filter(r => r.success).length
+  const failureCount = records.length - successCount
+  return {
+    success: failureCount === 0,
+    run_id: runId,
+    records,
+    success_count: successCount,
+    failure_count: failureCount,
+    error: failureCount > 0 && successCount === 0 ? (records.length === 1 ? '当前账号唤醒失败' : '全部账号唤醒失败') : null
+  }
+}
+
+const antigravityWakeup = createWakeupInfrastructure({
+  platform: 'antigravity',
+  scheduleFile: 'antigravity-wakeup-schedules.json',
+  historyFile: 'antigravity-wakeup-history.json',
+  platformDefaults: { model: '', reasoningEffort: '' },
+  runTask: _runAntigravityWakeupTask
+})
+
 module.exports = {
   list,
   getCurrent,
@@ -3686,7 +4803,7 @@ module.exports = {
   refreshToken,
   refreshQuota,
   refreshQuotaOrUsage,
-  refreshQuotasBatch, // 新增批量刷新
+  refreshQuotasBatch,
   exportAccounts,
   updateTags,
   getConfigDir,
@@ -3696,5 +4813,27 @@ module.exports = {
   getMachineIdPathCandidates,
   getStateDbPathCandidates,
   getLocalStatePaths,
-  getLocalStateWatchTargets
+  getLocalStateWatchTargets,
+  // 唤醒调度
+  runWakeupTask: antigravityWakeup.runWakeupTask,
+  listWakeupHistory: antigravityWakeup.listWakeupHistory,
+  getWakeupRun: antigravityWakeup.getWakeupRun,
+  getWakeupOverview: antigravityWakeup.getWakeupOverview,
+  listWakeupSchedules: antigravityWakeup.listWakeupSchedules,
+  getWakeupSchedule: antigravityWakeup.getWakeupSchedule,
+  saveWakeupSchedule: antigravityWakeup.saveWakeupSchedule,
+  deleteWakeupSchedule: antigravityWakeup.deleteWakeupSchedule,
+  runWakeupSchedule: antigravityWakeup.runWakeupSchedule,
+  runDueWakeupSchedules: antigravityWakeup.runDueWakeupSchedules,
+  _internal: {
+    _buildAgClientLikeCascadeConfig,
+    _decodeAgHttpResponseBody,
+    _extractAgWakeupResponseFromTrajectory,
+    _isAgWakeupRetryablePayload,
+    _normalizeAgWakeupErrorForRecord,
+    _normalizeAgWakeupTimeoutMs,
+    _parseAgWakeupErrorPayload,
+    _parseAgOfficialLsStartedRequest,
+    _parseAgSubscribeTopicFromConnectBody
+  }
 }

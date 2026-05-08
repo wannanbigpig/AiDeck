@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ConfirmModal } from '../components/Modal'
 import ExportJsonModal from '../components/ExportJsonModal'
 import { useToast } from '../components/Toast'
@@ -23,7 +23,7 @@ import GeminiAddAccountModal from './gemini/GeminiAddAccountModal'
 import GeminiTagModals from './gemini/GeminiTagModals'
 import GeminiAccountItem from './gemini/GeminiAccountItem'
 import { useGeminiOAuthFlow } from './gemini/useGeminiOAuthFlow'
-import { copyText } from '../utils/hostBridge.js'
+import { copyText, getCommandStatus } from '../utils/hostBridge.js'
 import { usePlatformSnapshot } from '../runtime/usePlatformSnapshot.js'
 import { usePlatformActions } from '../runtime/usePlatformActions.js'
 import { usePlatformAutoRefresh } from '../runtime/usePlatformAutoRefresh.js'
@@ -348,9 +348,23 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
   }
 
   async function handleLaunchCli (account) {
+    const launchSettings = readGeminiAdvancedSettings()
+    const explicitCliPath = String(launchSettings?.geminiCliPath || '').trim()
+    const resolveGeminiCliPath = () => {
+      if (explicitCliPath) return explicitCliPath
+      const status = getCommandStatus('gemini')
+      if (status && status.available === true) return String(status.path || 'gemini').trim() || 'gemini'
+      return ''
+    }
+    const commandPath = resolveGeminiCliPath()
+    if (!commandPath) {
+      toast.warning('未自动检测到 Gemini CLI，请在 Gemini 设置中指定命令位置')
+      return false
+    }
     return await launchPlatformCli({
       platform: 'gemini',
       command: 'gemini',
+      commandPath,
       account,
       toast,
       notice,

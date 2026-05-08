@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ConfirmModal } from '../components/Modal'
+import Modal, { ConfirmModal } from '../components/Modal'
 import ExportJsonModal from '../components/ExportJsonModal'
 import { useToast } from '../components/Toast'
 import { PlatformIcon } from '../components/Icons/PlatformIcons'
@@ -20,6 +20,115 @@ import {
   PlusIcon,
   SettingsIcon
 } from '../components/Icons/ActionIcons'
+
+const WAKEUP_SCHEDULE_OPTIONS = [
+  { value: 'daily', label: '每日' },
+  { value: 'weekly', label: '每周' },
+  { value: 'interval', label: '间隔' },
+  { value: 'quota_reset', label: '配额重置' },
+  { value: 'startup', label: '启动后' }
+]
+const WAKEUP_WEEKDAY_OPTIONS = [
+  { value: 1, label: '一' },
+  { value: 2, label: '二' },
+  { value: 3, label: '三' },
+  { value: 4, label: '四' },
+  { value: 5, label: '五' },
+  { value: 6, label: '六' },
+  { value: 0, label: '日' }
+]
+const WAKEUP_QUOTA_RESET_WINDOW_OPTIONS = [
+  { value: 'either', label: '任意窗口' },
+  { value: 'primary_window', label: '5 小时窗口' },
+  { value: 'secondary_window', label: '每周窗口' }
+]
+
+const AG_WAKEUP_CUSTOM_MODEL_VALUE = '__custom__'
+const AG_WAKEUP_DEFAULT_MODEL = 'gemini-3.1-pro-low'
+const AG_WAKEUP_MODEL_OPTIONS = [
+  { value: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' },
+  { value: 'gemini-3.1-pro-low', label: 'Gemini 3.1 Pro (Low)' },
+  { value: 'gemini-3-flash', label: 'Gemini 3 Flash' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)' },
+  { value: 'claude-opus-4-6-thinking', label: 'Claude Opus 4.6 (Thinking)' },
+  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+  { value: AG_WAKEUP_CUSTOM_MODEL_VALUE, label: '自定义模型' }
+]
+
+function isWakeupPresetModel (value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  return AG_WAKEUP_MODEL_OPTIONS.some(o => o.value === text && o.value !== AG_WAKEUP_CUSTOM_MODEL_VALUE)
+}
+
+function resolveWakeupModelSelectValue (value, customMode = false) {
+  const text = String(value || '').trim()
+  if (customMode) return AG_WAKEUP_CUSTOM_MODEL_VALUE
+  if (!text) return AG_WAKEUP_DEFAULT_MODEL
+  return isWakeupPresetModel(text) ? text : AG_WAKEUP_CUSTOM_MODEL_VALUE
+}
+
+function normalizeWakeupScheduleKind (value) {
+  const text = String(value || '').trim()
+  return WAKEUP_SCHEDULE_OPTIONS.some(o => o.value === text) ? text : 'daily'
+}
+
+function normalizeWakeupWeeklyDays (value) {
+  const raw = Array.isArray(value) ? value : []
+  const days = Array.from(new Set(raw.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6)))
+  return days.length > 0 ? days : [1]
+}
+
+function waitForNextPaint () {
+  return new Promise(resolve => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0))
+      return
+    }
+    setTimeout(resolve, 0)
+  })
+}
+
+function formatWakeupDateTime (value) {
+  const ts = Number(value || 0)
+  if (!ts) return '-'
+  try { return new Date(ts).toLocaleString() } catch { return '-' }
+}
+
+function formatWakeupDuration (value) {
+  const ms = Number(value || 0)
+  if (!ms) return '-'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatWakeupErrorMessage (value) {
+  const raw = String(value || '').trim()
+  if (!raw.startsWith('AG_WAKEUP_ERROR_JSON:')) return raw || '唤醒失败'
+  try {
+    const payload = JSON.parse(raw.slice('AG_WAKEUP_ERROR_JSON:'.length))
+    const code = Number(payload?.error_code || payload?.errorCode || 0) || 0
+    const message = String(payload?.message || '').trim() || 'Antigravity 唤醒失败'
+    if (String(payload?.kind || '').toLowerCase() === 'temporary') {
+      return `上游服务临时错误，已重试后仍失败：${message}${code ? ` (code ${code})` : ''}`
+    }
+    return `${message}${code ? ` (code ${code})` : ''}`
+  } catch {
+    return raw
+  }
+}
+
+function resolveWakeupLatestSummary (item, singleAccount) {
+  if (!item) return '暂无结果'
+  if (item.status === 'running') return '唤醒中'
+  const sc = Number(item.success_count || 0)
+  const fc = Number(item.failure_count || 0)
+  if (singleAccount) return sc > 0 && fc === 0 ? '成功' : '失败'
+  if (sc > 0 && fc === 0) return `成功 ${sc} 个账号`
+  if (sc > 0) return `成功 ${sc}，失败 ${fc}`
+  if (fc > 0) return `失败 ${fc} 个账号`
+  return item.status === 'success' ? '成功' : '失败'
+}
 import { ANTIGRAVITY_MODEL_GROUPS, getAntigravityQuotaDisplayItems } from '../utils/antigravity'
 import { resolveQuotaErrorMeta } from '../utils/codex'
 import { logRequestEvent } from '../utils/requestLogClient'
@@ -80,6 +189,27 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
   const [detailAccount, setDetailAccount] = useState(null)
   const [tagEditor, setTagEditor] = useState({ id: '', value: '' })
   const [localImportHint, setLocalImportHint] = useState({ visible: false, email: '' })
+  const [showWakeupTask, setShowWakeupTask] = useState(false)
+  const [wakeupRunning, setWakeupRunning] = useState(false)
+  const [wakeupSaving, setWakeupSaving] = useState(false)
+  const [wakeupAccount, setWakeupAccount] = useState(null)
+  const [wakeupResult, setWakeupResult] = useState(null)
+  const [wakeupOverview, setWakeupOverview] = useState(null)
+  const [wakeupRunId, setWakeupRunId] = useState('')
+  const [wakeupCustomModelMode, setWakeupCustomModelMode] = useState(false)
+  const [wakeupForm, setWakeupForm] = useState({
+    enabled: false,
+    scheduleKind: 'daily',
+    dailyTime: '09:00',
+    weeklyDays: [1],
+    weeklyTime: '09:00',
+    intervalHours: '4',
+    quotaResetWindow: 'either',
+    startupDelayMinutes: '0',
+    model: AG_WAKEUP_DEFAULT_MODEL,
+    prompt: 'hi',
+    lastMessage: ''
+  })
   const toast = useToast()
   const platformSnapshot = usePlatformSnapshot('antigravity', {
     watchLocalState: true,
@@ -328,7 +458,208 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
     refresh()
   }
 
-  async function handleActivate(id) {
+  // ─── 唤醒调度 ───
+  
+  function toggleWakeupWeeklyDay (day) {
+    setWakeupForm(prev => {
+      const current = normalizeWakeupWeeklyDays(prev.weeklyDays)
+      const next = current.includes(day) ? current.filter(item => item !== day) : current.concat(day)
+      return { ...prev, weeklyDays: normalizeWakeupWeeklyDays(next) }
+    })
+  }
+  
+  async function openWakeupTaskModal (account) {
+    if (!account || !account.id) return
+    setWakeupResult(null)
+    setWakeupOverview(null)
+    setWakeupRunId('')
+    setWakeupAccount(account)
+    setWakeupForm({
+      enabled: false,
+      scheduleKind: 'daily',
+      dailyTime: '09:00',
+      weeklyDays: [1],
+      weeklyTime: '09:00',
+      intervalHours: '4',
+      quotaResetWindow: 'either',
+      startupDelayMinutes: '0',
+      model: AG_WAKEUP_DEFAULT_MODEL,
+      prompt: 'hi',
+      lastMessage: ''
+    })
+    setWakeupCustomModelMode(false)
+    setShowWakeupTask(true)
+    if (!svc || typeof svc.getWakeupSchedule !== 'function') return
+    try {
+      const result = await Promise.resolve(svc.getWakeupSchedule(account.id))
+      const schedule = result && result.schedule ? result.schedule : null
+      if (schedule) {
+        const scheduleModel = String(schedule.model || '').trim() || AG_WAKEUP_DEFAULT_MODEL
+        setWakeupForm({
+          enabled: schedule.enabled === true,
+          scheduleKind: normalizeWakeupScheduleKind(schedule.schedule_kind),
+          dailyTime: schedule.daily_time || '09:00',
+          weeklyDays: normalizeWakeupWeeklyDays(schedule.weekly_days),
+          weeklyTime: schedule.weekly_time || schedule.daily_time || '09:00',
+          intervalHours: String(schedule.interval_hours || 4),
+          quotaResetWindow: schedule.quota_reset_window || 'either',
+          startupDelayMinutes: String(schedule.startup_delay_minutes || 0),
+          model: scheduleModel,
+          prompt: schedule.prompt || 'hi',
+          lastMessage: schedule.last_message || ''
+        })
+        setWakeupCustomModelMode(!!scheduleModel && !isWakeupPresetModel(scheduleModel))
+      }
+      if (typeof svc.getWakeupOverview === 'function') {
+        const overviewResult = await Promise.resolve(svc.getWakeupOverview(account.id))
+        if (overviewResult && overviewResult.success !== false) {
+          setWakeupOverview(overviewResult)
+          if (overviewResult.running && overviewResult.latest && overviewResult.latest.run_id) {
+            setWakeupRunId(overviewResult.latest.run_id)
+            setWakeupRunning(true)
+          }
+        }
+      }
+    } catch (e) {
+      toast.warning('读取唤醒配置失败: ' + (e?.message || String(e)))
+    }
+  }
+  
+  async function handleRunWakeupTask () {
+    if (!svc || typeof svc.runWakeupTask !== 'function') {
+      toast.error('当前环境不支持 Antigravity 唤醒任务')
+      return
+    }
+    if (!wakeupAccount || !wakeupAccount.id) {
+      toast.warning('请先选择要唤醒的 Antigravity 账号')
+      return
+    }
+    setWakeupRunning(true)
+    setWakeupResult(null)
+    const optimisticRunId = `ag-wakeup-ui-${Date.now()}`
+    setWakeupOverview(prev => Object.assign({}, prev || {}, {
+      running: true,
+      latest: { run_id: optimisticRunId, status: 'running', trigger_type: 'manual', trigger_label: '立即唤醒', started_at: Date.now(), success_count: 0, failure_count: 0, records: [] }
+    }))
+    await waitForNextPaint()
+    let backgroundStarted = false
+    try {
+      const result = await Promise.resolve(svc.runWakeupTask({
+        accountIds: [wakeupAccount.id],
+        prompt: wakeupForm.prompt,
+        model: wakeupForm.model,
+        triggerType: 'manual',
+        background: true
+      }))
+      if (result?.run_id) {
+        setWakeupRunId(result.run_id)
+        setWakeupOverview(prev => Object.assign({}, prev || {}, {
+          running: true,
+          latest: Object.assign({}, prev?.latest || {}, { run_id: result.run_id, status: 'running', trigger_type: 'manual', trigger_label: '立即唤醒' })
+        }))
+      }
+      if (result?.running) {
+        backgroundStarted = true
+        onActivity?.('Antigravity 唤醒任务 -> 唤醒中')
+        return
+      }
+      setWakeupResult(result)
+      refresh()
+      const sc = Number(result?.success_count || 0)
+      const fc = Number(result?.failure_count || 0)
+      if (sc > 0 && fc === 0) toast.success(`唤醒完成：成功 ${sc} 个账号`)
+      else if (sc > 0) toast.warning(`唤醒完成：成功 ${sc}，失败 ${fc}`)
+      else toast.error(result?.error || '唤醒任务失败')
+      onActivity?.(`Antigravity 唤醒任务 -> 成功 ${sc} / 失败 ${fc}`)
+    } catch (e) {
+      toast.error('唤醒任务失败: ' + (e?.message || String(e)))
+      setWakeupOverview(prev => Object.assign({}, prev || {}, { running: false, latest: Object.assign({}, prev?.latest || {}, { status: 'error', error: e?.message || String(e), finished_at: Date.now() }) }))
+      setWakeupRunning(false)
+    } finally {
+      if (!backgroundStarted) setWakeupRunning(false)
+    }
+  }
+  
+  useEffect(() => {
+    if (!showWakeupTask || !wakeupAccount || !wakeupRunId || !svc || typeof svc.getWakeupRun !== 'function') return undefined
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const runResult = await Promise.resolve(svc.getWakeupRun(wakeupRunId))
+        if (cancelled || !runResult || runResult.success === false || !runResult.item) return
+        const item = runResult.item
+        setWakeupOverview(prev => Object.assign({}, prev || {}, { latest: item, running: item.status === 'running' }))
+        if (item.status !== 'running') {
+          setWakeupRunning(false)
+          setWakeupRunId('')
+          setWakeupResult({ success: item.status === 'success', run_id: item.run_id, records: item.records || [], success_count: Number(item.success_count || 0), failure_count: Number(item.failure_count || 0), error: item.error || null })
+          if (typeof svc.getWakeupOverview === 'function') {
+            const overviewResult = await Promise.resolve(svc.getWakeupOverview(wakeupAccount.id))
+            if (!cancelled && overviewResult && overviewResult.success !== false) setWakeupOverview(overviewResult)
+          }
+          refresh()
+        }
+      } catch {}
+    }
+    poll()
+    const timer = setInterval(poll, 1200)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [showWakeupTask, wakeupAccount, wakeupRunId, svc])
+  
+  async function handleSaveWakeupSchedule () {
+    if (!svc || typeof svc.saveWakeupSchedule !== 'function') {
+      toast.error('当前环境不支持 Antigravity 定时唤醒')
+      return
+    }
+    if (!wakeupAccount || !wakeupAccount.id) {
+      toast.warning('请先选择要配置的 Antigravity 账号')
+      return
+    }
+    setWakeupSaving(true)
+    try {
+      const result = await Promise.resolve(svc.saveWakeupSchedule(wakeupAccount.id, {
+        enabled: wakeupForm.enabled,
+        schedule_kind: wakeupForm.scheduleKind,
+        daily_time: wakeupForm.dailyTime,
+        weekly_days: wakeupForm.weeklyDays,
+        weekly_time: wakeupForm.weeklyTime,
+        interval_hours: wakeupForm.intervalHours,
+        quota_reset_window: wakeupForm.quotaResetWindow,
+        startup_delay_minutes: wakeupForm.startupDelayMinutes,
+        model: wakeupForm.model,
+        prompt: wakeupForm.prompt
+      }))
+      if (!result || result.success === false) {
+        toast.error((result && result.error) || '保存唤醒配置失败')
+        return
+      }
+      const schedule = result.schedule || {}
+      setWakeupForm(prev => ({
+        ...prev,
+        enabled: schedule.enabled === true,
+        scheduleKind: normalizeWakeupScheduleKind(schedule.schedule_kind || prev.scheduleKind),
+        dailyTime: schedule.daily_time || prev.dailyTime,
+        weeklyDays: normalizeWakeupWeeklyDays(schedule.weekly_days || prev.weeklyDays),
+        weeklyTime: schedule.weekly_time || prev.weeklyTime,
+        intervalHours: String(schedule.interval_hours || prev.intervalHours),
+        quotaResetWindow: schedule.quota_reset_window || prev.quotaResetWindow,
+        startupDelayMinutes: String(schedule.startup_delay_minutes || prev.startupDelayMinutes),
+        model: String(schedule.model || prev.model || ''),
+        lastMessage: schedule.last_message || prev.lastMessage
+      }))
+      if (typeof svc.getWakeupOverview === 'function') {
+        const overviewResult = await Promise.resolve(svc.getWakeupOverview(wakeupAccount.id))
+        if (overviewResult && overviewResult.success !== false) setWakeupOverview(overviewResult)
+      }
+      toast.success(wakeupForm.enabled ? '定时唤醒已保存' : '唤醒配置已保存')
+    } catch (e) {
+      toast.error('保存唤醒配置失败: ' + (e?.message || String(e)))
+    } finally {
+      setWakeupSaving(false)
+    }
+  }
+  
+  async function handleActivate (id) {
     const result = await Promise.resolve(svc.activateAccount(id, {
       switchDeviceIdentity: coerceBooleanSetting(advancedSettings.switchDeviceIdentity, true)
     }))
@@ -722,6 +1053,7 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
                 onDelete={() => setConfirmDelete(account.id)}
                 onShowDetails={() => setDetailAccount(account)}
                 onEditTags={() => handleOpenTagEditor(account)}
+                onWakeup={() => openWakeupTaskModal(account)}
               />
             ))}
           </div>
@@ -817,6 +1149,176 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
         onCopy={copyExportJson}
         onDownload={downloadExportJson}
       />
+
+      <Modal
+        title='Antigravity 唤醒任务'
+        open={showWakeupTask}
+        onClose={() => { setShowWakeupTask(false) }}
+        contentClassName='codex-wakeup-modal'
+        footer={
+          <>
+            <button className='btn' onClick={() => setShowWakeupTask(false)} disabled={wakeupSaving}>关闭</button>
+            <button className='btn' onClick={handleSaveWakeupSchedule} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
+              {wakeupSaving ? '保存中...' : '保存定时'}
+            </button>
+            <button className={`btn btn-primary codex-wakeup-run-btn ${wakeupRunning ? 'is-running' : ''}`} onClick={handleRunWakeupTask} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
+              {wakeupRunning && <span className='codex-wakeup-run-spinner' aria-hidden='true' />}
+              <span>{wakeupRunning ? '唤醒中...' : '立即唤醒'}</span>
+            </button>
+          </>
+        }
+      >
+        <div className='codex-wakeup-form'>
+          <div className='codex-wakeup-target'>
+            <div>
+              <div className='codex-wakeup-target-label'>目标账号</div>
+              <div className='codex-wakeup-target-title'>{wakeupAccount?.email || wakeupAccount?.id || '-'}</div>
+            </div>
+            <div className='codex-wakeup-status-toggle'>
+              <button type='button' className={`codex-wakeup-segment-btn ${wakeupForm.enabled ? 'active' : ''}`} onClick={() => setWakeupForm(prev => ({ ...prev, enabled: true }))} disabled={wakeupRunning || wakeupSaving}>启用</button>
+              <button type='button' className={`codex-wakeup-segment-btn ${!wakeupForm.enabled ? 'active' : ''}`} onClick={() => setWakeupForm(prev => ({ ...prev, enabled: false }))} disabled={wakeupRunning || wakeupSaving}>停用</button>
+            </div>
+          </div>
+          <div className='form-group'>
+            <label className='form-label'>调度模式</label>
+            <div className='codex-wakeup-segmented'>
+              {WAKEUP_SCHEDULE_OPTIONS.map(option => (
+                <button type='button' key={option.value} className={`codex-wakeup-segment-btn ${wakeupForm.scheduleKind === option.value ? 'active' : ''}`} onClick={() => setWakeupForm(prev => ({ ...prev, scheduleKind: option.value }))} disabled={wakeupRunning || wakeupSaving}>{option.label}</button>
+              ))}
+            </div>
+          </div>
+          {wakeupForm.scheduleKind === 'daily' && (
+            <div className='form-group'>
+              <label className='form-label'>每日唤醒时间</label>
+              <input
+                type='time'
+                className='form-input'
+                style={{ width: 160 }}
+                value={wakeupForm.dailyTime || '09:00'}
+                onChange={(e) => setWakeupForm(prev => ({ ...prev, dailyTime: e.target.value || '09:00' }))}
+                disabled={wakeupRunning || wakeupSaving}
+              />
+            </div>
+          )}
+          {wakeupForm.scheduleKind === 'weekly' && (
+            <div className='codex-wakeup-grid'>
+              <div className='form-group'>
+                <label className='form-label'>每周日期</label>
+                <div className='codex-wakeup-weekdays'>
+                  {WAKEUP_WEEKDAY_OPTIONS.map(option => (
+                    <button type='button' key={option.value} className={`codex-wakeup-day-btn ${wakeupForm.weeklyDays.includes(option.value) ? 'active' : ''}`} onClick={() => toggleWakeupWeeklyDay(option.value)} disabled={wakeupRunning || wakeupSaving}>{option.label}</button>
+                  ))}
+                </div>
+              </div>
+              <div className='form-group'>
+                <label className='form-label'>每周唤醒时间</label>
+                <input
+                  type='time'
+                  className='form-input'
+                  style={{ width: 160 }}
+                  value={wakeupForm.weeklyTime || '09:00'}
+                  onChange={(e) => setWakeupForm(prev => ({ ...prev, weeklyTime: e.target.value || '09:00' }))}
+                  disabled={wakeupRunning || wakeupSaving}
+                />
+              </div>
+            </div>
+          )}
+          {wakeupForm.scheduleKind === 'interval' && (
+            <div className='form-group'>
+              <label className='form-label'>间隔小时</label>
+              <input type='number' min='1' max='24' className='form-input' value={wakeupForm.intervalHours} onChange={(e) => setWakeupForm(prev => ({ ...prev, intervalHours: e.target.value.replace(/[^\d]/g, '') }))} disabled={wakeupRunning || wakeupSaving} />
+            </div>
+          )}
+          {wakeupForm.scheduleKind === 'quota_reset' && (
+            <div className='form-group'>
+              <label className='form-label'>配额重置窗口</label>
+              <select className='form-input' value={wakeupForm.quotaResetWindow} onChange={(e) => setWakeupForm(prev => ({ ...prev, quotaResetWindow: e.target.value }))} disabled={wakeupRunning || wakeupSaving}>
+                {WAKEUP_QUOTA_RESET_WINDOW_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <div className='form-hint'>依赖账号配额中的重置时间；没有重置时间时不会自动触发。</div>
+            </div>
+          )}
+          {wakeupForm.scheduleKind === 'startup' && (
+            <div className='form-group'>
+              <label className='form-label'>启动后延迟分钟</label>
+              <input type='number' min='0' max='1440' className='form-input' value={wakeupForm.startupDelayMinutes} onChange={(e) => setWakeupForm(prev => ({ ...prev, startupDelayMinutes: e.target.value.replace(/[^\d]/g, '') }))} disabled={wakeupRunning || wakeupSaving} />
+              <div className='form-hint'>设置为 0 表示插件启动后立即触发；停用后不会执行。</div>
+            </div>
+          )}
+          <div className='form-group'>
+            <label className='form-label'>模型</label>
+            <select
+              className='form-input'
+              value={resolveWakeupModelSelectValue(wakeupForm.model, wakeupCustomModelMode)}
+              onChange={(e) => {
+                const value = e.target.value
+                if (value === AG_WAKEUP_CUSTOM_MODEL_VALUE) {
+                  setWakeupCustomModelMode(true)
+                  setWakeupForm(prev => ({ ...prev, model: isWakeupPresetModel(prev.model) ? '' : String(prev.model || '').trim() }))
+                  return
+                }
+                setWakeupCustomModelMode(false)
+                setWakeupForm(prev => ({ ...prev, model: value }))
+              }}
+              disabled={wakeupRunning || wakeupSaving}
+            >
+              {AG_WAKEUP_MODEL_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            {wakeupCustomModelMode && (
+              <input
+                className='form-input codex-wakeup-custom-model-input'
+                value={wakeupForm.model}
+                onChange={(e) => setWakeupForm(prev => ({ ...prev, model: String(e.target.value || '').trim() }))}
+                placeholder='例如 gemini-3.1-pro-low'
+                disabled={wakeupRunning || wakeupSaving}
+              />
+            )}
+          </div>
+          <div className='form-group'>
+            <label className='form-label'>提示词</label>
+            <textarea
+              className='form-textarea codex-wakeup-prompt'
+              value={wakeupForm.prompt}
+              onChange={(e) => setWakeupForm(prev => ({ ...prev, prompt: e.target.value }))}
+              placeholder='hi'
+              disabled={wakeupRunning || wakeupSaving}
+            />
+          </div>
+          {wakeupResult && (
+            <div className='codex-wakeup-result'>
+              <div className='codex-wakeup-result-summary'>
+                <span>成功 {Number(wakeupResult.success_count || 0)}</span>
+                <span>失败 {Number(wakeupResult.failure_count || 0)}</span>
+              </div>
+              <div className='codex-wakeup-result-list'>
+                {(wakeupResult.records || []).map(record => (
+                  <div key={record.id || record.account_id} className={`codex-wakeup-result-row ${record.success ? 'is-success' : 'is-error'}`}>
+                    <div>
+                      <div className='codex-wakeup-result-title'>{record.account_email || record.account_id}</div>
+                      <div className='codex-wakeup-result-message'>{record.success ? (record.reply || '唤醒完成') : formatWakeupErrorMessage(record.error)}</div>
+                    </div>
+                    <span className='codex-wakeup-result-badge'>{record.success ? '成功' : '失败'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className={`codex-wakeup-overview ${wakeupOverview?.latest?.status === 'running' ? 'is-running' : ''}`}>
+            {wakeupOverview?.latest?.status === 'running' && <div className='codex-wakeup-progress-bar' />}
+            <div className='codex-wakeup-overview-grid'>
+              <div><strong>最近结果:</strong> {resolveWakeupLatestSummary(wakeupOverview?.latest, true)}</div>
+              <div><strong>最近耗时:</strong> {formatWakeupDuration(wakeupOverview?.latest?.duration_ms)}</div>
+              <div><strong>上次执行</strong> {formatWakeupDateTime(wakeupOverview?.latest?.started_at || wakeupOverview?.schedule?.last_run_at)}</div>
+              <div><strong>下次触发</strong> {formatWakeupDateTime(wakeupOverview?.next_run_at || wakeupOverview?.schedule?.next_run_at)}</div>
+              <div><strong>触发方式</strong> {wakeupOverview?.latest?.trigger_label || '-'}</div>
+            </div>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

@@ -44,7 +44,6 @@ const CODEX_JSON_IMPORT_REQUIRED_TEXT = '必填字段：tokens.access_token 或 
 const CODEX_QUOTA_SCHEMA_VERSION = 2
 const CODEX_WAKEUP_CUSTOM_MODEL_VALUE = '__custom__'
 const CODEX_WAKEUP_MODEL_OPTIONS = [
-  { value: '', label: 'CLI 默认' },
   { value: 'gpt-5.5', label: 'GPT-5.5' },
   { value: 'gpt-5.4', label: 'GPT-5.4' },
   { value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
@@ -1295,12 +1294,12 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
         title='Codex 唤醒任务'
         open={showWakeupTask}
         onClose={() => {
-          if (!wakeupRunning) setShowWakeupTask(false)
+          setShowWakeupTask(false)
         }}
         contentClassName='codex-wakeup-modal'
         footer={
           <>
-            <button className='btn' onClick={() => setShowWakeupTask(false)} disabled={wakeupRunning || wakeupSaving}>关闭</button>
+            <button className='btn' onClick={() => setShowWakeupTask(false)} disabled={wakeupSaving}>关闭</button>
             <button className='btn' onClick={handleSaveWakeupSchedule} disabled={wakeupRunning || wakeupSaving || !wakeupAccount}>
               {wakeupSaving ? '保存中...' : '保存定时'}
             </button>
@@ -1358,8 +1357,9 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               <input
                 type='time'
                 className='form-input'
-                value={wakeupForm.dailyTime}
-                onChange={(event) => setWakeupForm(prev => ({ ...prev, dailyTime: event.target.value }))}
+                style={{ width: 160 }}
+                value={wakeupForm.dailyTime || '09:00'}
+                onChange={(event) => setWakeupForm(prev => ({ ...prev, dailyTime: event.target.value || '09:00' }))}
                 disabled={wakeupRunning || wakeupSaving}
               />
             </div>
@@ -1387,8 +1387,9 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
                 <input
                   type='time'
                   className='form-input'
-                  value={wakeupForm.weeklyTime}
-                  onChange={(event) => setWakeupForm(prev => ({ ...prev, weeklyTime: event.target.value }))}
+                  style={{ width: 160 }}
+                  value={wakeupForm.weeklyTime || '09:00'}
+                  onChange={(event) => setWakeupForm(prev => ({ ...prev, weeklyTime: event.target.value || '09:00' }))}
                   disabled={wakeupRunning || wakeupSaving}
                 />
               </div>

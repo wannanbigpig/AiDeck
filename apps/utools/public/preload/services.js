@@ -319,7 +319,16 @@ const services = {
     refreshQuota: function (id) { return antigravityService.refreshQuota(id) },
     exportAccounts: function (ids) { return antigravityService.exportAccounts(ids) },
     updateTags: function (id, tags) { return antigravityService.updateTags(id, tags) },
-    getConfigDir: function () { return antigravityService.getConfigDir() }
+    getConfigDir: function () { return antigravityService.getConfigDir() },
+    // 唤醒调度
+    runWakeupTask: function (options) { return antigravityService.runWakeupTask(options) },
+    listWakeupHistory: function (options) { return antigravityService.listWakeupHistory(options || {}) },
+    getWakeupRun: function (runId) { return antigravityService.getWakeupRun(runId) },
+    getWakeupOverview: function (id) { return antigravityService.getWakeupOverview(id) },
+    listWakeupSchedules: function () { return antigravityService.listWakeupSchedules() },
+    getWakeupSchedule: function (id) { return antigravityService.getWakeupSchedule(id) },
+    saveWakeupSchedule: function (id, patch) { return antigravityService.saveWakeupSchedule(id, patch) },
+    deleteWakeupSchedule: function (id) { return antigravityService.deleteWakeupSchedule(id) }
   },
   codex: {
     list: function () { return codexService.list() },

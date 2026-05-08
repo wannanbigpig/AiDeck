@@ -216,6 +216,7 @@ export function readGeminiAdvancedSettings () {
 export function normalizeGeminiAdvancedSettings (s) {
   const d = {
     autoRefreshMinutes: 0,
+    geminiCliPath: '',
     oauthClientId: '',
     oauthClientSecret: '',
     quotaWarningEnabled: false,
@@ -225,6 +226,7 @@ export function normalizeGeminiAdvancedSettings (s) {
   if (!s || typeof s !== 'object') return d
   return {
     autoRefreshMinutes: normalizeRefreshIntervalMinutes(s.autoRefreshMinutes, d.autoRefreshMinutes),
+    geminiCliPath: typeof s.geminiCliPath === 'string' ? s.geminiCliPath.trim() : d.geminiCliPath,
     oauthClientId: typeof s.oauthClientId === 'string' ? s.oauthClientId.trim() : d.oauthClientId,
     oauthClientSecret: typeof s.oauthClientSecret === 'string' ? s.oauthClientSecret.trim() : d.oauthClientSecret,
     quotaWarningEnabled: s.quotaWarningEnabled === true,

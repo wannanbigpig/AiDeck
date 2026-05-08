@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getPlatformService, readHostSetting, showNotification, writeHostSetting } from '../utils/hostBridge.js'
 import { getAntigravityQuotaDisplayItems, readAntigravityAdvancedSettings } from '../utils/antigravity.js'
 import { getGeminiQuotaDisplayGroups, readGeminiAdvancedSettings } from '../utils/gemini.js'
@@ -17,6 +17,11 @@ const FEATURE_CODES = {
   codex: 'AiDeck-codex',
   gemini: 'AiDeck-gemini'
 }
+const WATCHED_SETTING_KEYS = new Set([
+  'antigravity_advanced_settings',
+  'codex_advanced_settings',
+  'gemini_advanced_settings'
+])
 
 function clampThreshold (value) {
   return Math.max(0, Math.min(30, Number(value) || 0))
@@ -47,6 +52,11 @@ export function normalizeQuotaWarningState (raw) {
     codex: normalizePlatformMetricState(source.codex),
     gemini: normalizePlatformMetricState(source.gemini)
   }
+}
+
+function hasActivePlatformWarningState (state) {
+  const source = state && typeof state === 'object' ? state : {}
+  return Object.values(source).some(item => item && typeof item === 'object' && item.active === true)
 }
 
 function getAccountDisplayName (account) {
@@ -210,6 +220,20 @@ function resolveCurrentAccount (platform, platformState) {
 export function useQuotaWarningNotifications (platformData) {
   const initializedRef = useRef(false)
   const lastSerializedRef = useRef('')
+  const [settingsRevision, setSettingsRevision] = useState(0)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+    const handleSettingChanged = (event) => {
+      const key = String(event?.detail?.key || '').trim()
+      if (!WATCHED_SETTING_KEYS.has(key)) return
+      setSettingsRevision(value => value + 1)
+    }
+    window.addEventListener('aideck:shared-setting-changed', handleSettingChanged)
+    return () => {
+      window.removeEventListener('aideck:shared-setting-changed', handleSettingChanged)
+    }
+  }, [])
 
   useEffect(() => {
     const previousState = normalizeQuotaWarningState(readHostSetting(QUOTA_WARNING_STATE_KEY, null))
@@ -225,7 +249,7 @@ export function useQuotaWarningNotifications (platformData) {
         account,
         settings,
         previousState: previousState[platform],
-        skipNotify: !initializedRef.current
+        skipNotify: !initializedRef.current && hasActivePlatformWarningState(previousState[platform])
       })
       nextState[platform] = result.nextState
       if (result.notification) {
@@ -253,6 +277,7 @@ export function useQuotaWarningNotifications (platformData) {
     platformData?.codex?.accounts,
     platformData?.codex?.currentId,
     platformData?.gemini?.accounts,
-    platformData?.gemini?.currentId
+    platformData?.gemini?.currentId,
+    settingsRevision
   ])
 }

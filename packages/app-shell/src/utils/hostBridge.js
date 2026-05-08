@@ -290,10 +290,21 @@ export function readSharedSetting (key, fallback = null) {
 
 export function writeSharedSetting (key, value) {
   const bridge = getHostBridge()
+  let result = value
   if (bridge && bridge.settings && typeof bridge.settings.setShared === 'function') {
-    return bridge.settings.setShared(key, value)
+    result = bridge.settings.setShared(key, value)
   }
-  return value
+  const win = getWindowObject()
+  if (win && typeof win.dispatchEvent === 'function') {
+    try {
+      const EventCtor = typeof win.CustomEvent === 'function' ? win.CustomEvent : null
+      if (!EventCtor) return result
+      win.dispatchEvent(new EventCtor('aideck:shared-setting-changed', {
+        detail: { key, value: result }
+      }))
+    } catch (e) {}
+  }
+  return result
 }
 
 export function readHostSetting (key, fallback = null) {

@@ -12,7 +12,8 @@ import {
   RefreshIcon,
   TrashIcon,
   CopyIcon,
-  CheckIcon
+  CheckIcon,
+  BellIcon
 } from '../../components/Icons/ActionIcons'
 import {
   getAntigravityQuotaDisplayItems,
@@ -37,12 +38,14 @@ export default function AntigravityAccountItem ({
   onRefresh,
   onDelete,
   onShowDetails,
-  onEditTags
+  onEditTags,
+  onWakeup
 }) {
   const { isPrivacyMode } = usePrivacy()
   const [switching, setSwitching] = useState(false)
   const { flipped, openCard, closeCard, stopFlip } = useFlippableAccountCard()
   const [idCopied, setIdCopied] = useState(false)
+  const [openingWakeup, setOpeningWakeup] = useState(false)
 
   const tierBadge = getAntigravityTierBadge(account.quota)
   const quotaItems = (() => {
@@ -120,6 +123,14 @@ export default function AntigravityAccountItem ({
     }
   }
 
+  const handleWakeupWrap = async (e) => {
+    stopFlip(e)
+    if (openingWakeup) return
+    setOpeningWakeup(true)
+    try { await onWakeup?.() } catch {}
+    setOpeningWakeup(false)
+  }
+
   const handleDeleteWrap = (e) => {
     stopFlip(e)
     onDelete()
@@ -183,6 +194,11 @@ export default function AntigravityAccountItem ({
             <button className={`action-icon-btn ${isRefreshBusy ? 'is-loading' : ''}`} disabled={isRefreshBusy} onClick={handleRefreshWrapWithEvent}>
               <span className='action-icon-tip'>刷新配额</span>
               {isRefreshBusy ? <SpinnerBtnIcon /> : <RefreshIcon size={16} />}
+            </button>
+
+            <button className={`action-icon-btn ${openingWakeup ? 'is-loading' : ''}`} onClick={handleWakeupWrap}>
+              <span className='action-icon-tip'>配置或立即唤醒此账号</span>
+              {openingWakeup ? <SpinnerBtnIcon /> : <BellIcon size={16} />}
             </button>
 
             {!isCurrent && (

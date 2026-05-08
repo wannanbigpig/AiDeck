@@ -26,13 +26,13 @@ const RESTORABLE_PLATFORMS = new Set(['dashboard', 'antigravity', 'codex', 'gemi
 const DEFAULT_SEARCH_PLACEHOLDER = '搜索账号或配置...'
 const CODEX_SESSION_SEARCH_PLACEHOLDER = '搜索会话或工作区...'
 
-function normalizeRestorablePlatform (value, fallback = 'dashboard') {
+function normalizeRestorablePlatform (value, fallback = 'codex') {
   const platform = String(value || '').trim()
   return RESTORABLE_PLATFORMS.has(platform) ? platform : fallback
 }
 
 function readLastActivePlatform () {
-  return normalizeRestorablePlatform(readSharedSetting(LAST_ACTIVE_PLATFORM_KEY, 'dashboard'))
+  return normalizeRestorablePlatform(readSharedSetting(LAST_ACTIVE_PLATFORM_KEY, 'codex'))
 }
 
 function writeLastActivePlatform (platform) {

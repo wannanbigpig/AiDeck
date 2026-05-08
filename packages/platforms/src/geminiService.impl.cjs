@@ -16,6 +16,7 @@ const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
 const requestLogger = require('../../infra-node/src/requestLogStore.cjs')
 const sharedSettingsStore = require('../../infra-node/src/sharedSettingsStore.cjs')
+const terminalLauncher = require('../../infra-node/src/terminalLauncher.cjs')
 
 const PLATFORM = 'gemini'
 
@@ -2256,5 +2257,5 @@ module.exports = {
   getConfigDirCandidates,
   getLocalStateFilePaths,
   getLocalStateWatchTargets,
-  refreshQuotasBatch // 新增批量刷新
+  refreshQuotasBatch
 }
