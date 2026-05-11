@@ -109,6 +109,141 @@ test('Codex CLI 绑定实例应复用 CODEX_HOME、隔离会话且不切换当�
   }
 })
 
+test('Codex CLI 会话管理应支持导出 zip 并导入到目标实例', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-session-archive-'))
+  const previousDataDir = process.env.AIDECK_DATA_DIR
+  process.env.AIDECK_DATA_DIR = root
+
+  try {
+    const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
+    const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+    storage.initStorage()
+
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600
+    const sourceAccount = storage.addAccount('codex', {
+      id: 'codex-archive-source',
+      email: 'archive-source@example.com',
+      tokens: {
+        access_token: fakeJwt({ exp: expiresAt, 'https://api.openai.com/auth': { chatgpt_account_id: 'acc-archive-source' } }),
+        id_token: fakeJwt({ exp: expiresAt, email: 'archive-source@example.com' }),
+        refresh_token: 'rt-archive-source'
+      }
+    })
+    const targetAccount = storage.addAccount('codex', {
+      id: 'codex-archive-target',
+      email: 'archive-target@example.com',
+      tokens: {
+        access_token: fakeJwt({ exp: expiresAt, 'https://api.openai.com/auth': { chatgpt_account_id: 'acc-archive-target' } }),
+        id_token: fakeJwt({ exp: expiresAt, email: 'archive-target@example.com' }),
+        refresh_token: 'rt-archive-target'
+      }
+    })
+    const sourcePrepared = await codex.prepareCliLaunch(sourceAccount.id)
+    const targetPrepared = await codex.prepareCliLaunch(targetAccount.id)
+    assert.equal(sourcePrepared.success, true)
+    assert.equal(targetPrepared.success, true)
+
+    const sessionId = '019dd3d1-4db0-7817-b7c9-0d75c9f4b101'
+    const sessionPath = path.join(sourcePrepared.env.CODEX_HOME, 'sessions', '2026', '05', '11', `rollout-${sessionId}.jsonl`)
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    fs.writeFileSync(sessionPath, [
+      JSON.stringify({ timestamp: '2026-05-11T12:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd: '/work/archive' } }),
+      JSON.stringify({ timestamp: '2026-05-11T12:01:00.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '导入导出测试' }] } })
+    ].join('\n') + '\n', 'utf8')
+    fs.writeFileSync(path.join(sourcePrepared.env.CODEX_HOME, 'session_index.jsonl'), JSON.stringify({
+      id: sessionId,
+      title: '导出源会话',
+      cwd: '/work/archive',
+      rollout_path: sessionPath,
+      updated_at_ms: 1778500860000,
+      created_at_ms: 1778500800000
+    }) + '\n', 'utf8')
+
+    const exported = codex.exportCliSessionsArchive({
+      items: [{ sessionId, sourcePath: sessionPath }],
+      includeDefaultHome: false
+    })
+    assert.equal(exported.success, true)
+    assert.equal(exported.exported, 1)
+    assert.match(exported.fileName, /\.zip$/)
+    assert.ok(exported.archiveBase64.length > 0)
+
+    const taskStarted = codex.startExportCliSessionsArchiveTask({
+      items: [{ sessionId, sourcePath: sessionPath }],
+      includeDefaultHome: false
+    })
+    assert.equal(taskStarted.success, true)
+    let task = taskStarted.task
+    for (let i = 0; i < 30 && task.status !== 'completed' && task.status !== 'completed_with_warnings' && task.status !== 'failed'; i++) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      task = codex.getExportCliSessionsArchiveTask({ taskId: task.taskId }).task
+    }
+    assert.equal(task.status, 'completed')
+    assert.equal(task.progress, 100)
+    const historyArchive = codex.readExportCliSessionsArchive({ taskId: task.taskId })
+    assert.equal(historyArchive.success, true)
+    assert.ok(historyArchive.archiveBase64.length > 0)
+    const deletedHistoryArchive = codex.deleteExportCliSessionsArchiveTask({ taskId: task.taskId })
+    assert.equal(deletedHistoryArchive.success, true)
+    assert.equal(codex.readExportCliSessionsArchive({ taskId: task.taskId }).success, false)
+
+    const imported = codex.importCliSessionsArchive({
+      archiveBase64: exported.archiveBase64,
+      targetAccountId: targetAccount.id
+    })
+    assert.equal(imported.success, true)
+    assert.equal(imported.imported, 1)
+    assert.notEqual(imported.results[0].sessionId, sessionId)
+    assert.equal(fs.existsSync(imported.results[0].path), true)
+    assert.equal(imported.targetInstanceDir, targetPrepared.env.CODEX_HOME)
+
+    const importedContent = fs.readFileSync(imported.results[0].path, 'utf8')
+    assert.match(importedContent, new RegExp(imported.results[0].sessionId))
+    assert.doesNotMatch(importedContent, new RegExp(sessionId))
+
+    const listed = codex.listCliSessions({ includeDefaultHome: false })
+    const allSessions = listed.groups.flatMap(group => group.sessions)
+    assert.equal(allSessions.some(session => session.sessionId === sessionId && session.accountId === sourceAccount.id), true)
+    assert.equal(allSessions.some(session => session.sessionId === imported.results[0].sessionId && session.accountId === targetAccount.id), true)
+
+    const importedAgain = codex.importCliSessionsArchive({
+      archiveBase64: exported.archiveBase64,
+      targetAccountId: targetAccount.id
+    })
+    assert.equal(importedAgain.success, true)
+    assert.equal(importedAgain.imported, 0)
+    assert.equal(importedAgain.skipped, 1)
+    assert.equal(importedAgain.results[0].sessionId, imported.results[0].sessionId)
+
+    const defaultCodexHomeDir = path.join(root, 'default-codex-home')
+    const importedDefault = codex.importCliSessionsArchive({
+      archiveBase64: exported.archiveBase64,
+      targetAccountId: '__default__',
+      defaultCodexHomeDir
+    })
+    assert.equal(importedDefault.success, true)
+    assert.equal(importedDefault.imported, 1)
+    assert.equal(importedDefault.targetType, 'default')
+    assert.equal(importedDefault.targetInstanceDir, defaultCodexHomeDir)
+    assert.equal(fs.existsSync(importedDefault.results[0].path), true)
+    for (const sharedPath of [
+      path.join(defaultCodexHomeDir, 'rules'),
+      path.join(defaultCodexHomeDir, 'skills'),
+      path.join(defaultCodexHomeDir, 'vendor_imports', 'skills')
+    ]) {
+      if (fs.existsSync(sharedPath)) assert.equal(fs.lstatSync(sharedPath).isSymbolicLink(), false)
+    }
+
+    const listedWithDefault = codex.listCliSessions({ defaultCodexHomeDir })
+    const defaultSessions = listedWithDefault.groups.flatMap(group => group.sessions)
+    assert.equal(defaultSessions.some(session => session.sessionId === importedDefault.results[0].sessionId && session.sourceType === 'default'), true)
+  } finally {
+    if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
+    else process.env.AIDECK_DATA_DIR = previousDataDir
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Codex CLI 绑定实例应清理旧版共享会话软链接', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-cli-migrate-'))
   const previousDataDir = process.env.AIDECK_DATA_DIR

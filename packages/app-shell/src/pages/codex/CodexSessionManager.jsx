@@ -3,6 +3,7 @@ import Markdown from 'markdown-to-jsx'
 import {
   ArchiveIcon,
   ArrowLeftIcon,
+  ArrowDownTrayIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   CommandLineIcon,
@@ -12,10 +13,11 @@ import {
   RestoreTrashIcon,
   TrashIcon,
   UnarchiveIcon,
+  UploadIcon,
   WrenchIcon
 } from '../../components/Icons/ActionIcons'
 import { usePrivacy } from '../../components/PrivacyMode'
-import { getHostBridge, launchCliCommand, showItemInFolder } from '../../utils/hostBridge.js'
+import { getHostBridge, launchCliCommand, showItemInFolder, showOpenDialog } from '../../utils/hostBridge.js'
 import { readGlobalSettings } from '../../utils/globalSettings.js'
 import { readCodexAdvancedSettings } from '../../utils/codex.js'
 import { maskText } from '../../utils/format.js'
@@ -137,6 +139,12 @@ const MANUAL_REFRESH_MIN_MS = 1000
 function waitAtLeast (startedAt, minMs) {
   const waitMs = Number(minMs || 0) - (Date.now() - Number(startedAt || 0))
   return waitMs > 0 ? new Promise(resolve => setTimeout(resolve, waitMs)) : Promise.resolve()
+}
+
+function waitForPaint () {
+  return new Promise(resolve => {
+    window.requestAnimationFrame(() => window.setTimeout(resolve, 0))
+  })
 }
 
 function summarizeToolMessage (content) {
@@ -273,10 +281,18 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
   const [copyTargetAccountId, setCopyTargetAccountId] = useState('')
   const [transferMode, setTransferMode] = useState('copy')
   const [copyingSession, setCopyingSession] = useState(false)
+  const [exportingArchive, setExportingArchive] = useState(false)
+  const [exportArchiveStatus, setExportArchiveStatus] = useState('')
+  const [exportArchiveTasks, setExportArchiveTasks] = useState([])
+  const [exportHistoryOpen, setExportHistoryOpen] = useState(false)
+  const [showImportArchiveModal, setShowImportArchiveModal] = useState(false)
+  const [importArchiveTargetAccountId, setImportArchiveTargetAccountId] = useState('')
+  const [importingArchive, setImportingArchive] = useState(false)
   const detailRef = useRef(null)
   const selectedSessionRowRef = useRef(null)
   const detailTopButtonVisibleRef = useRef(false)
   const detailTopRafRef = useRef(0)
+  const exportTaskPollRef = useRef(0)
 
   const setDetailTopButtonVisible = useCallback((value) => {
     const next = Boolean(value)
@@ -291,6 +307,11 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
       label: account?.email || account?.account_name || account?.workspace || account?.id || '未命名账号'
     })).filter(item => item.id)
   }, [accounts])
+
+  const importTargetOptions = useMemo(() => ([
+    { id: '__default__', label: '默认 ~/.codex' },
+    ...accountOptions
+  ]), [accountOptions])
 
   function displayText (value, fallback = '-', type = 'text') {
     const text = String(value || '').trim()
@@ -333,7 +354,9 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
       ? groups
         .map(group => {
           const sessions = Array.isArray(group.sessions)
-            ? group.sessions.filter(session => session.accountId === accountFilter)
+            ? group.sessions.filter(session => accountFilter === '__default__'
+              ? session.sourceType === 'default'
+              : session.accountId === accountFilter)
             : []
           return Object.assign({}, group, { sessions, count: sessions.length })
         })
@@ -400,6 +423,10 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
   const debugMessageCount = useMemo(() => (
     readableMessages.filter(message => message.kind === 'tool' || message.kind === 'internal').length
   ), [readableMessages])
+
+  const runningExportTasks = useMemo(() => (
+    exportArchiveTasks.filter(task => task && (task.status === 'pending' || task.status === 'running'))
+  ), [exportArchiveTasks])
 
   function getCodexAction (name) {
     const bridge = getHostBridge()
@@ -528,6 +555,12 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
   }, [copyTargetAccountId, copyTargetOptions, copyTargetSession])
 
   useEffect(() => {
+    if (!showImportArchiveModal) return
+    if (importTargetOptions.some(option => option.id === importArchiveTargetAccountId)) return
+    setImportArchiveTargetAccountId(importTargetOptions[0]?.id || '')
+  }, [importArchiveTargetAccountId, importTargetOptions, showImportArchiveModal])
+
+  useEffect(() => {
     if (!selectedSession?.path) {
       setMessages([])
       setDetailTopButtonVisible(false)
@@ -555,6 +588,46 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
       disposed = true
     }
   }, [selectedSession?.path, svc])
+
+  async function loadExportArchiveTasks () {
+    const action = getCodexAction('listExportCliSessionsArchiveTasks')
+    if (!action) {
+      setExportArchiveTasks([])
+      return []
+    }
+    try {
+      const result = await Promise.resolve(action({}))
+      const items = result && Array.isArray(result.items) ? result.items : []
+      setExportArchiveTasks(items)
+      return items
+    } catch {
+      setExportArchiveTasks([])
+      return []
+    }
+  }
+
+  useEffect(() => {
+    void loadExportArchiveTasks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svc])
+
+  useEffect(() => {
+    if (exportTaskPollRef.current) {
+      window.clearInterval(exportTaskPollRef.current)
+      exportTaskPollRef.current = 0
+    }
+    if (runningExportTasks.length === 0) return undefined
+    exportTaskPollRef.current = window.setInterval(() => {
+      void loadExportArchiveTasks()
+    }, 1000)
+    return () => {
+      if (exportTaskPollRef.current) {
+        window.clearInterval(exportTaskPollRef.current)
+        exportTaskPollRef.current = 0
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningExportTasks.length, svc])
 
   const updateDetailTopButton = useCallback(() => {
     const element = detailRef.current
@@ -780,6 +853,200 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
     }
   }
 
+  function downloadArchiveFromBase64 (base64, fileName) {
+    const raw = String(base64 || '').trim()
+    if (!raw) return false
+    const binary = window.atob(raw)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes], { type: 'application/zip' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName || `aideck-codex-sessions-${Date.now()}.zip`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    return true
+  }
+
+  function getExportTaskStatusLabel (task) {
+    const status = String(task?.status || '')
+    if (status === 'completed') return '已完成'
+    if (status === 'completed_with_warnings') return '已完成'
+    if (status === 'failed') return '失败'
+    if (status === 'running') return task?.phase === 'compressing' ? '压缩中' : '打包中'
+    if (status === 'pending') return '排队中'
+    return status || '未知'
+  }
+
+  async function handleDownloadExportTask (task) {
+    const taskId = String(task?.taskId || '').trim()
+    if (!taskId) return
+    if (task?.filePath) {
+      const ok = await showItemInFolder(task.filePath)
+      if (ok) return
+    }
+    const action = getCodexAction('readExportCliSessionsArchive')
+    if (!action) {
+      toast?.warning?.('当前环境不支持读取历史压缩包')
+      return
+    }
+    try {
+      const result = await Promise.resolve(action({ taskId }))
+      if (!result || result.success === false) {
+        toast?.error?.((result && result.error) || '读取历史压缩包失败')
+        await loadExportArchiveTasks()
+        return
+      }
+      if (downloadArchiveFromBase64(result.archiveBase64, result.fileName)) {
+        toast?.success?.('已开始下载历史压缩包')
+      }
+    } catch (err) {
+      toast?.error?.(`下载历史压缩包失败: ${err?.message || String(err)}`)
+    }
+  }
+
+  async function handleDeleteExportTask (task) {
+    const taskId = String(task?.taskId || '').trim()
+    if (!taskId) return
+    const running = task.status === 'pending' || task.status === 'running'
+    const ok = window.confirm(running
+      ? `确认终止并删除导出任务「${task.fileName || taskId}」？`
+      : `确认删除导出包「${task.fileName || taskId}」？`)
+    if (!ok) return
+    const action = getCodexAction('deleteExportCliSessionsArchiveTask')
+    if (!action) {
+      toast?.warning?.('当前环境不支持删除历史压缩包')
+      return
+    }
+    try {
+      const result = await Promise.resolve(action({ taskId }))
+      if (result && result.success !== false) {
+        toast?.success?.(result.canceled ? '已终止导出并清理任务' : '已删除历史压缩包')
+      } else {
+        toast?.error?.((result && result.error) || '删除历史压缩包失败')
+      }
+      await loadExportArchiveTasks()
+    } catch (err) {
+      toast?.error?.(`删除历史压缩包失败: ${err?.message || String(err)}`)
+    }
+  }
+
+  async function handleExportSessionsArchive () {
+    const picked = checkedSessions.length > 0 ? checkedSessions : visibleSessions
+    if (picked.length === 0 || exportingArchive) return
+    if (checkedSessions.length === 0 && picked.length >= 50) {
+      const ok = window.confirm(`将导出当前可见的 ${picked.length} 个会话，文件较多时可能需要等待一会儿。是否继续？`)
+      if (!ok) return
+    }
+    const action = getCodexAction('exportCliSessionsArchive')
+    if (!action) {
+      toast?.warning?.('当前环境不支持导出会话压缩包')
+      return
+    }
+    const taskAction = getCodexAction('startExportCliSessionsArchiveTask')
+    if (taskAction) {
+      setExportingArchive(true)
+      setExportArchiveStatus(`已加入后台导出队列，共 ${picked.length} 个会话`)
+      setExportHistoryOpen(true)
+      try {
+        await waitForPaint()
+        const result = await Promise.resolve(taskAction({
+          items: picked.map(session => ({ sessionId: session.sessionId, sourcePath: session.path }))
+        }))
+        if (!result || result.success === false) {
+          toast?.error?.((result && result.error) || '创建后台导出任务失败')
+          return
+        }
+        toast?.success?.('已开始后台导出，可继续其他操作')
+        await loadExportArchiveTasks()
+      } catch (err) {
+        toast?.error?.(`创建后台导出任务失败: ${err?.message || String(err)}`)
+      } finally {
+        setExportingArchive(false)
+        setExportArchiveStatus('')
+      }
+      return
+    }
+    setExportingArchive(true)
+    setExportArchiveStatus(`正在导出 ${picked.length} 个会话...`)
+    toast?.info?.(`正在导出 ${picked.length} 个会话，请稍候`)
+    try {
+      await waitForPaint()
+      const result = await Promise.resolve(action({
+        items: picked.map(session => ({ sessionId: session.sessionId, sourcePath: session.path }))
+      }))
+      if (!result || result.success === false) {
+        toast?.error?.((result && result.error) || '导出会话压缩包失败')
+        return
+      }
+      const ok = downloadArchiveFromBase64(result.archiveBase64, result.fileName)
+      if (!ok) {
+        toast?.error?.('导出文件生成失败')
+        return
+      }
+      toast?.success?.(`已导出 ${result.exported || picked.length} 个会话压缩包`)
+      if (Number(result.failed || 0) > 0) toast?.warning?.(`有 ${result.failed} 个会话导出失败`)
+    } catch (err) {
+      toast?.error?.(`导出会话压缩包失败: ${err?.message || String(err)}`)
+    } finally {
+      setExportingArchive(false)
+      setExportArchiveStatus('')
+    }
+  }
+
+  function openImportArchiveModal () {
+    setImportArchiveTargetAccountId(prev => prev || importTargetOptions[0]?.id || '')
+    setShowImportArchiveModal(true)
+  }
+
+  function closeImportArchiveModal () {
+    if (importingArchive) return
+    setShowImportArchiveModal(false)
+  }
+
+  async function handlePickAndImportArchive () {
+    if (!importArchiveTargetAccountId || importingArchive) return
+    const action = getCodexAction('importCliSessionsArchive')
+    if (!action) {
+      toast?.warning?.('当前环境不支持导入会话压缩包')
+      return
+    }
+    const files = await showOpenDialog({
+      title: '选择 Codex 会话压缩包',
+      properties: ['openFile'],
+      filters: [{ name: 'Zip', extensions: ['zip'] }]
+    })
+    const archivePath = Array.isArray(files) ? files[0] : ''
+    if (!archivePath) return
+
+    setImportingArchive(true)
+    try {
+      const result = await Promise.resolve(action({
+        archivePath,
+        targetAccountId: importArchiveTargetAccountId
+      }))
+      if (result && result.success !== false) {
+        const skipped = Number(result.skipped || 0)
+        toast?.success?.(skipped > 0 ? `已导入 ${result.imported || 0} 个会话，跳过 ${skipped} 个已有较新会话` : `已导入 ${result.imported || 0} 个会话`)
+        if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+          toast?.warning?.(result.warnings[0])
+        }
+        setShowImportArchiveModal(false)
+        await loadSessions()
+      } else {
+        toast?.error?.((result && result.error) || `导入失败，成功 ${result?.imported || 0} 个，失败 ${result?.failed || 0} 个`)
+        if (Number(result?.imported || 0) > 0) await loadSessions()
+      }
+    } catch (err) {
+      toast?.error?.(`导入会话压缩包失败: ${err?.message || String(err)}`)
+    } finally {
+      setImportingArchive(false)
+    }
+  }
+
   async function handleMoveCheckedToTrash () {
     if (checkedSessions.length === 0) return
     const ok = window.confirm(`确认将选中的 ${checkedSessions.length} 个会话移动到回收站？`)
@@ -905,6 +1172,19 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
     })
   }
 
+  function toggleCheckedGroupSessions (sessions, checked) {
+    const ids = (Array.isArray(sessions) ? sessions : [])
+      .map(session => session && session.id)
+      .filter(Boolean)
+    if (ids.length === 0) return
+    setCheckedSessionIds(prev => {
+      const next = new Set(prev)
+      if (checked) ids.forEach(id => next.add(id))
+      else ids.forEach(id => next.delete(id))
+      return next
+    })
+  }
+
   function toggleCheckedTrash (trashId) {
     setCheckedTrashIds(prev => {
       const next = new Set(prev)
@@ -1005,12 +1285,25 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
           <div className='codex-session-filter'>
             <select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}>
               <option value=''>全部会话来源</option>
+              <option value='__default__'>默认 ~/.codex</option>
               {accountOptions.map(option => (
                 <option key={option.id} value={option.id}>{option.label}</option>
               ))}
             </select>
           </div>
           <div className='codex-session-toolbar-actions'>
+            {viewMode === 'sessions' && (
+              <>
+                <button
+                  className='action-bar-btn'
+                  data-tip='导入会话压缩包'
+                  onClick={openImportArchiveModal}
+                  disabled={importingArchive}
+                >
+                  <ArrowDownTrayIcon size={15} />
+                </button>
+              </>
+            )}
             <button className={`action-bar-btn ${refreshing ? 'is-loading' : ''}`} data-tip={refreshing ? '刷新中' : '刷新'} onClick={() => void handleManualRefresh()} disabled={refreshing}>
               <RefreshIcon size={15} spinning={refreshing} />
             </button>
@@ -1041,6 +1334,15 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
               <button className='action-bar-btn action-bar-btn-danger' data-tip='移到回收站' onClick={() => void handleMoveCheckedToTrash()} disabled={checkedSessions.length === 0}>
                 <TrashIcon size={15} />
               </button>
+              <button
+                className={`action-bar-btn ${exportingArchive ? 'is-loading' : ''}`}
+                data-tip={exportingArchive ? (exportArchiveStatus || '正在导出') : (checkedSessions.length > 0 ? `导出已选 ${checkedSessions.length} 个会话` : '导出全部可见会话')}
+                onClick={() => void handleExportSessionsArchive()}
+                disabled={exportingArchive || visibleSessions.length === 0}
+              >
+                <UploadIcon size={15} />
+              </button>
+              {exportingArchive && <span className='codex-session-export-status'>{exportArchiveStatus || '正在导出...'}</span>}
             </div>
           )}
 
@@ -1069,6 +1371,59 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
             ))}
           </div>
         </div>
+
+        {viewMode === 'sessions' && (
+          <div className='codex-session-export-history'>
+            <button className='codex-session-export-history-toggle' type='button' onClick={() => setExportHistoryOpen(value => !value)}>
+              <span>导出历史</span>
+              <strong>{runningExportTasks.length > 0 ? `${runningExportTasks.length} 进行中` : `${exportArchiveTasks.length} 个包`}</strong>
+              <ChevronDownIcon size={14} className={exportHistoryOpen ? 'is-open' : ''} />
+            </button>
+            {exportHistoryOpen && (
+              <div className='codex-session-export-history-list'>
+                {exportArchiveTasks.length === 0 && (
+                  <div className='codex-session-export-history-empty'>暂无导出历史</div>
+                )}
+                {exportArchiveTasks.slice(0, 8).map(task => {
+                  const progress = Math.max(0, Math.min(100, Number(task.progress || 0) || 0))
+                  const done = task.status === 'completed' || task.status === 'completed_with_warnings'
+                  const failed = task.status === 'failed'
+                  return (
+                    <div className={`codex-session-export-history-row ${done ? 'is-done' : ''} ${failed ? 'is-failed' : ''} ${!done && !failed ? 'is-running' : ''}`} key={task.taskId}>
+                      <div className='codex-session-export-history-main'>
+                        <div className='codex-session-export-history-title'>
+                          <span>{task.fileName || task.taskId}</span>
+                          <em>{getExportTaskStatusLabel(task)}</em>
+                        </div>
+                        <div className='codex-session-export-progress'>
+                          <i style={{ width: `${progress}%` }} />
+                        </div>
+                        <div className='codex-session-export-history-meta'>
+                          <span>{task.exported || 0} 会话</span>
+                          {task.failed > 0 && <span>{task.failed} 失败</span>}
+                          {task.size > 0 && <span>{formatSize(task.size)}</span>}
+                          <span>{formatRelativeTime(task.createdAt)}</span>
+                        </div>
+                      </div>
+                      <div className='codex-session-export-actions'>
+                        {done
+                          ? (
+                            <button className='action-bar-btn' data-tip='定位本机压缩包' onClick={() => void handleDownloadExportTask(task)}>
+                              <FolderIcon size={15} />
+                            </button>
+                            )
+                          : <span className='codex-session-export-history-action-spacer' />}
+                        <button className='action-bar-btn action-bar-btn-danger' data-tip={done || failed ? '删除历史包' : '终止并删除'} onClick={() => void handleDeleteExportTask(task)}>
+                          <TrashIcon size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {!snapshot.success && (
@@ -1129,20 +1484,38 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
             {visibleGroups.map(group => {
               const isOpen = expanded.has(group.id)
               const sessions = Array.isArray(group.sessions) ? group.sessions : []
+              const checkedInGroup = sessions.filter(session => checkedSessionIds.has(session.id)).length
+              const allCheckedInGroup = sessions.length > 0 && checkedInGroup === sessions.length
+              const hasCheckedInGroup = checkedInGroup > 0
               return (
-                <section className='codex-session-group' key={group.id}>
-                  <button className='codex-session-group-header' type='button' onClick={() => toggleGroup(group.id)}>
-                    <ChevronDownIcon size={16} className={isOpen ? 'is-open' : ''} />
-                    <FolderIcon size={18} />
-                    <div className='codex-session-group-title'>
-                      <strong><HighlightText text={displayWorkspaceName(group.workspaceName)} query={sessionSearchQuery} /></strong>
-                      {group.workspacePath && <span><HighlightText text={displayWorkspacePath(group.workspacePath)} query={sessionSearchQuery} /></span>}
-                    </div>
-                    <div className='codex-session-group-meta'>
-                      <span>{sessions.length} 个会话</span>
-                      <span>{formatRelativeTime(group.updatedAt)}</span>
-                    </div>
-                  </button>
+                <section className={`codex-session-group ${hasCheckedInGroup ? 'has-checked' : ''} ${allCheckedInGroup ? 'is-checked-all' : ''}`} key={group.id}>
+                  <div className='codex-session-group-header'>
+                    <input
+                      className='codex-session-group-check'
+                      type='checkbox'
+                      checked={allCheckedInGroup}
+                      ref={(element) => {
+                        if (element) element.indeterminate = hasCheckedInGroup && !allCheckedInGroup
+                      }}
+                      aria-label={allCheckedInGroup ? '取消选择该目录内会话' : '选择该目录内全部会话'}
+                      onChange={(event) => toggleCheckedGroupSessions(sessions, event.target.checked)}
+                      disabled={sessions.length === 0}
+                    />
+                    <button className='codex-session-group-toggle' type='button' onClick={() => toggleGroup(group.id)}>
+                      <ChevronDownIcon size={16} className={isOpen ? 'is-open' : ''} />
+                      <FolderIcon size={18} />
+                      <div className='codex-session-group-title'>
+                        <strong><HighlightText text={displayWorkspaceName(group.workspaceName)} query={sessionSearchQuery} /></strong>
+                        {group.workspacePath && <span><HighlightText text={displayWorkspacePath(group.workspacePath)} query={sessionSearchQuery} /></span>}
+                      </div>
+                      <div className='codex-session-group-meta'>
+                        <span className={`codex-session-group-selected ${hasCheckedInGroup ? 'is-active' : ''}`}>
+                          {hasCheckedInGroup ? `${checkedInGroup} / ${sessions.length} 已选` : `${sessions.length} 会话`}
+                        </span>
+                        <span>{formatRelativeTime(group.updatedAt)}</span>
+                      </div>
+                    </button>
+                  </div>
 
                   {isOpen && (
                     <div className='codex-session-rows'>
@@ -1296,6 +1669,36 @@ export default function CodexSessionManager ({ svc, accounts, searchQuery = '', 
           <div className='codex-session-image-preview' onClick={(event) => event.stopPropagation()}>
             <button type='button' aria-label='关闭图片预览' onClick={() => setPreviewImage(null)}>×</button>
             <img src={previewImage} alt='图片预览' />
+          </div>
+        </div>
+      )}
+
+      {showImportArchiveModal && (
+        <div className='modal-overlay' onClick={closeImportArchiveModal}>
+          <div className='modal-content codex-session-copy-modal' onClick={(event) => event.stopPropagation()}>
+            <div className='modal-header'>
+              <h3 className='modal-title'>导入会话压缩包</h3>
+              <button className='modal-close' type='button' onClick={closeImportArchiveModal}>×</button>
+            </div>
+            <div className='modal-body'>
+              <label className='codex-session-copy-field'>
+                <span>导入目标实例</span>
+                <select value={importArchiveTargetAccountId} onChange={(event) => setImportArchiveTargetAccountId(event.target.value)} disabled={importingArchive}>
+                  {importTargetOptions.map(option => (
+                    <option value={option.id} key={option.id}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <p className='codex-session-copy-hint'>
+                导入会为压缩包中的每个会话创建新的会话 ID，避免覆盖目标实例中已有会话；原工作区路径会保留。
+              </p>
+            </div>
+            <div className='modal-footer'>
+              <button className='btn' type='button' onClick={closeImportArchiveModal} disabled={importingArchive}>取消</button>
+              <button className='btn btn-primary' type='button' onClick={() => void handlePickAndImportArchive()} disabled={!importArchiveTargetAccountId || importingArchive}>
+                {importingArchive ? '导入中...' : '选择压缩包并导入'}
+              </button>
+            </div>
           </div>
         </div>
       )}

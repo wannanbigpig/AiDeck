@@ -19,6 +19,7 @@ const path = require('path')
 const cp = require('child_process')
 const crypto = require('crypto')
 const http = require('http')
+const zlib = require('zlib')
 const { retryOAuthRequest } = require('./utils/retryOAuthRequest')
 const fileUtils = require('../../infra-node/src/fileUtils.cjs')
 const storage = require('../../infra-node/src/accountStorage.cjs')
@@ -82,6 +83,16 @@ const codexFileMetadataCache = new Map()
 const codexThreadRowsCache = new Map()
 const codexThreadColumnsCache = new Map()
 
+const ZIP_LOCAL_FILE_HEADER = 0x04034b50
+const ZIP_CENTRAL_DIRECTORY_HEADER = 0x02014b50
+const ZIP_END_OF_CENTRAL_DIRECTORY = 0x06054b50
+const ZIP_COMPRESSION_DEFLATE = 8
+const ZIP_COMPRESSION_STORE = 0
+let zipCrc32Table = null
+const CODEX_SESSION_EXPORT_HISTORY_LIMIT = 50
+const codexSessionExportTasks = new Map()
+const codexSessionExportCanceledTasks = new Set()
+
 const DEFAULT_ADVANCED_SETTINGS = {
   codexCliPath: '',
   codexStartupPath: '',
@@ -109,6 +120,208 @@ function _resolveRuntimeHomeDir (runtime) {
   return runtime && typeof runtime.homeDir === 'string' && runtime.homeDir.trim()
     ? runtime.homeDir.trim()
     : fileUtils.getHomeDir()
+}
+
+function _getZipCrc32Table () {
+  if (zipCrc32Table) return zipCrc32Table
+  zipCrc32Table = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let c = i
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1)
+    }
+    zipCrc32Table[i] = c >>> 0
+  }
+  return zipCrc32Table
+}
+
+function _crc32Buffer (buffer) {
+  const table = _getZipCrc32Table()
+  let crc = 0xffffffff
+  for (let i = 0; i < buffer.length; i++) {
+    crc = table[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8)
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function _dateToDosTimeParts (value) {
+  const date = new Date(Number(value || 0) > 0 ? Number(value) : Date.now())
+  const year = Math.max(1980, date.getFullYear())
+  const dosTime = ((date.getHours() & 0x1f) << 11) | ((date.getMinutes() & 0x3f) << 5) | (Math.floor(date.getSeconds() / 2) & 0x1f)
+  const dosDate = (((year - 1980) & 0x7f) << 9) | (((date.getMonth() + 1) & 0x0f) << 5) | (date.getDate() & 0x1f)
+  return { dosTime, dosDate }
+}
+
+function _createZipBuffer (entries) {
+  const localParts = []
+  const centralParts = []
+  let offset = 0
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = String(entry && entry.name ? entry.name : '').replace(/^\/+/, '')
+    if (!name) continue
+    const nameBuffer = Buffer.from(name, 'utf8')
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data || ''), 'utf8')
+    const compressed = zlib.deflateRawSync(data)
+    const crc = _crc32Buffer(data)
+    const timeParts = _dateToDosTimeParts(entry.mtime || Date.now())
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(ZIP_LOCAL_FILE_HEADER, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0x0800, 6)
+    local.writeUInt16LE(ZIP_COMPRESSION_DEFLATE, 8)
+    local.writeUInt16LE(timeParts.dosTime, 10)
+    local.writeUInt16LE(timeParts.dosDate, 12)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(compressed.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(nameBuffer.length, 26)
+    local.writeUInt16LE(0, 28)
+    localParts.push(local, nameBuffer, compressed)
+
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(ZIP_CENTRAL_DIRECTORY_HEADER, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(0x0800, 8)
+    central.writeUInt16LE(ZIP_COMPRESSION_DEFLATE, 10)
+    central.writeUInt16LE(timeParts.dosTime, 12)
+    central.writeUInt16LE(timeParts.dosDate, 14)
+    central.writeUInt32LE(crc, 16)
+    central.writeUInt32LE(compressed.length, 20)
+    central.writeUInt32LE(data.length, 24)
+    central.writeUInt16LE(nameBuffer.length, 28)
+    central.writeUInt16LE(0, 30)
+    central.writeUInt16LE(0, 32)
+    central.writeUInt16LE(0, 34)
+    central.writeUInt16LE(0, 36)
+    central.writeUInt32LE(0, 38)
+    central.writeUInt32LE(offset, 42)
+    centralParts.push(central, nameBuffer)
+    offset += local.length + nameBuffer.length + compressed.length
+  }
+
+  const centralOffset = offset
+  const centralBuffer = Buffer.concat(centralParts)
+  const end = Buffer.alloc(22)
+  const entryCount = centralParts.length / 2
+  end.writeUInt32LE(ZIP_END_OF_CENTRAL_DIRECTORY, 0)
+  end.writeUInt16LE(0, 4)
+  end.writeUInt16LE(0, 6)
+  end.writeUInt16LE(entryCount, 8)
+  end.writeUInt16LE(entryCount, 10)
+  end.writeUInt32LE(centralBuffer.length, 12)
+  end.writeUInt32LE(centralOffset, 16)
+  end.writeUInt16LE(0, 20)
+  return Buffer.concat(localParts.concat([centralBuffer, end]))
+}
+
+function _deflateRawAsync (data) {
+  return new Promise((resolve, reject) => {
+    zlib.deflateRaw(data, (err, compressed) => {
+      if (err) reject(err)
+      else resolve(compressed)
+    })
+  })
+}
+
+async function _createZipBufferAsync (entries, onProgress) {
+  const localParts = []
+  const centralParts = []
+  let offset = 0
+  const list = Array.isArray(entries) ? entries : []
+  for (let i = 0; i < list.length; i++) {
+    const entry = list[i]
+    const name = String(entry && entry.name ? entry.name : '').replace(/^\/+/, '')
+    if (!name) continue
+    const nameBuffer = Buffer.from(name, 'utf8')
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data || ''), 'utf8')
+    const compressed = await _deflateRawAsync(data)
+    const crc = _crc32Buffer(data)
+    const timeParts = _dateToDosTimeParts(entry.mtime || Date.now())
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(ZIP_LOCAL_FILE_HEADER, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0x0800, 6)
+    local.writeUInt16LE(ZIP_COMPRESSION_DEFLATE, 8)
+    local.writeUInt16LE(timeParts.dosTime, 10)
+    local.writeUInt16LE(timeParts.dosDate, 12)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(compressed.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(nameBuffer.length, 26)
+    local.writeUInt16LE(0, 28)
+    localParts.push(local, nameBuffer, compressed)
+
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(ZIP_CENTRAL_DIRECTORY_HEADER, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(0x0800, 8)
+    central.writeUInt16LE(ZIP_COMPRESSION_DEFLATE, 10)
+    central.writeUInt16LE(timeParts.dosTime, 12)
+    central.writeUInt16LE(timeParts.dosDate, 14)
+    central.writeUInt32LE(crc, 16)
+    central.writeUInt32LE(compressed.length, 20)
+    central.writeUInt32LE(data.length, 24)
+    central.writeUInt16LE(nameBuffer.length, 28)
+    central.writeUInt16LE(0, 30)
+    central.writeUInt16LE(0, 32)
+    central.writeUInt16LE(0, 34)
+    central.writeUInt16LE(0, 36)
+    central.writeUInt32LE(0, 38)
+    central.writeUInt32LE(offset, 42)
+    centralParts.push(central, nameBuffer)
+    offset += local.length + nameBuffer.length + compressed.length
+    if (typeof onProgress === 'function') onProgress(i + 1, list.length)
+  }
+
+  const centralOffset = offset
+  const centralBuffer = Buffer.concat(centralParts)
+  const end = Buffer.alloc(22)
+  const entryCount = centralParts.length / 2
+  end.writeUInt32LE(ZIP_END_OF_CENTRAL_DIRECTORY, 0)
+  end.writeUInt16LE(0, 4)
+  end.writeUInt16LE(0, 6)
+  end.writeUInt16LE(entryCount, 8)
+  end.writeUInt16LE(entryCount, 10)
+  end.writeUInt32LE(centralBuffer.length, 12)
+  end.writeUInt32LE(centralOffset, 16)
+  end.writeUInt16LE(0, 20)
+  return Buffer.concat(localParts.concat([centralBuffer, end]))
+}
+
+function _readZipEntries (buffer) {
+  const entries = new Map()
+  const source = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '')
+  let offset = 0
+  while (offset + 30 <= source.length) {
+    const signature = source.readUInt32LE(offset)
+    if (signature !== ZIP_LOCAL_FILE_HEADER) break
+    const flags = source.readUInt16LE(offset + 6)
+    const method = source.readUInt16LE(offset + 8)
+    const compressedSize = source.readUInt32LE(offset + 18)
+    const nameLength = source.readUInt16LE(offset + 26)
+    const extraLength = source.readUInt16LE(offset + 28)
+    const nameStart = offset + 30
+    const dataStart = nameStart + nameLength + extraLength
+    const dataEnd = dataStart + compressedSize
+    if (nameStart > source.length || dataEnd > source.length) break
+    const encoding = (flags & 0x0800) ? 'utf8' : 'utf8'
+    const name = source.toString(encoding, nameStart, nameStart + nameLength)
+    const compressed = source.subarray(dataStart, dataEnd)
+    let data
+    if (method === ZIP_COMPRESSION_DEFLATE) data = zlib.inflateRawSync(compressed)
+    else if (method === ZIP_COMPRESSION_STORE) data = Buffer.from(compressed)
+    else throw new Error(`不支持的 zip 压缩方法: ${method}`)
+    entries.set(name, data)
+    offset = dataEnd
+  }
+  return entries
+}
+
+function _sanitizeZipEntryNamePart (value, fallback = 'item') {
+  const text = String(value || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return text || fallback
 }
 
 function getCodexAppPathCandidates (runtime) {
@@ -1172,10 +1385,39 @@ function _isSymlinkInside (targetPath, rootDir) {
   }
 }
 
+function _isSelfReferentialSymlink (targetPath) {
+  try {
+    const stat = fs.lstatSync(targetPath)
+    if (!stat.isSymbolicLink()) return false
+    const linkTarget = fs.readlinkSync(targetPath)
+    const resolved = path.resolve(path.dirname(targetPath), linkTarget)
+    return path.resolve(targetPath) === resolved
+  } catch {
+    return false
+  }
+}
+
 function _ensureCodexSharedEntry (instanceDir, relativePath, isDir, sourceRoot = getConfigDir(), options = {}) {
   const sourcePath = path.join(sourceRoot, relativePath)
   const targetPath = path.join(instanceDir, relativePath)
   try {
+    if (_isSelfReferentialSymlink(sourcePath)) {
+      _removePathIfExists(sourcePath)
+      if (isDir) fileUtils.ensureDir(sourcePath)
+      else if (options.ensureFile) {
+        fileUtils.ensureDir(path.dirname(sourcePath))
+        fs.writeFileSync(sourcePath, '', 'utf8')
+      }
+    }
+    if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+      if (_isSelfReferentialSymlink(targetPath)) _removePathIfExists(targetPath)
+      if (isDir) fileUtils.ensureDir(targetPath)
+      else if (options.ensureFile && !fs.existsSync(targetPath)) {
+        fileUtils.ensureDir(path.dirname(targetPath))
+        fs.writeFileSync(targetPath, '', 'utf8')
+      }
+      return
+    }
     if (isDir) fileUtils.ensureDir(sourcePath)
     if (!isDir && options.ensureFile) {
       fileUtils.ensureDir(path.dirname(sourcePath))
@@ -1230,6 +1472,10 @@ function _ensureCodexCliSharedEntries (instanceDir) {
   for (const relativePath of CODEX_SHARED_FILES) {
     _ensureCodexSharedEntry(instanceDir, relativePath, false)
   }
+  _ensureCodexInstanceSessionEntries(instanceDir)
+}
+
+function _ensureCodexInstanceSessionEntries (instanceDir) {
   for (const relativePath of CODEX_INSTANCE_SESSION_DIRS) {
     _ensureCodexInstanceEntry(instanceDir, relativePath, true)
   }
@@ -2195,8 +2441,72 @@ function _buildCodexCopiedSessionIndexEntry (sourceEntry, session, newSessionId,
   return entry
 }
 
+function _findExistingCodexImportedSession (instanceDir, sourceSessionId) {
+  const originalSessionId = String(sourceSessionId || '').trim()
+  if (!instanceDir || !originalSessionId) return null
+  const indexEntries = _readCodexSessionIndexEntries(instanceDir)
+  for (const entry of indexEntries) {
+    const entrySessionId = _getCodexSessionIndexEntryId(entry)
+    const importSourceId = String(entry && entry.aideck_import_source_session_id ? entry.aideck_import_source_session_id : '').trim()
+    if (entrySessionId !== originalSessionId && importSourceId !== originalSessionId) continue
+    const sessionPath = _getCodexRecordSessionPath(instanceDir, entry)
+    const importSourceUpdatedAt = _normalizeTimestampMs(entry && entry.aideck_import_source_updated_at_ms)
+    return {
+      sessionId: entrySessionId,
+      path: sessionPath,
+      updatedAt: importSourceUpdatedAt || _normalizeTimestampMs(_pickSessionField(entry, [
+        'updated_at_ms',
+        'updatedAtMs',
+        'updated_at',
+        'updatedAt',
+        'created_at_ms',
+        'createdAtMs',
+        'created_at',
+        'createdAt'
+      ])),
+      source: 'index'
+    }
+  }
+
+  for (const row of _listCodexThreadRows(instanceDir)) {
+    const rowSessionId = _pickCodexRecordSessionId(row)
+    if (rowSessionId !== originalSessionId) continue
+    return {
+      sessionId: rowSessionId,
+      path: _getCodexRecordSessionPath(instanceDir, row),
+      updatedAt: _normalizeTimestampMs(_pickSessionField(row, [
+        'updated_at_ms',
+        'updatedAtMs',
+        'updated_at',
+        'updatedAt',
+        'created_at_ms',
+        'createdAtMs',
+        'created_at',
+        'createdAt'
+      ])),
+      source: 'sqlite'
+    }
+  }
+  return null
+}
+
+function _removeCodexImportedSession (instanceDir, existing) {
+  const sessionId = String(existing && existing.sessionId ? existing.sessionId : '').trim()
+  const sessionPath = String(existing && existing.path ? existing.path : '').trim()
+  if (sessionId) _deleteCodexThreadRow(instanceDir, sessionId)
+  if (sessionId) _removeCodexSessionIndexEntry(instanceDir, sessionId)
+  if (sessionPath && _isPathInside(instanceDir, sessionPath) && fs.existsSync(sessionPath)) {
+    fs.unlinkSync(sessionPath)
+    _invalidateCodexPathCaches(sessionPath)
+  }
+}
+
 function _copyCodexSessionFileWithNewId (sourcePath, targetPath, oldSessionId, newSessionId) {
   const sourceText = fs.readFileSync(sourcePath, 'utf8')
+  _writeCodexSessionTextWithNewId(sourceText, targetPath, oldSessionId, newSessionId, sourcePath)
+}
+
+function _writeCodexSessionTextWithNewId (sourceText, targetPath, oldSessionId, newSessionId, sourcePath) {
   const lines = sourceText.split(/\r?\n/)
   const nextLines = []
   for (const line of lines) {
@@ -2436,7 +2746,9 @@ function _discoverCodexSessionSources (accounts, options = {}) {
   const sources = []
   const seen = new Set()
   const includeDefault = !(options && options.includeDefaultHome === false)
-  const includeDefaultForFilter = !String(options && options.accountId ? options.accountId : '').trim()
+  const accountIdFilter = String(options && options.accountId ? options.accountId : '').trim()
+  const defaultOnly = accountIdFilter === '__default__' || accountIdFilter === 'default'
+  const includeDefaultForFilter = !accountIdFilter || defaultOnly
 
   if (includeDefault && includeDefaultForFilter) {
     const defaultDir = _getDefaultCodexHomeDir(options)
@@ -2452,6 +2764,8 @@ function _discoverCodexSessionSources (accounts, options = {}) {
       instanceDir: defaultDir
     })
   }
+
+  if (defaultOnly) return sources
 
   for (const account of accounts) {
     const accountId = String(account && account.id ? account.id : '').trim()
@@ -2932,6 +3246,566 @@ function moveCliSessionToInstance (options = {}) {
   }
 }
 
+function _getCodexSessionExportRootDir () {
+  const dir = path.join(dataRoot.ensureDataRootLayout(), 'exports', 'codex-sessions')
+  fileUtils.ensureDir(dir)
+  return dir
+}
+
+function _getCodexSessionExportHistoryPath () {
+  return path.join(_getCodexSessionExportRootDir(), 'history.json')
+}
+
+function _normalizeCodexSessionExportTask (task) {
+  const item = task && typeof task === 'object' ? task : {}
+  return {
+    taskId: String(item.taskId || item.id || '').trim(),
+    status: String(item.status || 'pending').trim(),
+    phase: String(item.phase || '').trim(),
+    createdAt: Number(item.createdAt || Date.now()) || Date.now(),
+    updatedAt: Number(item.updatedAt || Date.now()) || Date.now(),
+    finishedAt: Number(item.finishedAt || 0) || 0,
+    total: Number(item.total || 0) || 0,
+    completed: Number(item.completed || 0) || 0,
+    exported: Number(item.exported || 0) || 0,
+    failed: Number(item.failed || 0) || 0,
+    progress: Math.max(0, Math.min(100, Number(item.progress || 0) || 0)),
+    fileName: String(item.fileName || '').trim(),
+    filePath: String(item.filePath || '').trim(),
+    size: Number(item.size || 0) || 0,
+    error: String(item.error || '').trim(),
+    failures: Array.isArray(item.failures) ? item.failures : []
+  }
+}
+
+function _readCodexSessionExportHistory () {
+  const payload = fileUtils.readJsonFile(_getCodexSessionExportHistoryPath())
+  const items = payload && Array.isArray(payload.items) ? payload.items : []
+  return items
+    .map(_normalizeCodexSessionExportTask)
+    .filter(item => item.taskId)
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+}
+
+function _writeCodexSessionExportHistory (items) {
+  const normalized = (Array.isArray(items) ? items : [])
+    .map(_normalizeCodexSessionExportTask)
+    .filter(item => item.taskId)
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+    .slice(0, CODEX_SESSION_EXPORT_HISTORY_LIMIT)
+  return fileUtils.writeJsonFile(_getCodexSessionExportHistoryPath(), {
+    version: 1,
+    items: normalized
+  })
+}
+
+function _upsertCodexSessionExportTask (patch) {
+  const taskId = String(patch && (patch.taskId || patch.id) ? (patch.taskId || patch.id) : '').trim()
+  if (!taskId) return null
+  const existing = codexSessionExportTasks.get(taskId) || _readCodexSessionExportHistory().find(item => item.taskId === taskId) || {}
+  const next = _normalizeCodexSessionExportTask(Object.assign({}, existing, patch, { taskId, updatedAt: Date.now() }))
+  codexSessionExportTasks.set(taskId, next)
+  const history = _readCodexSessionExportHistory().filter(item => item.taskId !== taskId)
+  history.unshift(next)
+  _writeCodexSessionExportHistory(history)
+  return next
+}
+
+function _buildCodexSessionExportTaskId () {
+  return crypto.createHash('sha1').update(`${Date.now()}:${Math.random()}:${crypto.randomUUID ? crypto.randomUUID() : ''}`).digest('hex').slice(0, 24)
+}
+
+function _isCodexSessionExportTaskCanceled (taskId) {
+  return codexSessionExportCanceledTasks.has(String(taskId || '').trim())
+}
+
+async function _runCodexSessionExportArchiveTask (taskId, options = {}) {
+  codexSessionExportCanceledTasks.delete(taskId)
+  const rawItems = Array.isArray(options && options.items) ? options.items : []
+  const items = rawItems.length > 0 ? rawItems : [options]
+  const exportedAt = Date.now()
+  const manifest = {
+    format: 'aideck-codex-session-archive',
+    version: 1,
+    provider: PLATFORM,
+    exportedAt,
+    sessions: []
+  }
+  const zipEntries = []
+  const failures = []
+  const usedNames = new Set()
+  const total = items.length
+  _upsertCodexSessionExportTask({ taskId, status: 'running', phase: 'collecting', total, progress: total > 0 ? 2 : 0 })
+
+  for (let i = 0; i < items.length; i++) {
+    if (_isCodexSessionExportTaskCanceled(taskId)) return
+    const item = items[i]
+    const found = _findCodexSessionForOperation(item && item.sessionId, item && (item.sourcePath || item.path), options)
+    if (!found) {
+      failures.push({ sessionId: item && item.sessionId ? item.sessionId : '', error: '会话不存在或已被移动' })
+    } else {
+      const { source, session } = found
+      if (session.status === 'broken') {
+        failures.push({ sessionId: session.sessionId || '', error: '异常会话不能导出，请先修复索引或会话文件' })
+      } else if (!session.sessionId || !session.path || !fs.existsSync(session.path)) {
+        failures.push({ sessionId: session.sessionId || '', error: '会话文件不存在，无法导出' })
+      } else {
+        const sourceInstanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+        const thread = _getCodexThreadRowById(sourceInstanceDir, session.sessionId)
+        const sourceIndexEntry = _readCodexSessionIndexMap(sourceInstanceDir).get(session.sessionId) || null
+        const stemBase = _sanitizeZipEntryNamePart(`${session.updatedAt || exportedAt}-${session.sessionId}`, session.sessionId || 'session')
+        let stem = stemBase
+        let index = 2
+        while (usedNames.has(stem)) {
+          stem = `${stemBase}-${index}`
+          index += 1
+        }
+        usedNames.add(stem)
+        const entryPath = `sessions/${stem}.jsonl`
+        zipEntries.push({
+          name: entryPath,
+          data: fs.readFileSync(session.path),
+          mtime: session.updatedAt || exportedAt
+        })
+        manifest.sessions.push({
+          session: {
+            sessionId: session.sessionId || '',
+            title: session.title || '',
+            summary: session.summary || '',
+            workspacePath: session.workspacePath || '',
+            workspaceName: session.workspaceName || '',
+            updatedAt: session.updatedAt || 0,
+            createdAt: session.createdAt || 0,
+            archived: session.archived === true || session.status === 'archived',
+            status: session.status || '',
+            resumeCommand: session.resumeCommand || (session.sessionId ? `codex resume ${session.sessionId}` : '')
+          },
+          source: {
+            sourceId: source.id || '',
+            sourceType: source.sourceType || '',
+            sourceName: source.sourceName || '',
+            accountId: source.account && source.account.id ? source.account.id : '',
+            accountEmail: source.account && source.account.email ? source.account.email : '',
+            originalPath: session.path || '',
+            relativePath: session.path && sourceInstanceDir && _isPathInside(sourceInstanceDir, session.path)
+              ? path.relative(sourceInstanceDir, session.path)
+              : ''
+          },
+          file: entryPath,
+          sqlite: {
+            columns: thread.columns,
+            row: thread.row
+          },
+          sessionIndexEntry: sourceIndexEntry
+        })
+      }
+    }
+    if (!_isCodexSessionExportTaskCanceled(taskId)) {
+      _upsertCodexSessionExportTask({
+        taskId,
+        status: 'running',
+        phase: 'collecting',
+        total,
+        completed: i + 1,
+        exported: manifest.sessions.length,
+        failed: failures.length,
+        progress: total > 0 ? Math.min(65, Math.round(((i + 1) / total) * 65)) : 65,
+        failures
+      })
+    }
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  if (_isCodexSessionExportTaskCanceled(taskId)) return
+
+  if (manifest.sessions.length === 0) {
+    _upsertCodexSessionExportTask({
+      taskId,
+      status: 'failed',
+      phase: 'failed',
+      finishedAt: Date.now(),
+      total,
+      completed: total,
+      failed: failures.length,
+      progress: 100,
+      error: failures[0] ? failures[0].error : '没有可导出的会话',
+      failures
+    })
+    return
+  }
+
+  zipEntries.unshift({
+    name: 'manifest.json',
+    data: JSON.stringify(manifest, null, 2) + '\n',
+    mtime: exportedAt
+  })
+  _upsertCodexSessionExportTask({ taskId, status: 'running', phase: 'compressing', progress: 70 })
+  const archive = await _createZipBufferAsync(zipEntries, (done, count) => {
+    if (!_isCodexSessionExportTaskCanceled(taskId)) {
+      _upsertCodexSessionExportTask({
+        taskId,
+        status: 'running',
+        phase: 'compressing',
+        progress: 70 + Math.round((done / Math.max(count, 1)) * 25)
+      })
+    }
+  })
+  if (_isCodexSessionExportTaskCanceled(taskId)) return
+  const fileName = `aideck-codex-sessions-${new Date(exportedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${taskId}.zip`
+  const filePath = path.join(_getCodexSessionExportRootDir(), fileName)
+  fs.writeFileSync(filePath, archive)
+  _upsertCodexSessionExportTask({
+    taskId,
+    status: failures.length === 0 ? 'completed' : 'completed_with_warnings',
+    phase: 'completed',
+    finishedAt: Date.now(),
+    total,
+    completed: total,
+    exported: manifest.sessions.length,
+    failed: failures.length,
+    progress: 100,
+    fileName,
+    filePath,
+    size: archive.length,
+    failures
+  })
+}
+
+function startExportCliSessionsArchiveTask (options = {}) {
+  const rawItems = Array.isArray(options && options.items) ? options.items : []
+  const total = rawItems.length > 0 ? rawItems.length : 1
+  const taskId = _buildCodexSessionExportTaskId()
+  const createdAt = Date.now()
+  const fileName = `aideck-codex-sessions-${new Date(createdAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${taskId}.zip`
+  const task = _upsertCodexSessionExportTask({
+    taskId,
+    status: 'pending',
+    phase: 'pending',
+    createdAt,
+    updatedAt: createdAt,
+    total,
+    completed: 0,
+    progress: 0,
+    fileName
+  })
+  setTimeout(() => {
+    _runCodexSessionExportArchiveTask(taskId, options).catch(err => {
+      _upsertCodexSessionExportTask({
+        taskId,
+        status: 'failed',
+        phase: 'failed',
+        finishedAt: Date.now(),
+        progress: 100,
+        error: err && err.message ? err.message : String(err)
+      })
+    })
+  }, 0)
+  return { success: true, task }
+}
+
+function listExportCliSessionsArchiveTasks () {
+  const history = _readCodexSessionExportHistory()
+  return { success: true, items: history, total: history.length }
+}
+
+function getExportCliSessionsArchiveTask (options = {}) {
+  const taskId = String(options && (options.taskId || options.id) ? (options.taskId || options.id) : '').trim()
+  if (!taskId) return { success: false, error: '任务 ID 为空' }
+  const task = codexSessionExportTasks.get(taskId) || _readCodexSessionExportHistory().find(item => item.taskId === taskId)
+  if (!task) return { success: false, error: '导出任务不存在' }
+  return { success: true, task: _normalizeCodexSessionExportTask(task) }
+}
+
+function readExportCliSessionsArchive (options = {}) {
+  const taskResult = getExportCliSessionsArchiveTask(options)
+  if (!taskResult.success) return taskResult
+  const task = taskResult.task
+  if (!task.filePath || !fs.existsSync(task.filePath)) return { success: false, error: '导出文件不存在或已删除' }
+  return {
+    success: true,
+    task,
+    fileName: task.fileName || path.basename(task.filePath),
+    mimeType: 'application/zip',
+    archiveBase64: fs.readFileSync(task.filePath).toString('base64')
+  }
+}
+
+function deleteExportCliSessionsArchiveTask (options = {}) {
+  const taskId = String(options && (options.taskId || options.id) ? (options.taskId || options.id) : '').trim()
+  if (!taskId) return { success: false, error: '任务 ID 为空' }
+  const history = _readCodexSessionExportHistory()
+  const task = history.find(item => item.taskId === taskId)
+  if (!task) return { success: false, error: '导出任务不存在' }
+  const status = String(task.status || '').trim()
+  if (status === 'pending' || status === 'running') {
+    codexSessionExportCanceledTasks.add(taskId)
+  }
+  if (task.filePath && fs.existsSync(task.filePath)) fs.unlinkSync(task.filePath)
+  codexSessionExportTasks.delete(taskId)
+  _writeCodexSessionExportHistory(history.filter(item => item.taskId !== taskId))
+  return { success: true, taskId, canceled: status === 'pending' || status === 'running' }
+}
+
+function exportCliSessionsArchive (options = {}) {
+  const rawItems = Array.isArray(options && options.items) ? options.items : []
+  const items = rawItems.length > 0 ? rawItems : [options]
+  const exportedAt = Date.now()
+  const manifest = {
+    format: 'aideck-codex-session-archive',
+    version: 1,
+    provider: PLATFORM,
+    exportedAt,
+    sessions: []
+  }
+  const zipEntries = []
+  const failures = []
+  const usedNames = new Set()
+
+  for (const item of items) {
+    const found = _findCodexSessionForOperation(item && item.sessionId, item && (item.sourcePath || item.path), options)
+    if (!found) {
+      failures.push({ sessionId: item && item.sessionId ? item.sessionId : '', error: '会话不存在或已被移动' })
+      continue
+    }
+    const { source, session } = found
+    if (session.status === 'broken') {
+      failures.push({ sessionId: session.sessionId || '', error: '异常会话不能导出，请先修复索引或会话文件' })
+      continue
+    }
+    if (!session.sessionId || !session.path || !fs.existsSync(session.path)) {
+      failures.push({ sessionId: session.sessionId || '', error: '会话文件不存在，无法导出' })
+      continue
+    }
+
+    const sourceInstanceDir = String(source && source.instanceDir ? source.instanceDir : '').trim()
+    const thread = _getCodexThreadRowById(sourceInstanceDir, session.sessionId)
+    const sourceIndexEntry = _readCodexSessionIndexMap(sourceInstanceDir).get(session.sessionId) || null
+    const stemBase = _sanitizeZipEntryNamePart(`${session.updatedAt || exportedAt}-${session.sessionId}`, session.sessionId || 'session')
+    let stem = stemBase
+    let index = 2
+    while (usedNames.has(stem)) {
+      stem = `${stemBase}-${index}`
+      index += 1
+    }
+    usedNames.add(stem)
+    const entryPath = `sessions/${stem}.jsonl`
+    zipEntries.push({
+      name: entryPath,
+      data: fs.readFileSync(session.path),
+      mtime: session.updatedAt || exportedAt
+    })
+    manifest.sessions.push({
+      session: {
+        sessionId: session.sessionId || '',
+        title: session.title || '',
+        summary: session.summary || '',
+        workspacePath: session.workspacePath || '',
+        workspaceName: session.workspaceName || '',
+        updatedAt: session.updatedAt || 0,
+        createdAt: session.createdAt || 0,
+        archived: session.archived === true || session.status === 'archived',
+        status: session.status || '',
+        resumeCommand: session.resumeCommand || (session.sessionId ? `codex resume ${session.sessionId}` : '')
+      },
+      source: {
+        sourceId: source.id || '',
+        sourceType: source.sourceType || '',
+        sourceName: source.sourceName || '',
+        accountId: source.account && source.account.id ? source.account.id : '',
+        accountEmail: source.account && source.account.email ? source.account.email : '',
+        originalPath: session.path || '',
+        relativePath: session.path && sourceInstanceDir && _isPathInside(sourceInstanceDir, session.path)
+          ? path.relative(sourceInstanceDir, session.path)
+          : ''
+      },
+      file: entryPath,
+      sqlite: {
+        columns: thread.columns,
+        row: thread.row
+      },
+      sessionIndexEntry: sourceIndexEntry
+    })
+  }
+
+  if (manifest.sessions.length === 0) {
+    return { success: false, error: failures[0] ? failures[0].error : '没有可导出的会话', exported: 0, failed: failures.length, failures }
+  }
+
+  zipEntries.unshift({
+    name: 'manifest.json',
+    data: JSON.stringify(manifest, null, 2) + '\n',
+    mtime: exportedAt
+  })
+  const archive = _createZipBuffer(zipEntries)
+  return {
+    success: failures.length === 0,
+    fileName: `aideck-codex-sessions-${new Date(exportedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)}.zip`,
+    mimeType: 'application/zip',
+    archiveBase64: archive.toString('base64'),
+    exported: manifest.sessions.length,
+    failed: failures.length,
+    failures
+  }
+}
+
+function _parseCodexSessionArchiveManifest (manifestText) {
+  let manifest
+  try {
+    manifest = JSON.parse(String(manifestText || ''))
+  } catch {
+    throw new Error('压缩包 manifest.json 不是有效 JSON')
+  }
+  if (!manifest || manifest.format !== 'aideck-codex-session-archive') {
+    throw new Error('不是 AiDeck Codex 会话导出压缩包')
+  }
+  if (!Array.isArray(manifest.sessions) || manifest.sessions.length === 0) {
+    throw new Error('压缩包中没有可导入的会话')
+  }
+  return manifest
+}
+
+function _getCodexImportedWorkspaceWarning (session) {
+  const workspacePath = String(session && session.workspacePath ? session.workspacePath : '').trim()
+  if (!workspacePath) return ''
+  try {
+    if (fs.existsSync(workspacePath)) return ''
+  } catch {}
+  return `原工作区路径不存在：${workspacePath}。会话已导入，但在这台电脑继续前需要确认工作区路径。`
+}
+
+function importCliSessionsArchive (options = {}) {
+  const targetAccountId = String(options && (options.targetAccountId || options.accountId) ? (options.targetAccountId || options.accountId) : '').trim()
+  if (!targetAccountId) return { success: false, error: '请选择导入目标实例账号' }
+  const isDefaultTarget = targetAccountId === 'default' || targetAccountId === '__default__'
+  const targetAccount = isDefaultTarget ? null : storage.getAccount(PLATFORM, targetAccountId)
+  if (!isDefaultTarget && !targetAccount) return { success: false, error: '目标实例账号不存在' }
+
+  let archiveBuffer = null
+  if (options && options.archiveBase64) {
+    archiveBuffer = Buffer.from(String(options.archiveBase64 || ''), 'base64')
+  } else {
+    const archivePath = String(options && (options.archivePath || options.path) ? (options.archivePath || options.path) : '').trim()
+    if (!archivePath || !fs.existsSync(archivePath)) return { success: false, error: '请选择有效的会话压缩包' }
+    archiveBuffer = fs.readFileSync(archivePath)
+  }
+
+  let zipEntries
+  let manifest
+  try {
+    zipEntries = _readZipEntries(archiveBuffer)
+    const manifestBuffer = zipEntries.get('manifest.json')
+    if (!manifestBuffer) throw new Error('压缩包缺少 manifest.json')
+    manifest = _parseCodexSessionArchiveManifest(manifestBuffer.toString('utf8'))
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+
+  const targetInstanceDir = isDefaultTarget ? _getDefaultCodexHomeDir(options) : _resolveBoundCodexCliInstanceDir(targetAccountId, targetAccount)
+  const results = []
+  const warnings = []
+
+  try {
+    fileUtils.ensureDir(targetInstanceDir)
+    if (isDefaultTarget) _ensureCodexInstanceSessionEntries(targetInstanceDir)
+    else _ensureCodexCliSharedEntries(targetInstanceDir)
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+
+  for (const item of manifest.sessions) {
+    const session = item && item.session && typeof item.session === 'object' ? item.session : {}
+    const oldSessionId = String(session.sessionId || '').trim()
+    const fileName = String(item && item.file ? item.file : '').trim()
+    const fileBuffer = fileName ? zipEntries.get(fileName) : null
+    if (!oldSessionId || !fileBuffer) {
+      results.push({ success: false, sessionId: oldSessionId, error: '会话文件信息不完整' })
+      continue
+    }
+
+    const nowMs = Date.now()
+    const incomingUpdatedAt = Number(session.updatedAt || session.createdAt || 0) || 0
+    const existing = _findExistingCodexImportedSession(targetInstanceDir, oldSessionId)
+    if (existing && Number(existing.updatedAt || 0) >= incomingUpdatedAt) {
+      results.push({
+        success: true,
+        skipped: true,
+        sessionId: existing.sessionId,
+        originalSessionId: oldSessionId,
+        path: existing.path || '',
+        reason: 'target_is_newer'
+      })
+      continue
+    }
+    const newSessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.createHash('sha1').update(`${oldSessionId}:${targetAccountId}:${nowMs}:${Math.random()}`).digest('hex').slice(0, 32)
+    const targetPath = _buildCodexCopiedSessionPath(targetInstanceDir, session, newSessionId, nowMs)
+    try {
+      if (fs.existsSync(targetPath)) throw new Error('目标实例已存在同名会话文件')
+      if (existing) _removeCodexImportedSession(targetInstanceDir, existing)
+      _writeCodexSessionTextWithNewId(fileBuffer.toString('utf8'), targetPath, oldSessionId, newSessionId, item.source && item.source.originalPath ? item.source.originalPath : '')
+
+      const insertedThread = _insertCodexThreadRowForCopy(
+        targetInstanceDir,
+        item.sqlite && item.sqlite.row,
+        session,
+        newSessionId,
+        targetPath,
+        nowMs
+      )
+      if (!insertedThread.success) throw new Error(insertedThread.error || '写入目标 SQLite 索引失败')
+      if (insertedThread.warning) warnings.push(insertedThread.warning)
+
+      const indexEntry = _buildCodexCopiedSessionIndexEntry(item.sessionIndexEntry || null, session, newSessionId, targetPath, nowMs)
+      indexEntry.aideck_import_source_session_id = oldSessionId
+      indexEntry.aideck_import_source_updated_at_ms = incomingUpdatedAt
+      indexEntry.aideck_imported_at_ms = nowMs
+      const indexed = _upsertCodexSessionIndexEntry(targetInstanceDir, newSessionId, indexEntry)
+      if (!indexed.success) throw new Error(indexed.error || '写入目标 session_index.jsonl 失败')
+
+      const workspaceWarning = _getCodexImportedWorkspaceWarning(session)
+      if (workspaceWarning && !warnings.includes(workspaceWarning)) warnings.push(workspaceWarning)
+      results.push({
+        success: true,
+        sessionId: newSessionId,
+        originalSessionId: oldSessionId,
+        path: targetPath,
+        warning: workspaceWarning
+      })
+    } catch (err) {
+      try {
+        if (targetPath && fs.existsSync(targetPath)) fs.unlinkSync(targetPath)
+      } catch {}
+      try {
+        _deleteCodexThreadRow(targetInstanceDir, newSessionId)
+        _removeCodexSessionIndexEntry(targetInstanceDir, newSessionId)
+      } catch {}
+      results.push({ success: false, sessionId: oldSessionId, error: err && err.message ? err.message : String(err) })
+    }
+  }
+
+  const imported = results.filter(item => item.success && !item.skipped).length
+  const skipped = results.filter(item => item.success && item.skipped).length
+  const failed = results.filter(item => !item.success).length
+  if (imported > 0) {
+    if (!isDefaultTarget) {
+      storage.updateAccount(PLATFORM, targetAccountId, {
+        [CODEX_CLI_INSTANCE_DIR_FIELD]: targetInstanceDir
+      })
+    }
+  }
+
+  return {
+    success: failed === 0,
+    results,
+    imported,
+    skipped,
+    failed,
+    targetAccountId,
+    targetAccountEmail: isDefaultTarget ? '默认 ~/.codex' : (targetAccount.email || ''),
+    targetType: isDefaultTarget ? 'default' : 'account',
+    targetInstanceDir,
+    warnings
+  }
+}
+
 function listCliSessionTrash () {
   const rootDir = _getCodexSessionTrashRootDir()
   let entries = []
@@ -3125,9 +3999,10 @@ function _cleanCodexSessionIndexesForSource (source) {
 
 function cleanCliSessionIndexes (options = {}) {
   const accountIdFilter = String(options && options.accountId ? options.accountId : '').trim()
+  const defaultOnly = accountIdFilter === '__default__' || accountIdFilter === 'default'
   const allAccounts = storage.listAccounts(PLATFORM)
   const accounts = accountIdFilter
-    ? allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter)
+    ? (defaultOnly ? [] : allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter))
     : allAccounts
   const sources = _discoverCodexSessionSources(accounts, Object.assign({}, options, { accountId: accountIdFilter }))
   const results = sources.map(_cleanCodexSessionIndexesForSource)
@@ -3147,9 +4022,10 @@ function cleanCliSessionIndexes (options = {}) {
 
 function listCliSessions (options = {}) {
   const accountIdFilter = String(options && options.accountId ? options.accountId : '').trim()
+  const defaultOnly = accountIdFilter === '__default__' || accountIdFilter === 'default'
   const allAccounts = storage.listAccounts(PLATFORM)
   const accounts = accountIdFilter
-    ? allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter)
+    ? (defaultOnly ? [] : allAccounts.filter(account => String(account && account.id ? account.id : '') === accountIdFilter))
     : allAccounts
   const sourceResults = _discoverCodexSessionSources(accounts, Object.assign({}, options, { accountId: accountIdFilter }))
     .map(_listCodexSessionsForSource)
@@ -6814,6 +7690,13 @@ module.exports = {
   listCliSessions,
   loadCliSessionMessages,
   prepareCliSessionResume,
+  startExportCliSessionsArchiveTask,
+  listExportCliSessionsArchiveTasks,
+  getExportCliSessionsArchiveTask,
+  readExportCliSessionsArchive,
+  deleteExportCliSessionsArchiveTask,
+  exportCliSessionsArchive,
+  importCliSessionsArchive,
   copyCliSessionToInstance,
   moveCliSessionToInstance,
   archiveCliSession,
