@@ -2,15 +2,15 @@
   "version": "1.0",
   "announcements": [
     {
-      "id": "ann-2026-05-aideck-1-0-5-update",
+      "id": "ann-2026-05-aideck-1-0-6-update",
       "type": "feature",
       "priority": 350,
-      "version": "1.0.5",
+      "version": "1.0.6",
       "releaseStatus": "reviewing",
-      "marketVersion": "1.0.4",
-      "title": "AiDeck v1.0.5 更新",
-      "summary": "新增 Antigravity 唤醒调度和系统级配额预警，并带来一些 CLI 体验优化。",
-      "content": "本次更新：\n1. Antigravity 新增唤醒调度：支持账号卡片立即唤醒、每日/每周/间隔/配额重置/启动后定时、后台执行、运行轮询、历史结果、下次触发、模型和提示词配置，并改用官方 Language Server / Cascade 执行链路。\n2. Codex / Antigravity / Gemini CLI 新增系统级配额预警，可按当前激活账号的剩余配额阈值发送系统通知。\n3. 其他体验优化：Gemini CLI 支持配置命令位置、自动检测和版本展示；Codex 唤醒弹窗支持运行中关闭，并优化默认时间和模型选项。",
+      "marketVersion": "1.0.5",
+      "title": "AiDeck v1.0.6 更新",
+      "summary": "优化 Codex Token / JSON 导入体验，支持通过网页版会话 JSON 跳过 Codex 授权手机号验证。",
+      "content": "本次更新：\n1. Codex Token / JSON 导入说明已调整，明确支持当前应用导出的 JSON、按示例手动拼接的 JSON，以及 chatgpt.com/api/auth/session 返回的 JSON；其中 session JSON 主要用于在网页版已登录时导入账号，跳过 Codex 授权流程中的手机号验证。\n2. 修复通过 chatgpt.com/api/auth/session 导入的 Codex 账号被误判为“当前本地账号未导入”的问题，同一账号会根据 user_id、account_id、邮箱和 token 信息综合识别。\n3. 优化 Codex 自动切号后的客户端重启判断，macOS 下可识别 Codex App 主进程、Helper 和 app-server，减少切号成功但未自动重启的情况。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -27,15 +27,15 @@
       "expiresAt": null,
       "locales": {
         "zh-CN": {
-          "title": "AiDeck v1.0.5 更新",
-          "summary": "新增 Antigravity 唤醒调度和系统级配额预警，并带来一些 CLI 体验优化。",
-          "content": "本次更新：\n1. Antigravity 新增唤醒调度：支持账号卡片立即唤醒、每日/每周/间隔/配额重置/启动后定时、后台执行、运行轮询、历史结果、下次触发、模型和提示词配置，并改用官方 Language Server / Cascade 执行链路。\n2. Codex / Antigravity / Gemini CLI 新增系统级配额预警，可按当前激活账号的剩余配额阈值发送系统通知。\n3. 其他体验优化：Gemini CLI 支持配置命令位置、自动检测和版本展示；Codex 唤醒弹窗支持运行中关闭，并优化默认时间和模型选项。",
+          "title": "AiDeck v1.0.6 更新",
+          "summary": "优化 Codex Token / JSON 导入体验，支持通过网页版会话 JSON 跳过 Codex 授权手机号验证。",
+          "content": "本次更新：\n1. Codex Token / JSON 导入说明已调整，明确支持当前应用导出的 JSON、按示例手动拼接的 JSON，以及 chatgpt.com/api/auth/session 返回的 JSON；其中 session JSON 主要用于在网页版已登录时导入账号，跳过 Codex 授权流程中的手机号验证。\n2. 修复通过 chatgpt.com/api/auth/session 导入的 Codex 账号被误判为“当前本地账号未导入”的问题，同一账号会根据 user_id、account_id、邮箱和 token 信息综合识别。\n3. 优化 Codex 自动切号后的客户端重启判断，macOS 下可识别 Codex App 主进程、Helper 和 app-server，减少切号成功但未自动重启的情况。",
           "actionLabel": "查看项目"
         },
         "en-US": {
-          "title": "AiDeck v1.0.5 Update",
-          "summary": "Adds Antigravity wake-up scheduling and system quota warnings, plus CLI experience improvements.",
-          "content": "Updates:\n1. Added Antigravity wake-up scheduling: account-card launch, daily/weekly/interval/quota-reset/startup schedules, background execution, running-state polling, history, next trigger display, model and prompt settings, and the official Language Server / Cascade execution path.\n2. Added system quota warnings for Codex, Antigravity, and Gemini CLI, with notifications based on the active account's remaining quota thresholds.\n3. Other experience improvements: Gemini CLI now supports command path configuration, auto-detection, and version display; Codex wake-up dialogs can be closed while running, with improved default time and model options.",
+          "title": "AiDeck v1.0.6 Update",
+          "summary": "Improves Codex Token / JSON import guidance and supports using web session JSON to skip Codex authorization phone verification.",
+          "content": "Updates:\n1. Clarified Codex Token / JSON import guidance for app-exported JSON, manually composed JSON that follows the example, and JSON returned by chatgpt.com/api/auth/session; the session JSON path is mainly for importing an already signed-in web session to skip phone verification in the Codex authorization flow.\n2. Fixed Codex accounts imported from chatgpt.com/api/auth/session being incorrectly shown as a pending local account; matching now combines user_id, account_id, email, and token signals.\n3. Improved Codex App restart detection after auto-switch on macOS by recognizing the main app process, Helper processes, and app-server, reducing cases where switching succeeded but the app was not restarted.",
           "actionLabel": "View Project"
         }
       }

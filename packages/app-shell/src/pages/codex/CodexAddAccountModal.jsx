@@ -32,18 +32,13 @@ export default function GeminiAddAccountModal ({
   oauthRecovered,
   oauthPolling,
   onSubmitOAuthCallback,
-  idTokenInput,
-  onIdTokenInputChange,
-  accessTokenInput,
-  onAccessTokenInputChange,
-  refreshTokenInput,
-  onRefreshTokenInputChange,
-  onAddWithToken,
+  onOpenSessionTokenPage,
   importJson,
   onImportJsonChange,
   jsonImportRequiredText,
   jsonImportExample,
   onImportJson,
+  jsonImporting,
   importingLocal,
   onImportLocal,
   toast
@@ -156,29 +151,37 @@ export default function GeminiAddAccountModal ({
 
       {addTab === 'token' && (
         <>
-          <div className='form-group'>
-            <label className='form-label'>手动添加 Token</label>
-            <input className='form-input' placeholder='id_token（可选）' value={idTokenInput} onChange={(e) => onIdTokenInputChange(e.target.value)} />
-            <input className='form-input' style={{ marginTop: 8 }} placeholder='access_token（至少填写 id_token/access_token 之一）' value={accessTokenInput} onChange={(e) => onAccessTokenInputChange(e.target.value)} />
-            <input className='form-input' style={{ marginTop: 8 }} placeholder='refresh_token（可选）' value={refreshTokenInput} onChange={(e) => onRefreshTokenInputChange(e.target.value)} />
-            <div className='oauth-action-row' style={{ marginTop: 10 }}>
-              <button className='btn btn-primary' onClick={onAddWithToken}>添加 Token 账号</button>
-            </div>
-          </div>
-
-          <div className='oauth-divider'>或粘贴 JSON 导入</div>
-
           <div className='form-group' style={{ marginBottom: 0 }}>
-            <label className='form-label'>账号 JSON 数据</label>
+            <label className='form-label'>
+              账号 JSON 数据
+              <button
+                type='button'
+                className='link-button'
+                style={{ marginLeft: 10 }}
+                onClick={onOpenSessionTokenPage}
+              >
+                查看当前登录 Token
+              </button>
+            </label>
+            <div className='form-hint'>
+              支持导入当前应用导出的 Codex 账号 JSON，也可按下方示例手动拼接。还可以打开当前登录 Token 页面，复制 chatgpt.com/api/auth/session 返回的 JSON 后导入，适用于网页版已登录、手机号验证暂时不便完成的场景。
+            </div>
             <textarea
               className='form-textarea'
-              placeholder='[{\"email\":\"...\",\"access_token\":\"...\",\"refresh_token\":\"...\"}]'
+              style={{ marginTop: 8 }}
+              placeholder='粘贴当前应用导出的 JSON、按示例拼接的 JSON，或 https://chatgpt.com/api/auth/session 返回的 JSON'
               value={importJson}
               onChange={(e) => onImportJsonChange(e.target.value)}
             />
-            <JsonImportHelp requiredText={jsonImportRequiredText} example={jsonImportExample} />
+            <JsonImportHelp
+              title='支持格式与示例（点击展开）'
+              requiredText={jsonImportRequiredText}
+              example={jsonImportExample}
+            />
             <div className='oauth-action-row' style={{ marginTop: 10 }}>
-              <button className='btn btn-primary' onClick={onImportJson}>导入 JSON</button>
+              <button className='btn btn-primary' onClick={onImportJson} disabled={jsonImporting}>
+                {jsonImporting ? <><ArrowPathIcon size={14} style={{ marginRight: 6 }} spinning /> 转换中...</> : '导入 JSON'}
+              </button>
             </div>
           </div>
         </>

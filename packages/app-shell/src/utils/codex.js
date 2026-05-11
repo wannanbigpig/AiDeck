@@ -83,6 +83,76 @@ export function normalizeCodexAdvancedSettings (raw) {
   return next
 }
 
+function isUsableCodexEmail(value) {
+  const text = String(value || '').trim()
+  if (!text.includes('@')) return false
+  const normalized = text.toLowerCase()
+  return normalized !== 'unknown@codex' && normalized !== 'local@codex'
+}
+
+function shortCodexId(value, head = 8, tail = 6) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text.length <= head + tail + 1) return text
+  return `${text.slice(0, head)}...${text.slice(-tail)}`
+}
+
+export function resolveCodexAccountDisplayName(account) {
+  const email = String(account?.email || '').trim()
+  if (isUsableCodexEmail(email)) {
+    return { text: email, kind: 'email' }
+  }
+
+  const tokenEmail = resolveCodexEmailFromToken(account)
+  if (tokenEmail) {
+    return { text: tokenEmail, kind: 'email' }
+  }
+
+  const accountName = String(account?.account_name || '').trim()
+  if (accountName) {
+    return { text: accountName, kind: 'text' }
+  }
+
+  const workspace = String(account?.workspace || '').trim()
+  if (workspace && workspace !== '个人' && workspace !== '团队') {
+    return { text: workspace, kind: 'text' }
+  }
+
+  const accountId = String(account?.account_id || '').trim()
+  if (accountId) {
+    return { text: `账号 ${shortCodexId(accountId)}`, kind: 'id' }
+  }
+
+  const id = String(account?.id || '').trim()
+  if (id) {
+    return { text: `账号 ${shortCodexId(id)}`, kind: 'id' }
+  }
+
+  return { text: 'Codex 账号', kind: 'text' }
+}
+
+function resolveCodexEmailFromToken(account) {
+  const tokens = (account && account.tokens && typeof account.tokens === 'object') ? account.tokens : {}
+  const idPayload = decodeJwtPayload(tokens.id_token)
+  const accessPayload = decodeJwtPayload(tokens.access_token)
+  const candidates = [
+    idPayload && idPayload.email,
+    idPayload && idPayload.preferred_username,
+    idPayload && idPayload.upn,
+    idPayload && idPayload['https://api.openai.com/profile'] && idPayload['https://api.openai.com/profile'].email,
+    accessPayload && accessPayload.email,
+    accessPayload && accessPayload.preferred_username,
+    accessPayload && accessPayload.upn,
+    accessPayload && accessPayload['https://api.openai.com/profile'] && accessPayload['https://api.openai.com/profile'].email
+  ]
+
+  for (let i = 0; i < candidates.length; i++) {
+    const value = String(candidates[i] || '').trim()
+    if (isUsableCodexEmail(value)) return value
+  }
+  return ''
+}
+
 export function readCodexAdvancedSettings () {
   return normalizeCodexAdvancedSettings(readSharedSetting(CODEX_SETTINGS_KEY, null))
 }

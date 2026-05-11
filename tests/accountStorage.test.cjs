@@ -116,6 +116,70 @@ test('Codex 去重应与 codex-tools 一致：同身份 upsert，不同 organiza
   assert.equal(storage.listAccounts('codex').length, 2)
 })
 
+test('导入分析应解释新增、合并和邮箱兜底', () => {
+  resetStorageDir()
+  storage.initStorage()
+
+  const codexFirst = storage.addAccount('codex', {
+    email: 'codex@example.com',
+    account_id: 'acc-1',
+    organization_id: 'org-1',
+    tokens: { access_token: 'a1', refresh_token: 'r1' }
+  })
+  const codexAnalysis = storage.analyzeAccountImport('codex', [
+    {
+      email: 'codex@example.com',
+      account_id: 'acc-1',
+      organization_id: 'org-1',
+      tokens: { access_token: 'a2', refresh_token: 'r2' }
+    },
+    {
+      email: 'new@example.com',
+      account_id: 'acc-2',
+      organization_id: 'org-1',
+      tokens: { access_token: 'a3', refresh_token: 'r3' }
+    }
+  ])
+
+  assert.equal(codexAnalysis.total, 2)
+  assert.equal(codexAnalysis.merged, 1)
+  assert.equal(codexAnalysis.added, 1)
+  assert.equal(codexAnalysis.items[0].action, 'merged')
+  assert.equal(codexAnalysis.items[0].reason, 'same_id')
+  assert.equal(codexAnalysis.items[0].existing_account_id, codexFirst.id)
+  assert.equal(codexAnalysis.items[1].action, 'added')
+
+  const agFirst = storage.addAccount('antigravity', {
+    email: 'same@example.com',
+    token: { refresh_token: 'ag-r1', access_token: 'ag-a1', project_id: 'p1' }
+  })
+  const agAnalysis = storage.analyzeAccountImport('antigravity', {
+    email: 'same@example.com',
+    token: { refresh_token: 'ag-r2', access_token: 'ag-a2', project_id: 'p2' }
+  })
+
+  assert.equal(agAnalysis.merged, 1)
+  assert.equal(agAnalysis.items[0].action, 'merged')
+  assert.equal(agAnalysis.items[0].reason, 'single_same_email')
+  assert.equal(agAnalysis.items[0].existing_account_id, agFirst.id)
+
+  storage.addAccount('gemini', {
+    email: 'gemini@example.com',
+    auth_id: 'auth-1',
+    access_token: 'g-a1',
+    refresh_token: 'g-r1'
+  })
+  const geminiAnalysis = storage.analyzeAccountImport('gemini', {
+    email: 'other@example.com',
+    auth_id: 'auth-1',
+    access_token: 'g-a2',
+    refresh_token: 'g-r2'
+  })
+
+  assert.equal(geminiAnalysis.merged, 1)
+  assert.equal(geminiAnalysis.items[0].reason, 'same_auth_id')
+})
+
 test('OAuth pending 会话应支持保存/读取/清理', () => {
   resetStorageDir()
   storage.initStorage()

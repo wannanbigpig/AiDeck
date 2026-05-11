@@ -159,6 +159,103 @@ test('normalizeCodexAdvancedSettings 应清理旧触发模型配置并保留优�
   assert.equal(fallback.codexCliInstanceMode, 'bound')
 })
 
+test('Codex 自动切号候选应跳过失效账号并按健康分排序', async () => {
+  const { rankCodexAutoSwitchCandidates } = await loadRuntimeHelper('autoSwitchCandidates.js')
+  const nowMs = Date.UTC(2026, 4, 11, 8, 0, 0)
+  const current = { id: 'current', email: 'user@example.com' }
+
+  const ranked = rankCodexAutoSwitchCandidates({
+    nowMs,
+    current,
+    settings: { autoSwitchPreferSameEmail: true },
+    hitHourly: true,
+    hitWeekly: false,
+    hourlyThreshold: 20,
+    weeklyThreshold: 20,
+    accounts: [
+      {
+        id: 'invalid-best-quota',
+        email: 'user@example.com',
+        invalid: true,
+        quota: { hourly_percentage: 99, weekly_percentage: 99, updated_at: nowMs }
+      },
+      {
+        id: 'stale-same-email',
+        email: 'user@example.com',
+        quota: { hourly_percentage: 92, weekly_percentage: 92, updated_at: nowMs - 30 * 60 * 60 * 1000 }
+      },
+      {
+        id: 'fresh-different-email',
+        email: 'other@example.com',
+        quota: {
+          hourly_percentage: 82,
+          weekly_percentage: 82,
+          updated_at: nowMs,
+          additional_rate_limits: [
+            { hourly_percentage: 80, weekly_percentage: 80 }
+          ]
+        }
+      }
+    ]
+  })
+
+  assert.deepEqual(ranked.map(item => item.account.id), [
+    'fresh-different-email',
+    'stale-same-email'
+  ])
+})
+
+test('Antigravity 自动切号候选应按触发分组和账号健康度排序', async () => {
+  const { rankAntigravityAutoSwitchCandidates } = await loadRuntimeHelper('autoSwitchCandidates.js')
+  const nowMs = Date.UTC(2026, 4, 11, 8, 0, 0)
+  const current = { id: 'current' }
+  const quotaMaps = {
+    fresh: { claude: 40, gemini_pro: 35 },
+    stale: { claude: 80, gemini_pro: 80 },
+    invalid: { claude: 95, gemini_pro: 95 }
+  }
+
+  const ranked = rankAntigravityAutoSwitchCandidates({
+    nowMs,
+    current,
+    watchGroups: ['claude', 'gemini_pro'],
+    triggeredGroups: ['claude'],
+    threshold: 20,
+    getQuotaPercentageMap: account => quotaMaps[account.id] || {},
+    resolveCandidateScore: (map, groups) => Math.max(...groups.map(group => Number(map[group])).filter(Number.isFinite)),
+    accounts: [
+      { id: 'invalid', invalid: true, quota: { updated_at: nowMs } },
+      { id: 'stale', quota: { updated_at: nowMs - 30 * 60 * 60 * 1000 } },
+      { id: 'fresh', quota: { updated_at: nowMs } }
+    ]
+  })
+
+  assert.deepEqual(ranked.map(item => item.account.id), ['fresh', 'stale'])
+})
+
+test('formatImportSummary 应展示导入新增和合并摘要', async () => {
+  const { formatImportSummary, summarizeImportDetails } = await loadRuntimeHelper('importSummary.js')
+  const details = [
+    { action: 'added', reason: 'new_identity' },
+    { action: 'merged', reason: 'same_refresh_token' },
+    { action: 'merged', reason: 'same_refresh_token' }
+  ]
+
+  assert.deepEqual(summarizeImportDetails(details, 0), {
+    total: 3,
+    counts: {
+      added: 1,
+      merged: 2,
+      skipped: 0,
+      invalid: 0
+    },
+    reasons: ['new_identity', 'same_refresh_token'],
+    hasDetails: true
+  })
+  assert.equal(formatImportSummary(details, 0), '导入完成：新增 1，合并 2（新身份、同 refresh_token）')
+  assert.equal(formatImportSummary([], 2), '成功导入 2 个账号')
+})
+
 test('Codex 配额解析应忽略代码审查额度并保留额外模型与积分', () => {
   const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
   const parsed = codex._internal.parseCodexQuota({
@@ -226,6 +323,162 @@ test('Codex 配额解析应忽略代码审查额度并保留额外模型与积�
     approx_local_messages: [0, 0],
     approx_cloud_messages: [0, 0]
   })
+})
+
+test('Codex plan_type 提取应兼容账号记录和套餐对象', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+
+  assert.equal(codex._internal.extractCodexPlanType({
+    accounts: [
+      {
+        id: '3894ffd7-0578-45b8-b116-9436b994192e',
+        account_user_id: 'user-0vmjXOapR2JnnkTbnutcHGpf__3894ffd7-0578-45b8-b116-9436b994192e',
+        structure: 'personal',
+        plan_type: 'plus',
+        name: null,
+        profile_picture_url: null
+      }
+    ],
+    default_account_id: '3894ffd7-0578-45b8-b116-9436b994192e',
+    account_ordering: ['3894ffd7-0578-45b8-b116-9436b994192e']
+  }, {}), 'plus')
+
+  assert.equal(codex._internal.extractCodexPlanType({
+    accounts: [
+      { id: 'acc-free', plan_type: 'free' },
+      { id: 'acc-plus', subscription: { plan_type: 'plus' } }
+    ]
+  }, { accountId: 'acc-plus' }), 'plus')
+
+  assert.equal(codex._internal.extractCodexPlanType({
+    account: {
+      id: 'acc-team',
+      current_plan: { slug: 'team' }
+    }
+  }, { accountId: 'acc-team' }), 'team')
+})
+
+test('Codex accounts/check 账号信息应补全本地账号字段', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+
+  assert.deepEqual(codex._internal.parseAccountProfileFromCheckResponse({
+    accounts: [
+      {
+        id: 'acc-plus',
+        account_user_id: 'user-abc__acc-plus',
+        structure: 'personal',
+        plan_type: 'plus',
+        name: null
+      }
+    ],
+    default_account_id: 'acc-plus',
+    account_ordering: ['acc-plus']
+  }, {}), {
+    userId: 'user-abc__acc-plus',
+    accountId: 'acc-plus',
+    organizationId: '',
+    accountName: '',
+    accountStructure: 'personal'
+  })
+})
+
+test('Codex JWT profile namespace 应用于提取邮箱', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const accessToken = buildFakeJwt({
+    sub: 'auth0|abc',
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'acc-plus',
+      chatgpt_account_user_id: 'user-abc__acc-plus',
+      chatgpt_plan_type: 'plus'
+    },
+    'https://api.openai.com/profile': {
+      email: 'user@example.com',
+      email_verified: true
+    }
+  })
+
+  assert.deepEqual(codex._internal.extractCodexJwtProfile({
+    access_token: accessToken
+  }), {
+    email: 'user@example.com',
+    emailVerified: true
+  })
+})
+
+test('Codex JSON 导入应支持 ChatGPT session 响应格式', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const normalized = codex._internal.normalizeCodexJsonImportRecord({
+    user: {
+      id: 'user-abc',
+      email: 'user@example.com'
+    },
+    expires: '2026-08-09T06:23:18.688Z',
+    account: {
+      id: 'acc-plus',
+      planType: 'plus',
+      structure: 'personal'
+    },
+    accessToken: 'access.jwt.token',
+    authProvider: 'openai'
+  })
+
+  assert.equal(normalized.access_token, 'access.jwt.token')
+  assert.equal(normalized.id_token, 'access.jwt.token')
+  assert.equal(normalized.refresh_token, '')
+  assert.equal(normalized.account_id, 'acc-plus')
+  assert.equal(normalized.plan_type, 'plus')
+  assert.equal(normalized.account_structure, 'personal')
+  assert.equal(normalized.email, 'user@example.com')
+  assert.equal(normalized.user_id, 'user-abc')
+  assert.equal(normalized.type, 'codex')
+  assert.equal(normalized.websockets, false)
+})
+
+test('Codex 本地账号匹配应兼容 ChatGPT session JSON 导入的账号', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const accessToken = buildFakeJwt({
+    sub: 'user-session-1',
+    'https://api.openai.com/auth': {
+      chatgpt_user_id: 'user-session-1',
+      chatgpt_account_id: 'account-session-1'
+    },
+    'https://api.openai.com/profile': {
+      email: 'session@example.com'
+    }
+  })
+
+  const matched = codex._internal.findCodexAccountByLocalTokens([
+    {
+      id: 'imported-from-session',
+      email: 'session@example.com',
+      user_id: 'user-session-1',
+      account_id: 'account-session-1',
+      tokens: {
+        access_token: 'different-session-token',
+        refresh_token: ''
+      }
+    }
+  ], {
+    access_token: accessToken,
+    refresh_token: ''
+  })
+
+  assert.equal(matched.id, 'imported-from-session')
+})
+
+test('Codex 订阅到期时间应从 token claim 提取', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const timestampMs = Date.UTC(2026, 1, 2, 3, 4, 0)
+  const idToken = buildFakeJwt({
+    'https://api.openai.com/auth': {
+      chatgpt_subscription_active_until: { value: String(timestampMs) }
+    }
+  })
+
+  assert.equal(codex._internal.extractCodexSubscriptionActiveUntilFromTokens({
+    id_token: idToken,
+    access_token: ''
+  }), String(timestampMs))
 })
 
 test('resolveCodexSubscriptionDisplay 应展示账号字段并兼容 id_token 订阅到期字段', async () => {
@@ -435,6 +688,20 @@ test('三平台服务应暴露统一共享契约入口', () => {
     assert.equal(typeof svc.refreshQuotaOrUsage, 'function')
     assert.equal(typeof svc.refreshToken, 'function')
   }
+})
+
+test('Codex App 进程识别应覆盖主进程、Helper 和 app-server', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const isAppProcess = codex._internal.isCodexDarwinAppProcessArgs
+
+  assert.equal(isAppProcess('/Applications/Codex.app/Contents/MacOS/Codex'), true)
+  assert.equal(isAppProcess('/Applications/OpenAI Codex.app/Contents/MacOS/Codex'), true)
+  assert.equal(isAppProcess('/Applications/Codex.app/Contents/Frameworks/Codex Helper.app/Contents/MacOS/Codex Helper --type=gpu-process'), true)
+  assert.equal(isAppProcess('/Applications/Codex.app/Contents/Frameworks/Codex Helper (Renderer).app/Contents/MacOS/Codex Helper (Renderer) --type=renderer'), true)
+  assert.equal(isAppProcess('/Applications/Codex.app/Contents/Resources/codex app-server --analytics-default-enabled'), true)
+  assert.equal(isAppProcess('/Applications/Codex.app/Contents/Resources/node_repl'), false)
+  assert.equal(isAppProcess('/Users/tester/.npm-global/bin/codex'), false)
+  assert.equal(isAppProcess('/Users/tester/.vscode/extensions/openai.chatgpt/bin/macos-aarch64/codex app-server'), false)
 })
 
 test('Gemini / Antigravity 服务层批量刷新应返回每个账号结果', async () => {

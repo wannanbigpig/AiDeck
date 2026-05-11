@@ -3508,6 +3508,19 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   margin-bottom: 6px;
 }
 
+.link-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent-blue);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
 .form-hint {
   margin-top: 6px;
   color: var(--text-muted);

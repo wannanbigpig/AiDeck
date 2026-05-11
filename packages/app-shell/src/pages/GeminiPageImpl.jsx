@@ -34,6 +34,7 @@ import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
 import { launchPlatformCli } from '../runtime/launchPlatformCli.js'
+import { formatImportSummary } from '../runtime/importSummary.js'
 
 const GEMINI_JSON_IMPORT_REQUIRED_TEXT = '必填字段：access_token 或 refresh_token 至少一个（支持 tokens.access_token / tokens.refresh_token 或顶层字段）。建议补充 id、email、auth_id、name、selected_auth_type、project_id、tier_id、plan_name、created_at、last_used。'
 
@@ -298,7 +299,7 @@ export default function Gemini ({ onActivity, searchQuery = '' }) {
       return
     }
 
-    toast.success(`成功导入 ${result.imported.length} 个账号`)
+    toast.success(formatImportSummary(result.import_details, result.imported.length))
     onActivity?.(`JSON 导入 Gemini 账号: ${result.imported.length} 个`)
     closeAddModalFromFlow()
     refresh()

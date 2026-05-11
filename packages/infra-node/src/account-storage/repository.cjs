@@ -218,6 +218,136 @@ function createRepository ({
     return accounts.findIndex((existing) => existing.id === account.id || normalizeEmail(existing.email) === normalizeEmail(account.email))
   }
 
+  function findExistingCodexAccountMatch (accounts, incoming) {
+    const incomingId = normalizeString(incoming && incoming.id)
+    if (!incomingId) return { index: -1, reason: 'invalid' }
+    const index = accounts.findIndex((existing) => normalizeString(existing && existing.id) === incomingId)
+    return index >= 0 ? { index, reason: 'same_id' } : { index: -1, reason: 'new_identity' }
+  }
+
+  function findExistingAntigravityAccountMatch (accounts, incoming) {
+    const incomingId = normalizeString(incoming && incoming.id)
+    const incomingEmail = normalizeEmail(incoming && incoming.email)
+    const incomingToken = (incoming && incoming.token) || {}
+    const incomingRefresh = normalizeString(incomingToken.refresh_token)
+    const incomingAccess = normalizeString(incomingToken.access_token)
+    const incomingProject = normalizeString(incomingToken.project_id)
+    let firstEmailMatchIndex = -1
+    let emailMatchCount = 0
+
+    for (let i = 0; i < accounts.length; i++) {
+      const existing = accounts[i] || {}
+      const existingToken = (existing && existing.token) || {}
+      if (incomingId && normalizeString(existing.id) === incomingId) return { index: i, reason: 'same_id' }
+      if (incomingRefresh && normalizeString(existingToken.refresh_token) === incomingRefresh) return { index: i, reason: 'same_refresh_token' }
+      if (incomingAccess && normalizeString(existingToken.access_token) === incomingAccess) return { index: i, reason: 'same_access_token' }
+
+      const existingEmail = normalizeEmail(existing.email)
+      if (!incomingEmail || !existingEmail || incomingEmail !== existingEmail) continue
+      emailMatchCount++
+      if (firstEmailMatchIndex < 0) firstEmailMatchIndex = i
+      if (incomingProject && normalizeString(existingToken.project_id) === incomingProject) return { index: i, reason: 'same_email_project' }
+    }
+    if (emailMatchCount === 1) return { index: firstEmailMatchIndex, reason: 'single_same_email' }
+    if (emailMatchCount > 1) return { index: -1, reason: 'ambiguous_same_email' }
+    return { index: -1, reason: 'new_identity' }
+  }
+
+  function findExistingGeminiAccountMatch (accounts, incoming) {
+    const incomingId = normalizeString(incoming && incoming.id)
+    const incomingEmail = normalizeEmail(incoming && incoming.email)
+    const incomingAuthId = normalizeString(incoming && incoming.auth_id)
+    const incomingRefresh = normalizeString(incoming && (incoming.refresh_token || (incoming.tokens && incoming.tokens.refresh_token)))
+    const incomingAccess = normalizeString(incoming && (incoming.access_token || (incoming.tokens && incoming.tokens.access_token)))
+    let firstEmailMatchIndex = -1
+    let emailMatchCount = 0
+
+    for (let i = 0; i < accounts.length; i++) {
+      const existing = accounts[i] || {}
+      if (incomingId && normalizeString(existing.id) === incomingId) return { index: i, reason: 'same_id' }
+      if (incomingAuthId && normalizeString(existing.auth_id) === incomingAuthId) return { index: i, reason: 'same_auth_id' }
+      if (incomingRefresh && normalizeString(existing.refresh_token || (existing.tokens && existing.tokens.refresh_token)) === incomingRefresh) return { index: i, reason: 'same_refresh_token' }
+      if (incomingAccess && normalizeString(existing.access_token || (existing.tokens && existing.tokens.access_token)) === incomingAccess) return { index: i, reason: 'same_access_token' }
+      const existingEmail = normalizeEmail(existing.email)
+      if (!incomingEmail || !existingEmail || incomingEmail !== existingEmail) continue
+      emailMatchCount++
+      if (firstEmailMatchIndex < 0) firstEmailMatchIndex = i
+    }
+    if (emailMatchCount === 1) return { index: firstEmailMatchIndex, reason: 'single_same_email' }
+    if (emailMatchCount > 1) return { index: -1, reason: 'ambiguous_same_email' }
+    return { index: -1, reason: 'new_identity' }
+  }
+
+  function findExistingAccountMatch (platform, accounts, account) {
+    if (platform === 'codex') return findExistingCodexAccountMatch(accounts, account)
+    if (platform === 'antigravity') return findExistingAntigravityAccountMatch(accounts, account)
+    if (platform === 'gemini') return findExistingGeminiAccountMatch(accounts, account)
+    const index = accounts.findIndex((existing) => existing.id === account.id || normalizeEmail(existing.email) === normalizeEmail(account.email))
+    return index >= 0 ? { index, reason: 'same_id_or_email' } : { index: -1, reason: 'new_identity' }
+  }
+
+  function buildImportAnalysisItem (platform, account, existing, action, reason) {
+    return {
+      platform,
+      action,
+      reason,
+      account_id: String(account && account.id ? account.id : ''),
+      existing_account_id: String(existing && existing.id ? existing.id : ''),
+      email: String((account && account.email) || (existing && existing.email) || ''),
+      name: String((account && account.name) || (account && account.account_name) || (existing && existing.name) || (existing && existing.account_name) || '')
+    }
+  }
+
+  function summarizeImportAnalysisItems (items) {
+    const summary = {
+      total: items.length,
+      added: 0,
+      merged: 0,
+      skipped: 0,
+      invalid: 0
+    }
+    for (let i = 0; i < items.length; i++) {
+      const action = String(items[i] && items[i].action ? items[i].action : '')
+      if (Object.prototype.hasOwnProperty.call(summary, action)) summary[action]++
+    }
+    return summary
+  }
+
+  function analyzeAccountImport (platform, incomingAccounts, options, initStorage) {
+    const opts = options && typeof options === 'object' ? options : {}
+    const incoming = Array.isArray(incomingAccounts) ? incomingAccounts : [incomingAccounts]
+    const accounts = listAccounts(platform, initStorage).slice()
+    const items = []
+
+    for (let i = 0; i < incoming.length; i++) {
+      const prepared = prepareAccountForStorage(platform, incoming[i])
+      if (!prepared) {
+        items.push(buildImportAnalysisItem(platform, null, null, 'invalid', 'invalid_record'))
+        continue
+      }
+
+      const match = findExistingAccountMatch(platform, accounts, prepared)
+      if (match.index >= 0) {
+        const existing = accounts[match.index]
+        if (opts.mode === 'sync' && Number(existing.updated_at || 0) > Number(prepared.updated_at || 0)) {
+          items.push(buildImportAnalysisItem(platform, prepared, existing, 'skipped', 'older_than_existing'))
+          continue
+        }
+        const merged = mergeAccountForStorage(platform, existing, prepared)
+        merged.updated_at = Number(prepared.updated_at || nowMs())
+        accounts[match.index] = merged
+        items.push(buildImportAnalysisItem(platform, merged, existing, 'merged', match.reason))
+        continue
+      }
+
+      prepared.updated_at = Number(prepared.updated_at || nowMs())
+      accounts.push(prepared)
+      items.push(buildImportAnalysisItem(platform, prepared, null, 'added', match.reason))
+    }
+
+    return Object.assign(summarizeImportAnalysisItems(items), { items })
+  }
+
   function mergeCodexAccount (existing, incoming) {
     const existingTokens = (existing && existing.tokens && typeof existing.tokens === 'object') ? existing.tokens : {}
     const incomingTokens = (incoming && incoming.tokens && typeof incoming.tokens === 'object') ? incoming.tokens : {}
@@ -790,6 +920,7 @@ function createRepository ({
     repairIndex,
     listAccounts,
     saveAccounts,
+    analyzeAccountImport,
     getAccount,
     addAccount,
     addAccounts,

@@ -143,6 +143,8 @@ import { useSelectionSet } from '../runtime/useSelectionSet.js'
 import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
+import { rankAntigravityAutoSwitchCandidates } from '../runtime/autoSwitchCandidates.js'
+import { formatImportSummary } from '../runtime/importSummary.js'
 import {
   getQuotaRefreshIssueMessage,
   getAntigravityDeviceIdentityMeta,
@@ -420,7 +422,7 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
           refreshErrors.push(`${acc.email || acc.id}: ${refreshIssue}`)
         }
       }
-      toast.success(`成功导入 ${imported.length} 个账号`)
+      toast.success(formatImportSummary(result.import_details, imported.length))
       if (refreshErrors.length > 0) {
         toast.warning(`其中 ${refreshErrors.length} 个账号首次刷新配额失败`)
       }
@@ -774,24 +776,15 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
 
     if (triggeredGroups.length === 0) return false
 
-    const candidates = allAccounts
-      .filter(acc => acc && acc.id && acc.id !== current.id)
-      .filter(acc => !(acc.invalid || acc.quota?.error))
-      .map(acc => {
-        const map = getQuotaPercentageMap(acc)
-        const hasEnoughForTriggeredGroups = triggeredGroups.every(group => {
-          const val = Number(map[group])
-          return Number.isFinite(val) && val > threshold
-        })
-        return {
-          account: acc,
-          score: resolveCandidateScore(map, watchGroups),
-          hasEnoughForTriggeredGroups
-        }
-      })
-      .filter(item => item.hasEnoughForTriggeredGroups && item.score >= 0)
-      .sort((left, right) => right.score - left.score)
-
+    const candidates = rankAntigravityAutoSwitchCandidates({
+      accounts: allAccounts,
+      current,
+      watchGroups,
+      triggeredGroups,
+      threshold,
+      getQuotaPercentageMap,
+      resolveCandidateScore
+    })
     const next = candidates[0]?.account
     if (!next) {
       logRequestEvent('antigravity.auto-switch', '自动切号未找到可用候选账号', {
@@ -826,7 +819,8 @@ export default function Antigravity({ onActivity, searchQuery = '' }) {
     logRequestEvent('antigravity.auto-switch', '自动切号成功', {
       source,
       current: current.email || current.id,
-      next: next.email || next.id
+      next: next.email || next.id,
+      score: candidates[0]?.score
     })
     return true
   }

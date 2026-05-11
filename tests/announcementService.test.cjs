@@ -96,8 +96,8 @@ test('announcementService 应过滤低于当前版本的旧更新公告', () => 
     {
       id: 'current-update',
       type: 'feature',
-      title: 'AiDeck v1.0.5 更新',
-      version: '1.0.5',
+      title: 'AiDeck v1.0.6 更新',
+      version: '1.0.6',
       targetVersions: '*',
       targetLanguages: ['*'],
       createdAt: '2026-04-28T00:00:00Z'
@@ -110,7 +110,7 @@ test('announcementService 应过滤低于当前版本的旧更新公告', () => 
       targetLanguages: ['*'],
       createdAt: '2026-04-28T00:00:00Z'
     }
-  ], { version: '1.0.5', locale: 'zh-CN' })
+  ], { version: '1.0.6', locale: 'zh-CN' })
 
   assert.deepEqual(list.map(item => item.id), ['current-update', 'background-reminder'])
 })

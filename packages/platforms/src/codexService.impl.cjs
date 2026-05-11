@@ -320,7 +320,7 @@ function clearPendingOAuthSession (sessionId) {
 async function prepareOAuthSession (port) {
   try {
     storage.cleanupOAuthPending(PLATFORM, CODEX_OAUTH_SESSION_TTL_MS)
-    _cleanupActiveOAuthSessions()
+    await _cleanupActiveOAuthSessions()
     const callbackPort = _resolveOAuthPort(port)
     const verifier = _randomBase64Url()
     const challenge = _sha256Base64Url(verifier)
@@ -643,7 +643,12 @@ function getLocalImportStatus () {
 
     const accounts = storage.listAccounts(PLATFORM)
     const matched = _findCodexAccountByLocalTokens(accounts, tokens)
-    const email = String(extractEmailFromJwt(tokens.id_token || tokens.access_token) || '').trim().toLowerCase()
+    const localProfile = _extractCodexJwtProfile(tokens)
+    const email = String(
+      extractEmailFromJwt(tokens.id_token || tokens.access_token) ||
+      localProfile.email ||
+      ''
+    ).trim().toLowerCase()
 
     return {
       success: true,
@@ -830,29 +835,53 @@ async function _importFromLocalAsync () {
 /**
  * 从 JSON 字符串导入账号
  * @param {string} jsonContent
- * @returns {object} { imported: Array, error: string|null }
+ * @returns {Promise<object>} { imported: Array, error: string|null }
  */
-function importFromJson (jsonContent) {
+async function importFromJson (jsonContent) {
   try {
     const parsed = JSON.parse(jsonContent)
     const rawList = Array.isArray(parsed) ? parsed : [parsed]
     const imported = []
+    const importDetails = []
 
     for (let i = 0; i < rawList.length; i++) {
-      const account = normalizeAccount(rawList[i])
+      const normalizedRecord = _normalizeCodexJsonImportRecord(rawList[i])
+      const account = normalizeAccount(normalizedRecord)
       if (account) {
+        const requireQuotaCheck = _isChatGptSessionImportRecord(rawList[i])
+        const existingBefore = _findCodexAccountByLocalTokens(storage.listAccounts(PLATFORM), account.tokens)
         _stampPluginAddedMeta(account, 'json', { override: true })
-        storage.addAccount(PLATFORM, account)
-        imported.push(account)
+        const analysis = typeof storage.analyzeAccountImport === 'function'
+          ? storage.analyzeAccountImport(PLATFORM, account)
+          : null
+        const saved = storage.addAccount(PLATFORM, account)
+        const savedAccount = saved || account
+        if (analysis && Array.isArray(analysis.items) && analysis.items[0]) {
+          importDetails.push(Object.assign({}, analysis.items[0], {
+            account_id: savedAccount.id || analysis.items[0].account_id
+          }))
+        }
+        if (requireQuotaCheck && savedAccount && savedAccount.id) {
+          const quotaResult = await _refreshCodexQuotaAsync(savedAccount, savedAccount.id)
+          if (!quotaResult || quotaResult.success !== true) {
+            if (!existingBefore) {
+              deleteAccount(savedAccount.id)
+            }
+            return { imported: [], import_details: importDetails, error: 'Token 可用性检测失败: ' + ((quotaResult && quotaResult.error) || '刷新配额失败') }
+          }
+          imported.push(storage.getAccount(PLATFORM, savedAccount.id) || savedAccount)
+        } else {
+          imported.push(savedAccount)
+        }
       }
     }
 
     if (imported.length === 0) {
-      return { imported: [], error: '未找到有效的 Codex 账号数据' }
+      return { imported: [], import_details: importDetails, error: '未找到有效的 Codex 账号数据' }
     }
-    return { imported: imported, error: null }
+    return { imported: imported, import_details: importDetails, error: null }
   } catch (err) {
-    return { imported: [], error: 'JSON 解析失败: ' + err.message }
+    return { imported: [], import_details: [], error: 'JSON 解析失败: ' + err.message }
   }
 }
 
@@ -878,26 +907,30 @@ async function addWithToken (idToken, accessToken, refreshToken) {
       throw new Error('refresh_token 换取 access_token 失败')
     }
   }
+  if (!nextIdToken && nextAccessToken) {
+    nextIdToken = nextAccessToken
+  }
 
   const profile = await _fetchCodexProfile(nextAccessToken, nextIdToken)
-  const account = _createCodexAccountFromTokens({
+  const tokenPayload = {
     id_token: nextIdToken,
     access_token: nextAccessToken,
     refresh_token: nextRefreshToken
-  }, 'token', 'token')
-  if (profile.email) account.email = profile.email
-  if (profile.planType) account.plan_type = profile.planType
-  if (profile.accountId) account.account_id = profile.accountId
-  if (profile.organizationId) account.organization_id = profile.organizationId
-  if (profile.accountName) account.account_name = profile.accountName
-  if (profile.accountStructure) account.account_structure = profile.accountStructure
-  if (profile.workspace) account.workspace = profile.workspace
+  }
+  const existingBefore = _findCodexAccountByLocalTokens(storage.listAccounts(PLATFORM), tokenPayload)
+  const account = _createCodexAccountFromTokens(tokenPayload, 'token', 'token')
+  Object.assign(account, _buildCodexProfilePatch(profile))
   _stampPluginAddedMeta(account, 'token')
   const saved = storage.addAccount(PLATFORM, account)
   if (saved && saved.id) {
-    try {
-      await _refreshCodexQuotaAsync(saved, saved.id)
-    } catch {}
+    const quotaResult = await _refreshCodexQuotaAsync(saved, saved.id)
+    if (!quotaResult || quotaResult.success !== true) {
+      if (!existingBefore) {
+        deleteAccount(saved.id)
+      }
+      throw new Error('Token 可用性检测失败: ' + ((quotaResult && quotaResult.error) || '刷新配额失败'))
+    }
+    return storage.getAccount(PLATFORM, saved.id) || saved
   }
   return saved || account
 }
@@ -4563,6 +4596,7 @@ async function _refreshCodexQuotaAsync (account, accountId) {
     // 1. 检查并刷新 token
     let accessToken = tokens.access_token
     let idToken = tokens.id_token || ''
+    let currentTokens = tokens
     if (_isCodexTokenExpired(accessToken)) {
       if (!tokens.refresh_token) {
         const quotaError = _extractCodexQuotaError(401, 'Token 已过期且无 refresh_token')
@@ -4592,6 +4626,7 @@ async function _refreshCodexQuotaAsync (account, accountId) {
         id_token: idToken,
         refresh_token: refreshed.refresh_token || tokens.refresh_token
       })
+      currentTokens = newTokens
       storage.updateAccount(PLATFORM, accountId, { tokens: newTokens })
     }
     if (!accessToken) {
@@ -4601,13 +4636,22 @@ async function _refreshCodexQuotaAsync (account, accountId) {
     }
 
     // 2. 提取 ChatGPT-Account-Id（优先已保存账号标识，其次 JWT claim）
-    const accId =
+    let accId =
       _firstNonEmptyString(
         account.account_id,
-        tokens.account_id,
+        currentTokens.account_id,
         _extractChatGptAccountId(accessToken),
-        _extractChatGptAccountId(tokens.id_token)
+        _extractChatGptAccountId(currentTokens.id_token)
       ) || null
+    let hydratedProfile = null
+    if (!accId) {
+      try {
+        hydratedProfile = await _fetchCodexProfile(accessToken, idToken)
+        if (hydratedProfile && hydratedProfile.accountId) {
+          accId = hydratedProfile.accountId
+        }
+      } catch {}
+    }
     const headers = { Authorization: 'Bearer ' + accessToken }
     if (accId) {
       headers['ChatGPT-Account-Id'] = accId
@@ -4627,7 +4671,7 @@ async function _refreshCodexQuotaAsync (account, accountId) {
 
     // 4. 解析配额
     const quota = _parseCodexQuota(res.data)
-    const planType = (res.data && res.data.plan_type) || account.plan_type
+    const planType = _extractCodexPlanType(res.data, { accountId: accId }) || account.plan_type
     const cleanQuota = Object.assign({}, quota, {
       error: null,
       error_code: '',
@@ -4639,19 +4683,17 @@ async function _refreshCodexQuotaAsync (account, accountId) {
       invalid: false,
       quota_error: null
     }
-    if (_shouldHydrateCodexProfile(account, planType)) {
+    if (hydratedProfile) {
+      Object.assign(nextPatch, _buildCodexProfilePatch(hydratedProfile))
+    }
+    const tokenSubscriptionActiveUntil = _extractCodexSubscriptionActiveUntilFromTokens(currentTokens)
+    if (tokenSubscriptionActiveUntil) nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+    const nextAccountView = Object.assign({}, account, nextPatch)
+    if (!hydratedProfile && _shouldHydrateCodexProfile(nextAccountView, planType)) {
       try {
         const profile = await _fetchCodexProfile(accessToken, idToken)
         if (profile && typeof profile === 'object') {
-          if (profile.email) nextPatch.email = profile.email
-          if (profile.userId) nextPatch.user_id = profile.userId
-          if (profile.planType) nextPatch.plan_type = profile.planType
-          if (profile.accountId) nextPatch.account_id = profile.accountId
-          if (profile.organizationId) nextPatch.organization_id = profile.organizationId
-          if (profile.accountName) nextPatch.account_name = profile.accountName
-          if (profile.accountStructure) nextPatch.account_structure = profile.accountStructure
-          if (profile.subscriptionActiveUntil) nextPatch.subscription_active_until = profile.subscriptionActiveUntil
-          if (profile.workspace) nextPatch.workspace = profile.workspace
+          Object.assign(nextPatch, _buildCodexProfilePatch(profile))
         }
       } catch {}
     }
@@ -4970,16 +5012,18 @@ function _cleanupExpiredOAuthSessions () {
   }
 }
 
-function _cleanupActiveOAuthSessions () {
+async function _cleanupActiveOAuthSessions () {
   const entries = Array.from(oauthSessions.entries())
+  const closes = []
   for (let i = 0; i < entries.length; i++) {
     const pair = entries[i]
     const sessionId = pair[0]
     const session = pair[1]
-    _closeOAuthSessionServer(session)
+    closes.push(_closeOAuthSessionServerAsync(session))
     oauthSessions.delete(sessionId)
     storage.clearOAuthPending(PLATFORM, sessionId)
   }
+  await Promise.all(closes)
 }
 
 function _startOAuthCallbackServer (session) {
@@ -5080,6 +5124,24 @@ function _closeOAuthSessionServer (session) {
   session.server = null
 }
 
+function _closeOAuthSessionServerAsync (session) {
+  return new Promise((resolve) => {
+    if (!session || !session.server) {
+      resolve()
+      return
+    }
+    const server = session.server
+    session.server = null
+    try {
+      server.close(function () {
+        resolve()
+      })
+    } catch {
+      resolve()
+    }
+  })
+}
+
 function _oauthCallbackSuccessHtml () {
   return '<!doctype html><html><head><meta charset="utf-8"><title>Codex 授权成功</title>' +
     '<style>body{margin:0;display:grid;min-height:100vh;place-items:center;background:#0f172a;color:#e2e8f0;font:16px/1.6 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,PingFang SC,Helvetica Neue,Arial,sans-serif}.card{padding:24px 28px;border:1px solid #334155;border-radius:12px;background:#111827}h1{margin:0 0 8px;font-size:20px}p{margin:0;color:#94a3b8}</style>' +
@@ -5152,6 +5214,7 @@ function _createCodexAccountFromTokens (tokens, addedVia, authMode) {
   const accessAuth = (accessPayload && accessPayload['https://api.openai.com/auth'] && typeof accessPayload['https://api.openai.com/auth'] === 'object')
     ? accessPayload['https://api.openai.com/auth']
     : {}
+  const jwtProfile = _extractCodexJwtProfile(safeTokens)
   const email = extractEmailFromJwt(idToken || accessToken) || 'unknown@codex'
   const accountId = _firstNonEmptyString(
     idAuth.chatgpt_account_id,
@@ -5175,15 +5238,12 @@ function _createCodexAccountFromTokens (tokens, addedVia, authMode) {
     Array.isArray(idAuth.organizations) ? idAuth.organizations : [],
     organizationId
   )
-  const subscriptionActiveUntil = _normalizeOptionalJsonScalar(
-    idAuth.chatgpt_subscription_active_until ||
-    accessAuth.chatgpt_subscription_active_until
-  )
+  const subscriptionActiveUntil = _extractCodexSubscriptionActiveUntilFromTokens(safeTokens)
   const normalizedAuthMode = String(authMode || 'oauth').trim().toLowerCase() || 'oauth'
   const normalizedAddedVia = String(addedVia || '').trim().toLowerCase()
   return {
     id: '',
-    email: email,
+    email: jwtProfile.email || email,
     auth_mode: normalizedAuthMode,
     account_id: accountId,
     organization_id: organizationId,
@@ -5200,6 +5260,22 @@ function _createCodexAccountFromTokens (tokens, addedVia, authMode) {
     created_at: Date.now(),
     last_used: 0
   }
+}
+
+function _extractCodexSubscriptionActiveUntilFromTokens (tokens) {
+  const safeTokens = tokens || {}
+  const idPayload = extractJwtPayload(safeTokens.id_token || '') || {}
+  const accessPayload = extractJwtPayload(safeTokens.access_token || '') || {}
+  const idAuth = (idPayload && idPayload['https://api.openai.com/auth'] && typeof idPayload['https://api.openai.com/auth'] === 'object')
+    ? idPayload['https://api.openai.com/auth']
+    : {}
+  const accessAuth = (accessPayload && accessPayload['https://api.openai.com/auth'] && typeof accessPayload['https://api.openai.com/auth'] === 'object')
+    ? accessPayload['https://api.openai.com/auth']
+    : {}
+  return _normalizeOptionalJsonScalar(
+    idAuth.chatgpt_subscription_active_until ||
+    accessAuth.chatgpt_subscription_active_until
+  )
 }
 
 async function _fetchCodexProfile (accessToken, idToken) {
@@ -5230,10 +5306,11 @@ async function _fetchCodexProfile (accessToken, idToken) {
     ? accessPayload['https://api.openai.com/auth']
     : {}
   const authClaim = Object.keys(idAuthClaim).length > 0 ? idAuthClaim : accessAuthClaim
+  const profileClaim = _extractCodexJwtProfile({ id_token: id, access_token: access })
   const organizations = Array.isArray(authClaim.organizations) ? authClaim.organizations : []
 
   const profile = {
-    email: String(payload.email || '').trim(),
+    email: profileClaim.email,
     userId: _firstNonEmptyString(
       payload.sub,
       authClaim.chatgpt_user_id,
@@ -5275,9 +5352,7 @@ async function _fetchCodexProfile (accessToken, idToken) {
     }
     const res = await http.getJSON('https://chatgpt.com/backend-api/wham/accounts/check', headers)
     if (res && res.ok && res.data && typeof res.data === 'object') {
-      if (typeof res.data.plan_type === 'string' && res.data.plan_type.trim()) {
-        profile.planType = res.data.plan_type.trim()
-      }
+      profile.planType = _extractCodexPlanType(res.data, { accountId: profile.accountId }) || profile.planType
       const responseSubscriptionActiveUntil = _normalizeOptionalJsonScalar(
         res.data.subscription_active_until ||
         res.data.chatgpt_subscription_active_until
@@ -5289,6 +5364,7 @@ async function _fetchCodexProfile (accessToken, idToken) {
         accountId: profile.accountId,
         organizationId: profile.organizationId
       })
+      if (accountProfile.userId) profile.userId = accountProfile.userId
       if (accountProfile.accountId) profile.accountId = accountProfile.accountId
       if (accountProfile.organizationId) profile.organizationId = accountProfile.organizationId
       if (accountProfile.accountName) profile.accountName = accountProfile.accountName
@@ -5305,10 +5381,26 @@ async function _fetchCodexProfile (accessToken, idToken) {
   return profile
 }
 
+function _buildCodexProfilePatch (profile) {
+  const patch = {}
+  if (!profile || typeof profile !== 'object') return patch
+  if (profile.email) patch.email = profile.email
+  if (profile.userId) patch.user_id = profile.userId
+  if (profile.planType) patch.plan_type = profile.planType
+  if (profile.accountId) patch.account_id = profile.accountId
+  if (profile.organizationId) patch.organization_id = profile.organizationId
+  if (profile.accountName) patch.account_name = profile.accountName
+  if (profile.accountStructure) patch.account_structure = profile.accountStructure
+  if (profile.subscriptionActiveUntil) patch.subscription_active_until = profile.subscriptionActiveUntil
+  if (profile.workspace) patch.workspace = profile.workspace
+  return patch
+}
+
 function _parseAccountProfileFromCheckResponse (payload, hints) {
   const records = _collectAccountRecords(payload)
   if (records.length === 0) {
     return {
+      userId: '',
       accountId: '',
       organizationId: '',
       accountName: '',
@@ -5316,43 +5408,10 @@ function _parseAccountProfileFromCheckResponse (payload, hints) {
     }
   }
 
-  const hintAccountId = _firstNonEmptyString(hints && hints.accountId)
-  const hintOrgId = _firstNonEmptyString(hints && hints.organizationId)
-  const accountOrdering = payload && Array.isArray(payload.account_ordering)
-    ? payload.account_ordering.map(function (item) { return _firstNonEmptyString(item) }).filter(Boolean)
-    : []
-
-  let selected = null
-  if (hintAccountId) {
-    selected = records.find(function (record) {
-      const recordId = _extractAccountRecordField(record, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id'])
-      return recordId && recordId === hintAccountId
-    }) || null
-  }
-
-  if (!selected && accountOrdering.length > 0) {
-    for (let i = 0; i < accountOrdering.length; i++) {
-      const orderingId = accountOrdering[i]
-      selected = records.find(function (record) {
-        const recordId = _extractAccountRecordField(record, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id'])
-        return recordId && recordId === orderingId
-      }) || null
-      if (selected) break
-    }
-  }
-
-  if (!selected && hintOrgId) {
-    selected = records.find(function (record) {
-      const recordOrgId = _extractAccountRecordField(record, ['organization_id', 'org_id', 'workspace_id'])
-      return recordOrgId && recordOrgId === hintOrgId
-    }) || null
-  }
-
-  if (!selected) {
-    selected = records[0]
-  }
+  const selected = _selectCodexAccountRecord(payload, hints) || records[0]
 
   return {
+    userId: _extractAccountRecordField(selected, ['account_user_id', 'user_id', 'chatgpt_user_id', 'owner_user_id']),
     accountId: _extractAccountRecordField(selected, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id']),
     organizationId: _extractAccountRecordField(selected, ['organization_id', 'org_id', 'workspace_id']),
     accountName: _extractAccountRecordField(selected, ['name', 'display_name', 'account_name', 'organization_name', 'workspace_name', 'title']),
@@ -5365,6 +5424,9 @@ function _collectAccountRecords (payload) {
   if (!payload || typeof payload !== 'object') return records
 
   const accounts = payload.accounts
+  if (payload.account && typeof payload.account === 'object' && !Array.isArray(payload.account)) {
+    records.push(payload.account)
+  }
   if (Array.isArray(accounts)) {
     for (let i = 0; i < accounts.length; i++) {
       const item = accounts[i]
@@ -5392,6 +5454,116 @@ function _collectAccountRecords (payload) {
   }
 
   return records
+}
+
+function _selectCodexAccountRecord (payload, hints) {
+  const records = _collectAccountRecords(payload)
+  if (records.length === 0) return null
+
+  const hintAccountId = _firstNonEmptyString(hints && hints.accountId)
+  const hintOrgId = _firstNonEmptyString(hints && hints.organizationId)
+  const preferredAccountIds = [
+    hintAccountId,
+    _firstNonEmptyString(payload && payload.default_account_id),
+    _firstNonEmptyString(payload && payload.defaultAccountId)
+  ].filter(Boolean)
+
+  for (let i = 0; i < preferredAccountIds.length; i++) {
+    const selected = _findCodexAccountRecordById(records, preferredAccountIds[i])
+    if (selected) return selected
+  }
+
+  const accountOrdering = payload && Array.isArray(payload.account_ordering)
+    ? payload.account_ordering.map(function (item) { return _firstNonEmptyString(item) }).filter(Boolean)
+    : []
+  for (let i = 0; i < accountOrdering.length; i++) {
+    const selected = _findCodexAccountRecordById(records, accountOrdering[i])
+    if (selected) return selected
+  }
+
+  if (hintOrgId) {
+    const selected = records.find(function (record) {
+      const recordOrgId = _extractAccountRecordField(record, ['organization_id', 'org_id', 'workspace_id'])
+      return recordOrgId && recordOrgId === hintOrgId
+    }) || null
+    if (selected) return selected
+  }
+
+  return records[0]
+}
+
+function _findCodexAccountRecordById (records, accountId) {
+  const expected = _firstNonEmptyString(accountId)
+  if (!expected || !Array.isArray(records)) return null
+  return records.find(function (record) {
+    const recordId = _extractAccountRecordField(record, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id'])
+    return recordId && recordId === expected
+  }) || null
+}
+
+function _normalizeCodexPlanTypeValue (value) {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const candidates = [
+      value.plan_type,
+      value.planType,
+      value.plan,
+      value.type,
+      value.name,
+      value.slug,
+      value.value
+    ]
+    for (let i = 0; i < candidates.length; i++) {
+      const normalized = _normalizeCodexPlanTypeValue(candidates[i])
+      if (normalized) return normalized
+    }
+  }
+  return ''
+}
+
+function _pickCodexPlanTypeField (record) {
+  if (!record || typeof record !== 'object') return ''
+  const candidates = [
+    record.plan_type,
+    record.planType,
+    record.subscription_plan_type,
+    record.subscriptionPlanType,
+    record.subscription_tier,
+    record.subscriptionTier,
+    record.plan_name,
+    record.planName,
+    record.tier_id,
+    record.tierId,
+    record.plan,
+    record.subscription,
+    record.current_plan,
+    record.currentPlan,
+    record.account_plan,
+    record.accountPlan
+  ]
+  for (let i = 0; i < candidates.length; i++) {
+    const normalized = _normalizeCodexPlanTypeValue(candidates[i])
+    if (normalized) return normalized
+  }
+  return ''
+}
+
+function _extractCodexPlanType (payload, hints) {
+  const direct = _pickCodexPlanTypeField(payload)
+  if (direct) return direct
+
+  const selected = _selectCodexAccountRecord(payload, hints)
+  const selectedPlan = _pickCodexPlanTypeField(selected)
+  if (selectedPlan) return selectedPlan
+
+  const records = _collectAccountRecords(payload)
+  for (let i = 0; i < records.length; i++) {
+    const fallbackPlan = _pickCodexPlanTypeField(records[i])
+    if (fallbackPlan) return fallbackPlan
+  }
+
+  return ''
 }
 
 function _extractAccountRecordField (record, keys) {
@@ -5466,13 +5638,19 @@ function _resolveRateLimitWindows (primary, secondary) {
 
 function _shouldHydrateCodexProfile (account, planType) {
   const acc = account || {}
+  const email = _firstNonEmptyString(acc.email).toLowerCase()
   const structure = _firstNonEmptyString(acc.account_structure)
   const accountName = _firstNonEmptyString(acc.account_name)
+  const accountId = _firstNonEmptyString(acc.account_id)
   const organizationId = _firstNonEmptyString(acc.organization_id)
+  const userId = _firstNonEmptyString(acc.user_id)
   const workspace = _firstNonEmptyString(acc.workspace)
   const currentPlan = _firstNonEmptyString(planType, acc.plan_type)
   const isTeamLike = _isCodexTeamLikePlan(currentPlan)
 
+  if (!email || email === 'unknown@codex' || email === 'local@codex') return true
+  if (!userId) return true
+  if (!accountId) return true
   if (!accountName) return true
   if (!structure) return true
   if (!organizationId && isTeamLike) return true
@@ -5489,7 +5667,16 @@ function _findCodexAccountByLocalTokens (accounts, tokens) {
   const idPayload = extractJwtPayload(idToken) || {}
   const accessAuth = accessPayload['https://api.openai.com/auth'] || {}
   const idAuth = idPayload['https://api.openai.com/auth'] || {}
-  const email = _firstNonEmptyString(idPayload.email, accessPayload.email).toLowerCase()
+  const jwtProfile = _extractCodexJwtProfile({ id_token: idToken, access_token: accessToken })
+  const email = _firstNonEmptyString(idPayload.email, accessPayload.email, jwtProfile.email).toLowerCase()
+  const userId = _firstNonEmptyString(
+    accessAuth.chatgpt_user_id,
+    accessAuth.user_id,
+    idAuth.chatgpt_user_id,
+    idAuth.user_id,
+    accessPayload.sub,
+    idPayload.sub
+  )
   const accountId = _firstNonEmptyString(
     accessAuth.chatgpt_account_id,
     accessAuth.account_id,
@@ -5516,9 +5703,17 @@ function _findCodexAccountByLocalTokens (accounts, tokens) {
 
   for (let i = 0; i < accounts.length; i++) {
     const account = accounts[i] || {}
-    if (!email || String(account.email || '').toLowerCase() !== email) continue
+    const accountUserId = _firstNonEmptyString(account.user_id, account.userId)
+    const accountEmail = String(account.email || '').toLowerCase()
     const accountAccountId = _firstNonEmptyString(account.account_id)
     const accountOrgId = _firstNonEmptyString(account.organization_id)
+    if (accountId && accountAccountId === accountId && userId && accountUserId === userId) {
+      return account
+    }
+    if (accountId && accountAccountId === accountId && !organizationId && !accountOrgId) {
+      return account
+    }
+    if (!email || accountEmail !== email) continue
     if (!accountId && !organizationId) return account
     if (accountId && !organizationId && accountAccountId === accountId) {
       return account
@@ -5750,7 +5945,80 @@ function extractJwtPayload (token) {
 function extractEmailFromJwt (token) {
   const data = extractJwtPayload(token)
   if (!data) return null
-  return data.email || data.sub || null
+  return _normalizeCodexEmailValue(
+    data.email ||
+    data.preferred_username ||
+    data.upn ||
+    (data['https://api.openai.com/profile'] && data['https://api.openai.com/profile'].email)
+  )
+}
+
+function _normalizeCodexEmailValue (value) {
+  const text = String(value || '').trim()
+  if (!text || !text.includes('@')) return ''
+  return text
+}
+
+function _extractCodexJwtProfile (tokens) {
+  const safeTokens = tokens || {}
+  const idPayload = extractJwtPayload(safeTokens.id_token || '') || {}
+  const accessPayload = extractJwtPayload(safeTokens.access_token || '') || {}
+
+  function pickProfile (payload) {
+    if (!payload || typeof payload !== 'object') return {}
+    const profile = payload['https://api.openai.com/profile']
+    return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : {}
+  }
+
+  const idProfile = pickProfile(idPayload)
+  const accessProfile = pickProfile(accessPayload)
+  const email = _normalizeCodexEmailValue(
+    idPayload.email ||
+    idPayload.preferred_username ||
+    idPayload.upn ||
+    idProfile.email ||
+    accessPayload.email ||
+    accessPayload.preferred_username ||
+    accessPayload.upn ||
+    accessProfile.email
+  )
+
+  return {
+    email,
+    emailVerified: idProfile.email_verified === true || accessProfile.email_verified === true
+  }
+}
+
+function _normalizeCodexJsonImportRecord (raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const accessToken = _firstNonEmptyString(raw.accessToken, raw.access_token, raw.token)
+  const user = raw.user && typeof raw.user === 'object' && !Array.isArray(raw.user) ? raw.user : {}
+  const account = raw.account && typeof raw.account === 'object' && !Array.isArray(raw.account) ? raw.account : {}
+  const looksLikeChatGptSession = _isChatGptSessionImportRecord(raw)
+  if (!looksLikeChatGptSession) return raw
+
+  return Object.assign({}, raw, {
+    type: raw.type || 'codex',
+    disabled: raw.disabled === true,
+    email: _normalizeCodexEmailValue(raw.email || user.email) || raw.email || '',
+    user_id: _firstNonEmptyString(raw.user_id, raw.userId, user.id),
+    plan_type: _firstNonEmptyString(raw.plan_type, raw.planType, account.planType),
+    account_id: _firstNonEmptyString(raw.account_id, raw.accountId, account.id),
+    account_structure: _firstNonEmptyString(raw.account_structure, raw.accountStructure, account.structure),
+    id_token: _firstNonEmptyString(raw.id_token, raw.idToken, accessToken),
+    access_token: accessToken,
+    refresh_token: _firstNonEmptyString(raw.refresh_token, raw.refreshToken),
+    expired: _firstNonEmptyString(raw.expired, raw.expires),
+    last_refresh: _firstNonEmptyString(raw.last_refresh, raw.lastRefresh) || new Date().toISOString(),
+    websockets: raw.websockets === true
+  })
+}
+
+function _isChatGptSessionImportRecord (raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false
+  const user = raw.user && typeof raw.user === 'object' && !Array.isArray(raw.user) ? raw.user : {}
+  const account = raw.account && typeof raw.account === 'object' && !Array.isArray(raw.account) ? raw.account : {}
+  return Boolean(raw.accessToken || (user.email && account.id) || account.planType || raw.sessionToken)
 }
 
 /**
@@ -5772,7 +6040,8 @@ function normalizeAccount (raw) {
   const authClaim = (jwtData && jwtData['https://api.openai.com/auth'] && typeof jwtData['https://api.openai.com/auth'] === 'object')
     ? jwtData['https://api.openai.com/auth']
     : {}
-  const email = raw.email || jwtData.email || jwtData.sub || 'unknown@codex'
+  const jwtProfile = _extractCodexJwtProfile({ id_token: idToken, access_token: accessToken })
+  const email = _normalizeCodexEmailValue(raw.email || jwtProfile.email || jwtData.email || jwtData.preferred_username || jwtData.upn) || 'unknown@codex'
   const accountId = _firstNonEmptyString(
     raw.account_id,
     raw.accountId,
@@ -5993,7 +6262,7 @@ function _applySwitchIntegrations (account, settings) {
 
 function _isCodexAppRunning () {
   try {
-    if (process.platform === 'darwin') return _listCodexPids().length > 0
+    if (process.platform === 'darwin') return _listCodexAppPids().length > 0
     if (process.platform === 'win32') {
       const output = cp.execFileSync('tasklist', ['/FI', 'IMAGENAME eq Codex.exe'], { encoding: 'utf8' })
       return /Codex\.exe/i.test(String(output || ''))
@@ -6006,16 +6275,49 @@ function _isCodexAppRunning () {
   return false
 }
 
-function _listCodexPids () {
+function _parseProcessPidLine (line) {
+  const text = String(line || '').trim()
+  const match = text.match(/^(\d+)\s+(.*)$/)
+  if (!match) return null
+  const pid = Number(match[1])
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  return { pid, args: match[2] || '' }
+}
+
+function _isCodexDarwinAppProcessArgs (args) {
+  const text = String(args || '')
+  return (
+    /\/(?:Codex|OpenAI Codex)\.app\/Contents\/MacOS\/[^/\s]*Codex(?:\s|$)/.test(text) ||
+    /\/(?:Codex|OpenAI Codex)\.app\/Contents\/Frameworks\/.*Codex Helper.*\.app\/Contents\/MacOS\/Codex Helper/.test(text) ||
+    /\/(?:Codex|OpenAI Codex)\.app\/Contents\/Resources\/codex\s+app-server(?:\s|$)/.test(text)
+  )
+}
+
+function _listDarwinPidsByArgs (predicate) {
   if (process.platform !== 'darwin') return []
   try {
-    const output = cp.execFileSync('pgrep', ['-f', 'Codex.app/Contents/MacOS|OpenAI Codex.app/Contents/MacOS'], { encoding: 'utf8' })
-    return String(output || '')
-      .split(/\s+/)
-      .map(item => Number(item))
-      .filter(pid => Number.isInteger(pid) && pid > 0)
+    const output = cp.execFileSync('ps', ['ax', '-o', 'pid=,args='], { encoding: 'utf8' })
+    const pids = []
+    const seen = new Set()
+    String(output || '').split(/\r?\n/).forEach(line => {
+      const parsed = _parseProcessPidLine(line)
+      if (!parsed || seen.has(parsed.pid)) return
+      if (!predicate(parsed.args)) return
+      seen.add(parsed.pid)
+      pids.push(parsed.pid)
+    })
+    return pids
   } catch {}
   return []
+}
+
+function _listCodexAppPids () {
+  return _listDarwinPidsByArgs(_isCodexDarwinAppProcessArgs)
+}
+
+function _listCodexPids () {
+  if (process.platform !== 'darwin') return []
+  return _listCodexAppPids()
 }
 
 function _sleepSync (ms) {
@@ -6083,7 +6385,11 @@ function _closeCodexApp () {
     }
     if (_isCodexAppRunning()) {
       try {
-        cp.execFileSync('pkill', ['-f', 'Codex.app/Contents/MacOS|OpenAI Codex.app/Contents/MacOS'], { stdio: 'ignore' })
+        for (const pid of _listCodexPids()) {
+          try {
+            cp.execFileSync('kill', ['-9', String(pid)], { stdio: 'ignore' })
+          } catch {}
+        }
       } catch {}
     }
     return
@@ -6548,6 +6854,13 @@ module.exports = {
   detectOpenCodeAppPath,
   _internal: {
     parseCodexQuota: _parseCodexQuota,
+    extractCodexPlanType: _extractCodexPlanType,
+    extractCodexSubscriptionActiveUntilFromTokens: _extractCodexSubscriptionActiveUntilFromTokens,
+    extractCodexJwtProfile: _extractCodexJwtProfile,
+    findCodexAccountByLocalTokens: _findCodexAccountByLocalTokens,
+    isCodexDarwinAppProcessArgs: _isCodexDarwinAppProcessArgs,
+    normalizeCodexJsonImportRecord: _normalizeCodexJsonImportRecord,
+    parseAccountProfileFromCheckResponse: _parseAccountProfileFromCheckResponse,
     buildCodexWakeupArgs: _buildCodexWakeupArgs,
     normalizeCodexWakeupPrompt: _normalizeCodexWakeupPrompt,
     normalizeCodexWakeupReasoningEffort: _normalizeCodexWakeupReasoningEffort,

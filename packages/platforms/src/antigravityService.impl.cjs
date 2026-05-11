@@ -1387,6 +1387,7 @@ async function importFromJson (jsonContent) {
     const parsed = JSON.parse(jsonContent)
     const rawList = Array.isArray(parsed) ? parsed : [parsed]
     const imported = []
+    const importDetails = []
 
     for (let i = 0; i < rawList.length; i++) {
       let account = normalizeAccount(rawList[i])
@@ -1427,16 +1428,25 @@ async function importFromJson (jsonContent) {
         captureCurrent: false,
         defaultSource: 'generated'
       }).account
+      const analysis = typeof storage.analyzeAccountImport === 'function'
+        ? storage.analyzeAccountImport(PLATFORM, account)
+        : null
       const saved = storage.addAccount(PLATFORM, account)
-      imported.push(saved || account)
+      const savedAccount = saved || account
+      if (analysis && Array.isArray(analysis.items) && analysis.items[0]) {
+        importDetails.push(Object.assign({}, analysis.items[0], {
+          account_id: savedAccount.id || analysis.items[0].account_id
+        }))
+      }
+      imported.push(savedAccount)
     }
 
     if (imported.length === 0) {
-      return { imported: [], error: '未找到有效的账号数据' }
+      return { imported: [], import_details: importDetails, error: '未找到有效的账号数据' }
     }
-    return { imported: imported, error: null }
+    return { imported: imported, import_details: importDetails, error: null }
   } catch (err) {
-    return { imported: [], error: 'JSON 解析失败: ' + err.message }
+    return { imported: [], import_details: [], error: 'JSON 解析失败: ' + err.message }
   }
 }
 

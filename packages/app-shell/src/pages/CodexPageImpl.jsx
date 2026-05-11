@@ -33,6 +33,8 @@ import { usePlatformSearch } from '../runtime/usePlatformSearch.js'
 import { useBatchTagEditor } from '../runtime/useBatchTagEditor.js'
 import { usePlatformExportDialog } from '../runtime/usePlatformExportDialog.js'
 import { launchPlatformCli } from '../runtime/launchPlatformCli.js'
+import { rankCodexAutoSwitchCandidates } from '../runtime/autoSwitchCandidates.js'
+import { formatImportSummary } from '../runtime/importSummary.js'
 import {
   resolveQuotaErrorMeta,
   shouldOfferReauthorizeAction,
@@ -40,7 +42,7 @@ import {
   readCodexAdvancedSettings
 } from '../utils/codex'
 
-const CODEX_JSON_IMPORT_REQUIRED_TEXT = '必填字段：tokens.access_token 或 tokens.refresh_token 至少一个（也支持顶层 access_token / refresh_token）。建议补充 id、email、tokens.id_token、tokens.access_token、tokens.refresh_token、created_at、last_used。'
+const CODEX_JSON_IMPORT_REQUIRED_TEXT = '支持三种 JSON：当前应用导出的 Codex 账号 JSON、按下方示例手动拼接的 Codex 账号 JSON，或 chatgpt.com/api/auth/session 返回的 JSON。手动拼接时 tokens.access_token 或 tokens.refresh_token 至少一个必填（也支持顶层 access_token / refresh_token）；session JSON 会自动读取 accessToken、user.email、account.id、account.planType 并转换。'
 const CODEX_QUOTA_SCHEMA_VERSION = 2
 const CODEX_WAKEUP_CUSTOM_MODEL_VALUE = '__custom__'
 const CODEX_WAKEUP_MODEL_OPTIONS = [
@@ -234,6 +236,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
   const [importJson, setImportJson] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [jsonImporting, setJsonImporting] = useState(false)
   const [importingLocal, setImportingLocal] = useState(false)
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false)
   const [activeView, setActiveView] = useState(() => readCodexActiveView())
@@ -448,33 +451,16 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
 
     if (!hitHourly && !hitWeekly) return false
 
-    const candidates = allAccounts
-      .filter(acc => acc.id !== current.id && acc.quota)
-      .filter(acc => {
-        const q = acc.quota || {}
-        if (hitHourly) {
-          if (typeof q.hourly_percentage !== 'number' || q.hourly_percentage <= hourlyThreshold) return false
-        }
-        if (hitWeekly) {
-          if (typeof q.weekly_percentage !== 'number' || q.weekly_percentage <= weeklyThreshold) return false
-        }
-        return true
-      })
-      .sort((left, right) => {
-        const lq = left.quota || {}
-        const rq = right.quota || {}
-        const leftSameEmail = settings.autoSwitchPreferSameEmail && left.email && current.email && left.email === current.email ? 1 : 0
-        const rightSameEmail = settings.autoSwitchPreferSameEmail && right.email && current.email && right.email === current.email ? 1 : 0
-        if (rightSameEmail !== leftSameEmail) return rightSameEmail - leftSameEmail
-
-        const leftScore = (typeof lq.hourly_percentage === 'number' ? lq.hourly_percentage : -1) +
-          (typeof lq.weekly_percentage === 'number' ? lq.weekly_percentage : -1)
-        const rightScore = (typeof rq.hourly_percentage === 'number' ? rq.hourly_percentage : -1) +
-          (typeof rq.weekly_percentage === 'number' ? rq.weekly_percentage : -1)
-        return rightScore - leftScore
-      })
-
-    const next = candidates[0]
+    const candidates = rankCodexAutoSwitchCandidates({
+      accounts: allAccounts,
+      current,
+      settings,
+      hitHourly,
+      hitWeekly,
+      hourlyThreshold,
+      weeklyThreshold
+    })
+    const next = candidates[0]?.account
     if (!next) {
       logRequestEvent('codex.auto-switch', '自动切号未找到可用候选账号', {
         source,
@@ -507,7 +493,8 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     logRequestEvent('codex.auto-switch', '自动切号成功', {
       source,
       current: current.email || current.id,
-      next: next.email || next.id
+      next: next.email || next.id,
+      score: candidates[0]?.score
     })
     return true
   }
@@ -577,18 +564,46 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     }
   }
 
-  function handleImportJson () {
+  async function handleImportJson () {
     if (!importJson.trim()) {
       toast.warning('请输入 JSON 内容')
       return
     }
-    const result = svc.importFromJson(importJson)
-    if (result.error) {
-      toast.error(result.error)
-    } else {
-      toast.success(`成功导入 ${result.imported.length} 个账号`)
+    if (jsonImporting) return
+    setJsonImporting(true)
+    const toastId = toast.info('正在转换 JSON 并检测 Token...', 0)
+    try {
+      const result = await Promise.resolve(svc.importFromJson(importJson))
+      if (result.error) {
+        toast.remove(toastId)
+        toast.error(result.error)
+        return
+      }
+      toast.remove(toastId)
+      toast.success(formatImportSummary(result.import_details, result.imported.length))
       closeAddModal()
       refresh()
+    } catch (e) {
+      toast.remove(toastId)
+      toast.error('导入失败: ' + (e && e.message ? e.message : String(e)))
+    } finally {
+      setJsonImporting(false)
+    }
+  }
+
+  async function handleOpenSessionTokenPage () {
+    const url = 'https://chatgpt.com/api/auth/session'
+    try {
+      if (svc && typeof svc.openExternalUrl === 'function') {
+        const opened = await Promise.resolve(svc.openExternalUrl(url))
+        if (opened === true) return
+      }
+    } catch (e) {}
+    const copied = await copyText(url)
+    if (copied) {
+      toast.info('已复制 Session Token 页面链接')
+    } else {
+      toast.error('打开 Session Token 页面失败')
     }
   }
 
@@ -1222,11 +1237,13 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
         onSubmitOAuthCallback={handleSubmitOAuthCallback}
         oauthRecovered={oauthRecovered}
         oauthPolling={oauthPolling}
+        onOpenSessionTokenPage={handleOpenSessionTokenPage}
         importJson={importJson}
         onImportJsonChange={setImportJson}
         jsonImportRequiredText={CODEX_JSON_IMPORT_REQUIRED_TEXT}
         jsonImportExample={CODEX_JSON_IMPORT_EXAMPLE}
         onImportJson={handleImportJson}
+        jsonImporting={jsonImporting}
         importingLocal={importingLocal}
         onImportLocal={() => handleImportLocal({ closeAfter: true })}
         toast={toast}

@@ -98,6 +98,10 @@ function addAccounts (platform, accounts) {
   return repository.addAccounts(platform, accounts, migration.initStorage)
 }
 
+function analyzeAccountImport (platform, accounts, options) {
+  return repository.analyzeAccountImport(platform, accounts, options, migration.initStorage)
+}
+
 function updateAccount (platform, accountId, updates) {
   return repository.updateAccount(platform, accountId, updates, migration.initStorage)
 }
@@ -156,6 +160,7 @@ module.exports = {
 
   listAccounts,
   saveAccounts: repository.saveAccounts,
+  analyzeAccountImport,
   getAccount,
   addAccount,
   addAccounts,

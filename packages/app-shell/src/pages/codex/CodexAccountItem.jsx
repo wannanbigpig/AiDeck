@@ -19,6 +19,7 @@ import {
 } from '../../components/Icons/ActionIcons'
 import {
   resolveQuotaErrorMeta,
+  resolveCodexAccountDisplayName,
   resolveCodexIdentityDisplay,
   resolveCodexAddMethodDisplay,
   resolveCodexProviderLoginDisplay,
@@ -204,6 +205,7 @@ export default function CodexAccountItem ({
   const quotaItems = buildCodexQuotaItems(quota, planName)
   const creditsText = formatCodexCredits(quota)
   const workspaceDisplay = resolveWorkspaceDisplay(account)
+  const accountDisplay = resolveCodexAccountDisplayName(account)
   const addMethodDisplay = resolveCodexAddMethodDisplay(account)
   const providerLoginDisplay = resolveCodexProviderLoginDisplay(account)
   const loginMethodDisplay = `${addMethodDisplay} | ${providerLoginDisplay}`
@@ -232,7 +234,11 @@ export default function CodexAccountItem ({
               <input type='checkbox' checked={!!isSelected} onChange={onToggleSelect} />
               <span className='ag-checkbox-ui' />
             </label>
-            <span className='account-email'>{isPrivacyMode ? maskText(account.email, 'email') : truncateEmail(account.email, 28)}</span>
+            <span className='account-email'>
+              {isPrivacyMode
+                ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
+                : truncateEmail(accountDisplay.text, 28)}
+            </span>
             {planName && <span className={`badge ${planBadgeClass}`}>{planName}</span>}
             {showQuotaErrorOnFront && (
               <span className='codex-status-pill quota-error' title={quotaErrorMeta.rawMessage}>
@@ -328,7 +334,11 @@ export default function CodexAccountItem ({
           <div className='account-back-body'>
             <div className='account-back-header'>
               <div className='account-back-header-icon' />
-              <span className='account-back-header-email'>{isPrivacyMode ? maskText(account.email, 'email') : account.email}</span>
+              <span className='account-back-header-email'>
+                {isPrivacyMode
+                  ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
+                  : accountDisplay.text}
+              </span>
             </div>
 
             <div className='account-card-details'>
