@@ -242,7 +242,7 @@ test('Codex 唤醒不应读取账号实例中的全局 AGENTS.md', async () => {
     })
     const prepared = await codex.prepareCliLaunch(account.id)
     assert.equal(prepared.success, true)
-    fs.writeFileSync(path.join(prepared.instanceDir, 'AGENTS.md'), 'global rules should not be read', 'utf8')
+    assert.equal(fs.lstatSync(path.join(prepared.instanceDir, 'AGENTS.md')).isSymbolicLink(), true)
 
     const fakeCodex = path.join(root, 'fake-codex-no-agents')
     fs.writeFileSync(fakeCodex, '#!/bin/sh\nif [ -e "$CODEX_HOME/AGENTS.md" ]; then echo "AGENTS.md exists" >&2; exit 1; fi\nexit 0\n')
