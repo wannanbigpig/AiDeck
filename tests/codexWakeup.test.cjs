@@ -221,12 +221,17 @@ test('Codex 后台唤醒应立即返回 run_id 并写入最近历史状态', asy
 test('Codex 唤醒不应读取账号实例中的全局 AGENTS.md', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aideck-codex-wakeup-no-agents-'))
   const previousDataDir = process.env.AIDECK_DATA_DIR
+  const previousCodexConfigDir = process.env.CODEX_CONFIG_DIR
   process.env.AIDECK_DATA_DIR = root
+  process.env.CODEX_CONFIG_DIR = path.join(root, 'source-codex-config')
 
   try {
     const storage = require(path.join(process.cwd(), 'packages/infra-node/src/accountStorage.cjs'))
     const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
     storage.initStorage()
+    fs.mkdirSync(process.env.CODEX_CONFIG_DIR, { recursive: true })
+    fs.writeFileSync(path.join(process.env.CODEX_CONFIG_DIR, 'auth.json'), '{}\n', 'utf8')
+    fs.writeFileSync(path.join(process.env.CODEX_CONFIG_DIR, 'AGENTS.md'), 'temporary global rules\n', 'utf8')
     const account = storage.addAccount('codex', {
       id: 'codex-no-agents-target',
       email: 'no-agents@example.com',
@@ -259,6 +264,8 @@ test('Codex 唤醒不应读取账号实例中的全局 AGENTS.md', async () => {
   } finally {
     if (previousDataDir == null) delete process.env.AIDECK_DATA_DIR
     else process.env.AIDECK_DATA_DIR = previousDataDir
+    if (previousCodexConfigDir == null) delete process.env.CODEX_CONFIG_DIR
+    else process.env.CODEX_CONFIG_DIR = previousCodexConfigDir
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
