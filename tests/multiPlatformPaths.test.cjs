@@ -137,3 +137,9 @@ test('Codex / Gemini watcher 目标应直接复用配置目录候选', () => {
   assert.deepEqual(geminiTargets.dirPaths, geminiService.getConfigDirCandidates(linuxRuntime))
   assert.deepEqual(geminiTargets.fileNames, ['oauth_creds.json', 'google_accounts.json'])
 })
+
+test('Codex service 包装层应导出重置配额额度接口', () => {
+  assert.equal(typeof codexService.getResetCredits, 'function')
+  assert.equal(typeof codexService.consumeResetCredit, 'function')
+  assert.equal(typeof codexService.resyncAccountInfo, 'function')
+})

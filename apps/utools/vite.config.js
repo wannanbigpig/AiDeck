@@ -7,6 +7,7 @@ export default defineConfig({
   publicDir: 'public',
   build: {
     outDir: '../../dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 800
   }
 })

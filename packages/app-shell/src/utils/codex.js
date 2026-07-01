@@ -424,6 +424,22 @@ export function resolveCodexProviderLoginDisplay(account) {
   return '未知登录'
 }
 
+export function resolveCodexAccountRoleDisplay(account) {
+  const rawRole = String(
+    account?.account_user_role ||
+    account?.user_role ||
+    account?.accountRole ||
+    ''
+  ).trim()
+  if (!rawRole) return ''
+
+  const normalized = rawRole.toLowerCase()
+  if (normalized === 'account-owner' || normalized === 'owner') return '所有者'
+  if (normalized === 'admin' || normalized === 'administrator') return '管理员'
+  if (normalized === 'member') return '成员'
+  return rawRole
+}
+
 export function resolveWorkspaceTitleFromToken(account) {
   const tokens = (account && account.tokens && typeof account.tokens === 'object') ? account.tokens : {}
   const idPayload = decodeJwtPayload(tokens.id_token)

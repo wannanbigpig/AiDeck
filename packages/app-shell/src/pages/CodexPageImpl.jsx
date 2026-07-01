@@ -42,7 +42,7 @@ import {
   readCodexAdvancedSettings
 } from '../utils/codex'
 
-const CODEX_JSON_IMPORT_REQUIRED_TEXT = '支持三种 JSON：当前应用导出的 Codex 账号 JSON、按下方示例手动拼接的 Codex 账号 JSON，或 chatgpt.com/api/auth/session 返回的 JSON。手动拼接时 tokens.access_token 或 tokens.refresh_token 至少一个必填（也支持顶层 access_token / refresh_token）；session JSON 会自动读取 accessToken、user.email、account.id、account.planType 并转换。'
+const CODEX_JSON_IMPORT_REQUIRED_TEXT = '支持导入当前应用导出的 Codex 账号 JSON、auth.json，或按下方示例手动拼接的账号 JSON。手动拼接时 tokens.access_token 或 tokens.refresh_token 至少一个必填（也支持顶层 access_token / refresh_token）。如果你已经有当前登录会话，请改用 API Key 添加流程，而不是导入 session JSON。'
 const CODEX_QUOTA_SCHEMA_VERSION = 2
 const CODEX_WAKEUP_CUSTOM_MODEL_VALUE = '__custom__'
 const CODEX_WAKEUP_MODEL_OPTIONS = [
@@ -571,7 +571,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     }
     if (jsonImporting) return
     setJsonImporting(true)
-    const toastId = toast.info('正在转换 JSON 并检测 Token...', 0)
+    const toastId = toast.info('正在导入 JSON...', 0)
     try {
       const result = await Promise.resolve(svc.importFromJson(importJson))
       if (result.error) {
@@ -588,22 +588,6 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
       toast.error('导入失败: ' + (e && e.message ? e.message : String(e)))
     } finally {
       setJsonImporting(false)
-    }
-  }
-
-  async function handleOpenSessionTokenPage () {
-    const url = 'https://chatgpt.com/api/auth/session'
-    try {
-      if (svc && typeof svc.openExternalUrl === 'function') {
-        const opened = await Promise.resolve(svc.openExternalUrl(url))
-        if (opened === true) return
-      }
-    } catch (e) {}
-    const copied = await copyText(url)
-    if (copied) {
-      toast.info('已复制 Session Token 页面链接')
-    } else {
-      toast.error('打开 Session Token 页面失败')
     }
   }
 
@@ -726,6 +710,28 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
       await maybeAutoSwitchAfterQuotaRefresh('single-refresh')
     } catch (e) {
       toast.error('刷新失败: ' + (e?.message || String(e)))
+    }
+  }
+
+  async function handleSyncAccountInfo (id) {
+    if (!svc || typeof svc.resyncAccountInfo !== 'function') {
+      toast.warning('当前环境不支持同步账号信息')
+      return
+    }
+    try {
+      const result = await Promise.resolve(svc.resyncAccountInfo(id))
+      refresh()
+      if (!result || result.success !== true) {
+        toast.warning(result?.error || '同步账号信息失败')
+        return
+      }
+      if (result.warning) {
+        toast.warning(result.warning)
+      } else {
+        toast.success(result.message || '账号信息已同步')
+      }
+    } catch (e) {
+      toast.error('同步失败: ' + (e?.message || String(e)))
     }
   }
 
@@ -1148,15 +1154,13 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               )}
             </>
           )}
-          {accounts.length > 0 && (
-            <button
-              className={`action-bar-btn codex-session-toggle ${isSessionView ? 'active' : ''}`}
-              onClick={() => switchActiveView(isSessionView ? 'accounts' : 'sessions')}
-              data-tip={isSessionView ? '返回账号总览' : '会话管理'}
-            >
-              <FolderIcon size={18} />
-            </button>
-          )}
+          <button
+            className={`action-bar-btn codex-session-toggle ${isSessionView ? 'active' : ''}`}
+            onClick={() => switchActiveView(isSessionView ? 'accounts' : 'sessions')}
+            data-tip={isSessionView ? '返回账号总览' : '会话管理'}
+          >
+            <FolderIcon size={18} />
+          </button>
           <PrivacyToggleButton />
           <button className='action-bar-btn' onClick={() => setShowAdvancedConfig(true)} data-tip='高级偏好设置'>
             <SettingsIcon size={18} />
@@ -1182,6 +1186,11 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               暂无 Codex 账号<br />
               点击"添加账号"通过 OAuth、Token/JSON 或本地导入添加账号
             </div>
+            <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', gap: 12 }}>
+              <button className='btn btn-primary' onClick={() => switchActiveView('sessions')}>
+                会话管理
+              </button>
+            </div>
           </div>
           )
         : (
@@ -1204,6 +1213,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
                 onToggleSelect={() => toggleSelection(account.id)}
                 onActivate={() => handleActivate(account.id)}
                 onRefresh={() => handleRefreshQuota(account.id)}
+                onSync={() => handleSyncAccountInfo(account.id)}
                 onDelete={() => setConfirmDelete(account.id)}
                 onEditTags={() => handleOpenTagEditor(account)}
                 onReauthorize={() => openAddModal('oauth')}
@@ -1237,7 +1247,6 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
         onSubmitOAuthCallback={handleSubmitOAuthCallback}
         oauthRecovered={oauthRecovered}
         oauthPolling={oauthPolling}
-        onOpenSessionTokenPage={handleOpenSessionTokenPage}
         importJson={importJson}
         onImportJsonChange={setImportJson}
         jsonImportRequiredText={CODEX_JSON_IMPORT_REQUIRED_TEXT}

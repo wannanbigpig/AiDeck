@@ -5,7 +5,7 @@
 <h1 align="center">AiDeck</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.4-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-v1.0.7-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Node.js-25.9.0-83CD29?style=flat-square&logo=node.js" />
@@ -171,7 +171,9 @@ AiDeck 是 uTools 插件，使用前需要先安装 uTools 桌面端。
 4. 选择导入插件，目录选择仓库根目录下的 `dist/`。
 5. 导入后即可在 uTools 中启动 AiDeck。
 
-开发模式下也可以先执行 `npm run dev`，再在 uTools 开发者工具中导入仓库根目录的 `plugin.json`。
+如果导入后 DevTools Network 里仍然请求 `http://localhost:5173`，说明当前加载的仍是开发入口；请重新导入 `dist/` 构建产物。
+
+开发模式下可以先执行 `npm run dev`，再在 uTools 开发者工具中导入 `apps/utools/public/` 目录；该目录下的 `plugin.json` 会显式指向 `http://localhost:5173`。
 
 ---
 
@@ -189,7 +191,7 @@ npm install
 npm run dev
 ```
 
-开发服务启动后，在 uTools 开发者工具中导入仓库根目录的 `plugin.json`，开发入口会指向 `http://localhost:5173`。
+开发服务启动后，在 uTools 开发者工具中导入 `apps/utools/public/` 目录，开发入口会指向 `http://localhost:5173`。
 
 ### 生产构建
 

@@ -1,24 +1,23 @@
-import { lazy, Suspense, useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import Sidebar from './components/Sidebar'
 import StatusBar from './components/StatusBar'
 import { ToastProvider, useToast } from './components/Toast'
 import { GlobalNoticeProvider } from './components/GlobalNotice'
 import AnnouncementCenter from './components/AnnouncementCenter'
+import RequestLogModal from './components/RequestLogModal.jsx'
 import { ThemeProvider } from './components/ThemeToggle'
 import { PrivacyProvider } from './components/PrivacyMode'
+import Dashboard from './pages/Dashboard.jsx'
+import Antigravity from './pages/Antigravity.jsx'
+import Codex from './pages/Codex.jsx'
+import Gemini from './pages/Gemini.jsx'
+import Settings from './pages/Settings.jsx'
 import { readGlobalSettings, writeGlobalSettings } from './utils/globalSettings'
 import { setRequestLogEnabled } from './utils/requestLogClient'
 import { bindPluginSubInput, readSharedSetting, subscribeHostNavigation, subscribePluginEnter, writeSharedSetting } from './utils/hostBridge.js'
 import { useDashboardPlatformData } from './runtime/useDashboardPlatformData.js'
 import { useQuotaWarningNotifications } from './runtime/useQuotaWarningNotifications.js'
 import { useAnnouncements } from './runtime/useAnnouncements.js'
-
-const Dashboard = lazy(() => import('./pages/Dashboard.jsx'))
-const Antigravity = lazy(() => import('./pages/Antigravity.jsx'))
-const Codex = lazy(() => import('./pages/Codex.jsx'))
-const Gemini = lazy(() => import('./pages/Gemini.jsx'))
-const Settings = lazy(() => import('./pages/Settings.jsx'))
-const RequestLogModal = lazy(() => import('./components/RequestLogModal.jsx'))
 
 const LAST_ACTIVE_PLATFORM_KEY = 'aideck_last_active_platform'
 const CODEX_ACTIVE_VIEW_KEY = 'codex_active_view'
@@ -204,22 +203,18 @@ function AppInner () {
           />
         )}
         <main className={`main-content ${activePlatform === 'settings' ? 'no-padding' : ''}`}>
-          <Suspense fallback={<PageLoading />}>
-            {renderPage(activePlatform, handleActivityLog, handleSelectPlatform, searchQuery, platformData, globalSettings, applyGlobalSettings, settingsReturnPlatform, setCodexActiveView)}
-          </Suspense>
+          {renderPage(activePlatform, handleActivityLog, handleSelectPlatform, searchQuery, platformData, globalSettings, applyGlobalSettings, settingsReturnPlatform, setCodexActiveView)}
         </main>
       </div>
       <StatusBar
         stats={stats}
         lastActivity={lastActivity}
       />
-      <Suspense fallback={null}>
-        <RequestLogModal
-          open={showRequestLogModal && globalSettings.requestLogEnabled === true}
-          onClose={() => setShowRequestLogModal(false)}
-          toast={toast}
-        />
-      </Suspense>
+      <RequestLogModal
+        open={showRequestLogModal && globalSettings.requestLogEnabled === true}
+        onClose={() => setShowRequestLogModal(false)}
+        toast={toast}
+      />
       <AnnouncementCenter
         open={showAnnouncementCenter}
         onClose={() => setShowAnnouncementCenter(false)}
@@ -230,14 +225,6 @@ function AppInner () {
         onMarkAllAsRead={announcements.markAllAsRead}
         onNavigate={handleSelectPlatform}
       />
-    </div>
-  )
-}
-
-function PageLoading () {
-  return (
-    <div style={{ display: 'grid', placeItems: 'center', height: '100%' }}>
-      <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>正在加载...</div>
     </div>
   )
 }

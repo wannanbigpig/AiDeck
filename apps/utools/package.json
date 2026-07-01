@@ -1,11 +1,11 @@
 {
   "name": "@aideck/utools",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node ./scripts/postbuild.cjs"
+    "build": "node ./scripts/postbuild.cjs capture-legacy-chunks && vite build && node ./scripts/postbuild.cjs"
   },
   "dependencies": {
     "@aideck/app-shell": "file:../../packages/app-shell",

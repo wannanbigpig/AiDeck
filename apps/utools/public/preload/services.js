@@ -388,7 +388,10 @@ const services = {
     detectCodexAppPath: function (customPath) { return codexService.detectCodexAppPath(customPath) },
     detectOpenCodeAppPath: function (customPath) { return codexService.detectOpenCodeAppPath(customPath) },
     getDefaultCodexAppPath: function () { return codexService.getDefaultCodexAppPath() },
-    getDefaultOpenCodeAppPath: function () { return codexService.getDefaultOpenCodeAppPath() }
+    getDefaultOpenCodeAppPath: function () { return codexService.getDefaultOpenCodeAppPath() },
+    resyncAccountInfo: function (id) { return codexService.resyncAccountInfo(id) },
+    getResetCredits: function (id) { return codexService.getResetCredits(id) },
+    consumeResetCredit: function (id) { return codexService.consumeResetCredit(id) }
   },
   gemini: {
     list: function () { return geminiService.list() },

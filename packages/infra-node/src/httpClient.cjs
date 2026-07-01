@@ -102,7 +102,8 @@ function request (url, options) {
         resolve({
           ok: res.statusCode >= 200 && res.statusCode < 300,
           status: res.statusCode,
-          body: body
+          body: body,
+          resHeaders: res.headers || {}
         })
       })
     })
@@ -161,14 +162,14 @@ async function postJSON (url, headers, jsonBody) {
     data = null
   }
 
-  return { ok: res.ok, status: res.status, data: data, raw: res.body }
+  return { ok: res.ok, status: res.status, data: data, raw: res.body, resHeaders: res.resHeaders || {} }
 }
 
 /**
  * GET JSON 请求
  * @param {string} url
  * @param {object} headers
- * @returns {Promise<{ ok: boolean, status: number, data: object, raw: string }>}
+ * @returns {Promise<{ ok: boolean, status: number, data: object, raw: string, resHeaders: object }>}
  */
 async function getJSON (url, headers) {
   const mergedHeaders = Object.assign({
@@ -187,7 +188,7 @@ async function getJSON (url, headers) {
     data = null
   }
 
-  return { ok: res.ok, status: res.status, data: data, raw: res.body }
+  return { ok: res.ok, status: res.status, data: data, raw: res.body, resHeaders: res.resHeaders || {} }
 }
 
 /**
@@ -220,7 +221,7 @@ async function postForm (url, params) {
     data = null
   }
 
-  return { ok: res.ok, status: res.status, data: data, raw: res.body }
+  return { ok: res.ok, status: res.status, data: data, raw: res.body, resHeaders: res.resHeaders || {} }
 }
 
 module.exports = {

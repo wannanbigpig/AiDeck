@@ -3080,12 +3080,148 @@ html:not([data-suspend-tooltips='true']) .account-detail-value.has-tip[data-tip]
   line-height: 1.4;
 }
 
+.codex-reset-credits-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.codex-reset-credits-label {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.codex-reset-credits-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-reset-credits-label.dimmed {
+  opacity: 0.5;
+}
+
+html:not([data-suspend-tooltips='true']) .codex-reset-credits-label.has-tip[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  max-width: min(360px, calc(100vw - 48px));
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--bg-base);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+  z-index: 3000;
+}
+
+html:not([data-suspend-tooltips='true']) .codex-reset-credits-label.has-tip[data-tip]:hover::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: calc(100% + 4px);
+  width: 8px;
+  height: 8px;
+  background: var(--text-primary);
+  transform: rotate(45deg);
+  pointer-events: none;
+  z-index: 2999;
+}
+
+.codex-reset-confirm-modal {
+  width: min(90vw, 440px);
+  max-width: 440px;
+}
+
+.codex-reset-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.codex-reset-confirm-desc {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.codex-reset-confirm-meta {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 600;
+}
+
+.codex-reset-confirm-submit {
+  min-width: 128px;
+}
+
+.codex-reset-confirm-submit:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.codex-reset-confirm-submit.is-loading {
+  opacity: 0.78;
+}
+
+.codex-reset-credits-consume-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  background: var(--bg-secondary, transparent);
+  color: var(--accent, #667eea);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.codex-reset-credits-consume-btn:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(102, 126, 234, 0.08));
+  border-color: var(--accent, #667eea);
+}
+
+.codex-reset-credits-consume-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.codex-reset-credits-consume-btn.is-loading {
+  opacity: 0.7;
+}
+
 .codex-card-bottom {
   margin-top: auto;
 }
 
 .codex-card-bottom .account-card-divider {
   margin: 8px 0 10px;
+}
+
+@media (max-width: 720px) {
+  .codex-reset-confirm-modal {
+    width: min(94vw, 440px);
+  }
 }
 
 .ag-card-footer {

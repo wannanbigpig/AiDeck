@@ -2,15 +2,15 @@
   "version": "1.0",
   "announcements": [
     {
-      "id": "ann-2026-05-aideck-1-0-6-update",
+      "id": "ann-2026-07-aideck-1-0-7-update",
       "type": "feature",
       "priority": 350,
-      "version": "1.0.6",
+      "version": "1.0.7",
       "releaseStatus": "reviewing",
-      "marketVersion": "1.0.5",
-      "title": "AiDeck v1.0.6 更新",
-      "summary": "优化 Codex Token / JSON 导入体验，并新增 Codex 会话压缩包导入导出和 MCP 配置同步。",
-      "content": "本次更新：\n1. Codex Token / JSON 导入说明已调整，明确支持当前应用导出的 JSON、按示例手动拼接的 JSON，以及 chatgpt.com/api/auth/session 返回的 JSON；其中 session JSON 主要用于在网页版已登录时导入账号，跳过 Codex 授权流程中的手机号验证。\n2. 修复通过 chatgpt.com/api/auth/session 导入的 Codex 账号被误判为“当前本地账号未导入”的问题，同一账号会根据 user_id、account_id、邮箱和 token 信息综合识别。\n3. 优化 Codex 自动切号后的客户端重启判断，macOS 下可识别 Codex App 主进程、Helper 和 app-server，减少切号成功但未自动重启的情况。\n4. Codex 会话管理新增压缩包导入导出，可导出选中会话；未选择会话时默认导出当前可见会话。\n5. 导出改为后台任务，显示导出进度和导出历史；历史包可在本机定位，运行中的导出可终止并清理。\n6. 导入支持选择默认 ~/.codex 或账号绑定实例，重复导入同源会话时保留目标中更新的版本。\n7. 修复导入默认 ~/.codex 时可能生成自引用 rules / skills 软链接的问题，避免 Codex App 打开导入会话时报错。\n8. Codex CLI 账号独立实例启动时会同步 config.toml，让 MCP 配置随实例可用；auth.json 仍保持账号实例独立，避免凭证串用。\n9. 优化会话列表工具栏、目录全选 / 半选样式、导入导出图标和导出历史状态展示。",
+      "marketVersion": "1.0.6",
+      "title": "AiDeck v1.0.7 更新",
+      "summary": "修复 uTools 升级白屏，并补齐 Codex 重置使用次数、账号同步和空账号会话入口体验。",
+      "content": "本次更新：\n1. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n2. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n3. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n4. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n5. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n6. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n7. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -23,19 +23,19 @@
       "showOnce": true,
       "popup": true,
       "pinned": true,
-      "createdAt": "2026-05-08T00:00:00Z",
+      "createdAt": "2026-07-01T00:00:00Z",
       "expiresAt": null,
       "locales": {
         "zh-CN": {
-          "title": "AiDeck v1.0.6 更新",
-          "summary": "优化 Codex Token / JSON 导入体验，并新增 Codex 会话压缩包导入导出和 MCP 配置同步。",
-          "content": "本次更新：\n1. Codex Token / JSON 导入说明已调整，明确支持当前应用导出的 JSON、按示例手动拼接的 JSON，以及 chatgpt.com/api/auth/session 返回的 JSON；其中 session JSON 主要用于在网页版已登录时导入账号，跳过 Codex 授权流程中的手机号验证。\n2. 修复通过 chatgpt.com/api/auth/session 导入的 Codex 账号被误判为“当前本地账号未导入”的问题，同一账号会根据 user_id、account_id、邮箱和 token 信息综合识别。\n3. 优化 Codex 自动切号后的客户端重启判断，macOS 下可识别 Codex App 主进程、Helper 和 app-server，减少切号成功但未自动重启的情况。\n4. Codex 会话管理新增压缩包导入导出，可导出选中会话；未选择会话时默认导出当前可见会话。\n5. 导出改为后台任务，显示导出进度和导出历史；历史包可在本机定位，运行中的导出可终止并清理。\n6. 导入支持选择默认 ~/.codex 或账号绑定实例，重复导入同源会话时保留目标中更新的版本。\n7. 修复导入默认 ~/.codex 时可能生成自引用 rules / skills 软链接的问题，避免 Codex App 打开导入会话时报错。\n8. Codex CLI 账号独立实例启动时会同步 config.toml，让 MCP 配置随实例可用；auth.json 仍保持账号实例独立，避免凭证串用。\n9. 优化会话列表工具栏、目录全选 / 半选样式、导入导出图标和导出历史状态展示。",
+          "title": "AiDeck v1.0.7 更新",
+          "summary": "修复 uTools 升级白屏，并补齐 Codex 重置使用次数、账号同步和空账号会话入口体验。",
+          "content": "本次更新：\n1. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n2. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n3. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n4. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n5. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n6. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n7. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
           "actionLabel": "查看项目"
         },
         "en-US": {
-          "title": "AiDeck v1.0.6 Update",
-          "summary": "Improves Codex Token / JSON import and adds Codex session archive import/export plus MCP config sync.",
-          "content": "Updates:\n1. Clarified Codex Token / JSON import guidance for app-exported JSON, manually composed JSON that follows the example, and JSON returned by chatgpt.com/api/auth/session; the session JSON path is mainly for importing an already signed-in web session to skip phone verification in the Codex authorization flow.\n2. Fixed Codex accounts imported from chatgpt.com/api/auth/session being incorrectly shown as a pending local account; matching now combines user_id, account_id, email, and token signals.\n3. Improved Codex App restart detection after auto-switch on macOS by recognizing the main app process, Helper processes, and app-server, reducing cases where switching succeeded but the app was not restarted.\n4. Added Codex session archive import/export. Selected sessions are exported first; when none are selected, the current visible sessions are exported.\n5. Exports now run as background tasks with progress and export history. Completed packages can be located locally, and running exports can be stopped and cleaned up.\n6. Imports can target the default ~/.codex instance or an account-bound instance. Re-importing the same source session keeps the newer target copy.\n7. Fixed self-referential rules / skills symlinks when importing into the default ~/.codex instance, preventing Codex App resume failures.\n8. Codex CLI account instances now sync config.toml on launch so MCP settings are available in each instance, while auth.json remains account-isolated to avoid credential mixing.\n9. Refined the session toolbar, folder select / indeterminate states, import/export icons, and export history status display.",
+          "title": "AiDeck v1.0.7 Update",
+          "summary": "Fixes uTools upgrade white screens and improves Codex reset credits, account sync, and session entry visibility.",
+          "content": "Updates:\n1. Fixed the uTools production build and import path. `dist/plugin.json` no longer keeps the development entry, and legacy page chunk fallbacks are generated to reduce white screens caused by cached file:// entry scripts importing removed chunks.\n2. Added a “Reset Usage” action to Codex account cards. You can now load available reset credits, see the nearest expiration time, and confirm before consuming one.\n3. Fixed Codex reset-credit requests so refreshed tokens are persisted, preventing later refresh or consume actions from continuing to use stale tokens.\n4. The sync account action now performs a real “profile sync + quota refresh”, and also refreshes reset-credit and account-profile fields.\n5. Corrected the reset-credit expiration display so it shows the nearest expiration time instead of the farthest one.\n6. Aligned Codex JSON import guidance with actual behavior. ChatGPT Web session JSON is no longer supported; please use OAuth, API Key, or auth.json import instead.\n7. Improved the Codex empty state so session management remains directly accessible even before any account has been added.",
           "actionLabel": "View Project"
         }
       }

@@ -32,7 +32,11 @@ const PLATFORM = 'codex'
 
 // Codex (OpenAI) 配额 API
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
+const CODEX_RESET_CREDITS_CONSUME_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume'
 const CODEX_QUOTA_SCHEMA_VERSION = 2
+const CODEX_CHATGPT_REFERER = 'https://chatgpt.com/'
+const CODEX_CHATGPT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
 
 // Codex OAuth2 凭证（提取自 codex-tools）
 const CODEX_AUTH_URL = 'https://auth.openai.com/oauth/authorize'
@@ -76,6 +80,7 @@ const localSyncState = {
 let codexWakeupSchedulerTimer = null
 let codexWakeupStartupTriggered = false
 const codexWakeupRunningScheduleIds = new Set()
+const codexTokenRefreshLocks = new Map()
 const CODEX_CACHE_MAX_ENTRIES = 600
 const codexJsonlRecordsCache = new Map()
 const codexHeadTailCache = new Map()
@@ -983,7 +988,7 @@ async function _importFromLocalAsync () {
     let idToken = nested.id_token || data.id_token || ''
 
     if (refreshToken) {
-      const refreshed = await _refreshCodexToken(refreshToken)
+      const refreshed = await _refreshCodexToken(refreshToken, { currentIdToken: idToken })
       if (refreshed && refreshed.ok) {
         accessToken = refreshed.access_token || accessToken
         idToken = refreshed.id_token || idToken
@@ -1056,13 +1061,12 @@ async function importFromJson (jsonContent) {
     const rawList = Array.isArray(parsed) ? parsed : [parsed]
     const imported = []
     const importDetails = []
+    let sessionJsonDetected = false
 
     for (let i = 0; i < rawList.length; i++) {
       const normalizedRecord = _normalizeCodexJsonImportRecord(rawList[i])
       const account = normalizeAccount(normalizedRecord)
       if (account) {
-        const requireQuotaCheck = _isChatGptSessionImportRecord(rawList[i])
-        const existingBefore = _findCodexAccountByLocalTokens(storage.listAccounts(PLATFORM), account.tokens)
         _stampPluginAddedMeta(account, 'json', { override: true })
         const analysis = typeof storage.analyzeAccountImport === 'function'
           ? storage.analyzeAccountImport(PLATFORM, account)
@@ -1074,22 +1078,18 @@ async function importFromJson (jsonContent) {
             account_id: savedAccount.id || analysis.items[0].account_id
           }))
         }
-        if (requireQuotaCheck && savedAccount && savedAccount.id) {
-          const quotaResult = await _refreshCodexQuotaAsync(savedAccount, savedAccount.id)
-          if (!quotaResult || quotaResult.success !== true) {
-            if (!existingBefore) {
-              deleteAccount(savedAccount.id)
-            }
-            return { imported: [], import_details: importDetails, error: 'Token 可用性检测失败: ' + ((quotaResult && quotaResult.error) || '刷新配额失败') }
-          }
-          imported.push(storage.getAccount(PLATFORM, savedAccount.id) || savedAccount)
-        } else {
-          imported.push(savedAccount)
-        }
+        imported.push(savedAccount)
+        continue
+      }
+      if (_isChatGptSessionImportRecord(rawList[i])) {
+        sessionJsonDetected = true
       }
     }
 
     if (imported.length === 0) {
+      if (sessionJsonDetected) {
+        return { imported: [], import_details: importDetails, error: '不支持导入 ChatGPT Web 登录 session JSON，请改用 OAuth 授权、API Key 添加或 auth.json 导入。' }
+      }
       return { imported: [], import_details: importDetails, error: '未找到有效的 Codex 账号数据' }
     }
     return { imported: imported, import_details: importDetails, error: null }
@@ -1111,7 +1111,7 @@ async function addWithToken (idToken, accessToken, refreshToken) {
   let nextRefreshToken = refreshToken || ''
 
   if (nextRefreshToken) {
-    const refreshed = await _refreshCodexToken(nextRefreshToken)
+    const refreshed = await _refreshCodexToken(nextRefreshToken, { currentIdToken: nextIdToken })
     if (refreshed && refreshed.ok) {
       nextAccessToken = refreshed.access_token || nextAccessToken
       nextIdToken = refreshed.id_token || nextIdToken
@@ -1221,32 +1221,43 @@ async function _prepareCodexAccountForSwitch (accountId, account) {
     return { success: false, error: 'Token 已过期且缺少 refresh_token，请重新登录', account: null }
   }
 
-  const refreshed = await _refreshCodexToken(refreshToken, {
-    account: account.email || account.id,
-    source: 'switch-account'
-  })
-  if (!refreshed.ok) {
-    return {
-      success: false,
-      error: 'Token 已过期且刷新失败: ' + refreshed.error,
-      account: null
+  return _withCodexTokenRefreshLock(accountId, async () => {
+    // 二次检查：锁内重新读取最新 token，避免并发时重复刷新
+    const latest = storage.getAccount(PLATFORM, accountId)
+    const latestTokens = (latest && latest.tokens && typeof latest.tokens === 'object') ? latest.tokens : tokens
+    const latestAccessToken = String(latestTokens.access_token || '').trim()
+    if (latestAccessToken && !_isCodexTokenExpired(latestAccessToken)) {
+      return { success: true, error: null, account: latest || account }
     }
-  }
 
-  const nextTokens = Object.assign({}, tokens, {
-    access_token: refreshed.access_token,
-    id_token: refreshed.id_token || tokens.id_token || '',
-    refresh_token: refreshed.refresh_token || refreshToken,
-    account_id: _firstNonEmptyString(
-      tokens.account_id,
-      _extractChatGptAccountId(refreshed.access_token),
-      _extractChatGptAccountId(refreshed.id_token),
-      _extractChatGptAccountId(tokens.id_token)
-    ) || ''
+    const refreshed = await _refreshCodexToken(refreshToken, {
+      account: account.email || account.id,
+      source: 'switch-account',
+      currentIdToken: latestTokens.id_token || tokens.id_token || ''
+    })
+    if (!refreshed.ok) {
+      return {
+        success: false,
+        error: 'Token 已过期且刷新失败: ' + refreshed.error,
+        account: null
+      }
+    }
+
+    const nextTokens = Object.assign({}, latestTokens, {
+      access_token: refreshed.access_token,
+      id_token: refreshed.id_token || latestTokens.id_token || '',
+      refresh_token: refreshed.refresh_token || refreshToken,
+      account_id: _firstNonEmptyString(
+        latestTokens.account_id,
+        _extractChatGptAccountId(refreshed.access_token),
+        _extractChatGptAccountId(refreshed.id_token),
+        _extractChatGptAccountId(latestTokens.id_token)
+      ) || ''
+    })
+    storage.updateAccount(PLATFORM, accountId, { tokens: nextTokens })
+    const latestAccount = storage.getAccount(PLATFORM, accountId)
+    return { success: true, error: null, account: latestAccount || Object.assign({}, account, { tokens: nextTokens }) }
   })
-  storage.updateAccount(PLATFORM, accountId, { tokens: nextTokens })
-  const latest = storage.getAccount(PLATFORM, accountId)
-  return { success: true, error: null, account: latest || Object.assign({}, account, { tokens: nextTokens }) }
 }
 
 function _buildCodexAuthFile (account, baseDir) {
@@ -5398,6 +5409,24 @@ async function activateAccount (accountId, options) {
   }
 }
 
+async function _withCodexTokenRefreshLock (accountId, fn) {
+  const existing = codexTokenRefreshLocks.get(accountId)
+  if (existing) {
+    try { await existing } catch (_) {}
+  }
+  let release
+  const lock = new Promise(resolve => { release = resolve })
+  codexTokenRefreshLocks.set(accountId, lock)
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (codexTokenRefreshLocks.get(accountId) === lock) {
+      codexTokenRefreshLocks.delete(accountId)
+    }
+  }
+}
+
 async function refreshToken (accountId) {
   const account = storage.getAccount(PLATFORM, accountId)
   if (!account) {
@@ -5421,47 +5450,108 @@ async function refreshToken (accountId) {
     return { success: false, error: '缺少 refresh_token，无法刷新 Token' }
   }
 
-  const refreshed = await _refreshCodexToken(refreshTokenValue, {
-    account: account.email || account.id,
-    source: 'token-refresh'
-  })
-  if (!refreshed.ok) {
-    requestLogger.warn('codex.token', '刷新失败：Token 刷新失败', {
+  return _withCodexTokenRefreshLock(accountId, async () => {
+    // 二次检查：锁内重新读取最新 token 状态，避免并发时重复刷新
+    const latest = storage.getAccount(PLATFORM, accountId)
+    const latestTokens = (latest && latest.tokens && typeof latest.tokens === 'object') ? latest.tokens : tokens
+    const latestAccessToken = String(latestTokens.access_token || '').trim()
+    const latestExpiresAtMs = _decodeTokenExpMs(latestAccessToken)
+    if (latestAccessToken && latestExpiresAtMs && latestExpiresAtMs > Date.now() + (10 * 60 * 1000)) {
+      return { success: true, refreshed: false, error: null, message: 'Token 已被并发刷新，无需重复刷新' }
+    }
+
+    const refreshed = await _refreshCodexToken(refreshTokenValue, {
       account: account.email || account.id,
-      error: refreshed.error || '未知错误'
+      source: 'token-refresh',
+      currentIdToken: latestTokens.id_token || tokens.id_token || ''
+    })
+    if (!refreshed.ok) {
+      requestLogger.warn('codex.token', '刷新失败：Token 刷新失败', {
+        account: account.email || account.id,
+        error: refreshed.error || '未知错误'
+      })
+      return {
+        success: false,
+        error: 'Token 刷新失败: ' + (refreshed.error || '未知错误')
+      }
+    }
+
+    const nextTokens = Object.assign({}, latestTokens, {
+      access_token: refreshed.access_token,
+      id_token: refreshed.id_token || latestTokens.id_token || '',
+      refresh_token: refreshed.refresh_token || refreshTokenValue,
+      account_id: _firstNonEmptyString(
+        latestTokens.account_id,
+        _extractChatGptAccountId(refreshed.access_token),
+        _extractChatGptAccountId(refreshed.id_token),
+        _extractChatGptAccountId(latestTokens.id_token)
+      ) || ''
+    })
+    const accountIdValue = _firstNonEmptyString(account.account_id, nextTokens.account_id) || ''
+    storage.updateAccount(PLATFORM, accountId, {
+      tokens: nextTokens,
+      account_id: accountIdValue,
+      last_used: Date.now()
+    })
+    requestLogger.info('codex.token', '刷新 Token 成功', {
+      account: account.email || account.id
     })
     return {
-      success: false,
-      error: 'Token 刷新失败: ' + (refreshed.error || '未知错误')
+      success: true,
+      refreshed: true,
+      error: null,
+      message: 'Token 刷新成功'
     }
-  }
+  })
+}
 
-  const nextTokens = Object.assign({}, tokens, {
+function _persistRefreshedCodexTokens (accountId, account, baseTokens, refreshed, options = {}) {
+  const safeBaseTokens = (baseTokens && typeof baseTokens === 'object') ? baseTokens : {}
+  const nextTokens = Object.assign({}, safeBaseTokens, {
     access_token: refreshed.access_token,
-    id_token: refreshed.id_token || tokens.id_token || '',
-    refresh_token: refreshed.refresh_token || refreshTokenValue,
+    id_token: refreshed.id_token || safeBaseTokens.id_token || '',
+    refresh_token: refreshed.refresh_token || safeBaseTokens.refresh_token || '',
     account_id: _firstNonEmptyString(
-      tokens.account_id,
+      safeBaseTokens.account_id,
       _extractChatGptAccountId(refreshed.access_token),
       _extractChatGptAccountId(refreshed.id_token),
-      _extractChatGptAccountId(tokens.id_token)
+      _extractChatGptAccountId(safeBaseTokens.id_token)
     ) || ''
   })
-  const accountIdValue = _firstNonEmptyString(account.account_id, nextTokens.account_id) || ''
-  storage.updateAccount(PLATFORM, accountId, {
+  const nextAccountId = _firstNonEmptyString(
+    account && account.account_id,
+    options.accountId,
+    nextTokens.account_id
+  ) || ''
+
+  const patch = {
     tokens: nextTokens,
-    account_id: accountIdValue,
-    last_used: Date.now()
-  })
-  requestLogger.info('codex.token', '刷新 Token 成功', {
-    account: account.email || account.id
-  })
-  return {
-    success: true,
-    refreshed: true,
-    error: null,
-    message: 'Token 刷新成功'
+    account_id: nextAccountId
   }
+  if (options.touchLastUsed === true) {
+    patch.last_used = Date.now()
+  }
+  storage.updateAccount(PLATFORM, accountId, patch)
+
+  return {
+    nextTokens,
+    nextAccount: Object.assign({}, account, patch)
+  }
+}
+
+function _buildCodexApiHeaders (accessToken, accountId) {
+  const headers = {
+    Authorization: 'Bearer ' + accessToken,
+    Accept: 'application/json',
+    Referer: CODEX_CHATGPT_REFERER,
+    'User-Agent': CODEX_CHATGPT_USER_AGENT,
+    'OpenAI-Beta': 'codex-1',
+    originator: 'Codex Desktop'
+  }
+  if (accountId) {
+    headers['ChatGPT-Account-Id'] = accountId
+  }
+  return headers
 }
 
 async function _refreshCodexQuotaAsync (account, accountId) {
@@ -5484,7 +5574,8 @@ async function _refreshCodexQuotaAsync (account, accountId) {
       }
       const refreshed = await _refreshCodexToken(tokens.refresh_token, {
         account: account.email || account.id,
-        source: 'quota-refresh'
+        source: 'quota-refresh',
+        currentIdToken: tokens.id_token || ''
       })
       if (!refreshed.ok) {
         const quotaError = _extractCodexQuotaError(401, '刷新 Token 失败: ' + refreshed.error)
@@ -5528,26 +5619,20 @@ async function _refreshCodexQuotaAsync (account, accountId) {
         }
       } catch {}
     }
-    const headers = { Authorization: 'Bearer ' + accessToken }
-    if (accId) {
-      headers['ChatGPT-Account-Id'] = accId
+
+    // 3. 调用 wham/usage API（含 401 自动重试）
+    const quotaResult = await _callCodexUsageApi(accessToken, accId, account, accountId, idToken)
+
+    if (!quotaResult.success) {
+      return { success: false, quota: null, error: quotaResult.error }
     }
 
-    // 3. 调用 wham/usage API
-    const res = await http.getJSON(CODEX_USAGE_URL, headers)
-    if (!res.ok) {
-      const quotaError = _extractCodexQuotaError(res.status, res.raw)
-      _persistCodexQuotaError(accountId, quotaError)
-      return {
-        success: false,
-        quota: null,
-        error: quotaError.message
-      }
-    }
+    const res = quotaResult.res
+    const { data } = res
 
     // 4. 解析配额
-    const quota = _parseCodexQuota(res.data)
-    const planType = _extractCodexPlanType(res.data, { accountId: accId }) || account.plan_type
+    const quota = _parseCodexQuota(data)
+    const planType = _extractCodexPlanType(data, { accountId: accId }) || account.plan_type
     const cleanQuota = Object.assign({}, quota, {
       error: null,
       error_code: '',
@@ -5591,7 +5676,353 @@ async function _refreshCodexQuotaAsync (account, accountId) {
   }
 }
 
-function _extractCodexQuotaError (status, raw) {
+/** 调用 wham/usage API，含 401 自动刷新 Token 并重试 */
+async function _callCodexUsageApi (accessToken, accId, account, accountId, idToken) {
+  const http = require('./httpClient.cjs')
+  const headers = _buildCodexApiHeaders(accessToken, accId)
+  const res = await http.getJSON(CODEX_USAGE_URL, headers)
+  if (res.ok) {
+    return { success: true, res }
+  }
+
+  // 401/403 时自动刷新 Token 并重试一次
+  if ((res.status === 401 || res.status === 403) && account.tokens && account.tokens.refresh_token) {
+    requestLogger.info('codex.quota', '配额请求返回 ' + res.status + '，尝试刷新 Token 后重试', {
+      account: account.email || account.id,
+      status: res.status
+    })
+    const refreshed = await _refreshCodexToken(account.tokens.refresh_token, {
+      account: account.email || account.id,
+      source: 'quota-retry',
+      currentIdToken: account.tokens.id_token || ''
+    })
+    if (refreshed.ok && refreshed.access_token) {
+      const newTokens = Object.assign({}, account.tokens, {
+        access_token: refreshed.access_token,
+        id_token: refreshed.id_token || account.tokens.id_token || '',
+        refresh_token: refreshed.refresh_token || account.tokens.refresh_token
+      })
+      storage.updateAccount(PLATFORM, accountId, { tokens: newTokens })
+      const retryHeaders = _buildCodexApiHeaders(refreshed.access_token, accId || _extractChatGptAccountId(refreshed.access_token) || accId)
+      const retryRes = await http.getJSON(CODEX_USAGE_URL, retryHeaders)
+      if (retryRes.ok) {
+        return { success: true, res: retryRes }
+      }
+      const retryError = _extractCodexQuotaError(retryRes.status, retryRes.raw, retryRes.resHeaders)
+      _persistCodexQuotaError(accountId, retryError)
+      return { success: false, error: retryError.message }
+    }
+  }
+
+  const quotaError = _extractCodexQuotaError(res.status, res.raw, res.resHeaders)
+  _persistCodexQuotaError(accountId, quotaError)
+  return { success: false, error: quotaError.message }
+}
+
+/** 解析重置次数响应 */
+function _parseCodexResetCreditsSnapshot (payload) {
+  const credits = (Array.isArray(payload.credits)
+    ? payload.credits
+    : (payload.data && Array.isArray(payload.data.credits) ? payload.data.credits : [])
+  ).map(function (record) {
+    if (!record || typeof record !== 'object') return null
+    const expiresAt = _normalizeResetCreditTimestamp(record.expires_at || record.expire_at || record.expiresAt)
+    const redeemedAt = _normalizeResetCreditTimestamp(record.redeemed_at || record.used_at || record.consumed_at || record.redeemedAt)
+    const rawStatus = String(record.status || record.state || '').trim().toLowerCase()
+    let status = rawStatus
+    if (status === 'used' || status === 'consumed' || status === 'redeemed') {
+      status = 'redeemed'
+    } else if (status === 'active' || status === 'granted' || status === 'unused') {
+      status = 'available'
+    } else if (!status && redeemedAt) {
+      status = 'redeemed'
+    } else if (!status && expiresAt && expiresAt <= Math.floor(Date.now() / 1000)) {
+      status = 'expired'
+    }
+    if (!status) status = 'available'
+    return {
+      id: (record.id || record.credit_id || record.creditId || '').trim(),
+      status: status,
+      reset_type: (record.type || record.reset_type || record.resetType || '').trim(),
+      granted_at: _normalizeResetCreditTimestamp(record.granted_at || record.created_at || record.grantedAt),
+      expires_at: expiresAt,
+      redeemed_at: redeemedAt
+    }
+  }).filter(Boolean)
+
+  let availableCount = typeof payload.available_count !== 'undefined'
+    ? Number(payload.available_count)
+    : (payload.data && typeof payload.data.available_count !== 'undefined'
+      ? Number(payload.data.available_count)
+      : null)
+  if (availableCount === null || !Number.isFinite(availableCount)) {
+    availableCount = credits.filter(function (c) {
+      return c.status === 'available'
+    }).length
+  }
+
+  const nextExpiresAt = credits
+    .filter(function (c) { return c.status === 'available' && typeof c.expires_at === 'number' })
+    .reduce(function (min, c) { return min === null || c.expires_at < min ? c.expires_at : min }, null)
+
+  return {
+    available_count: availableCount,
+    credits: credits,
+    next_expires_at: nextExpiresAt
+  }
+}
+
+function _normalizeResetCreditTimestamp (value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value > 1000000000000 ? Math.floor(value / 1000) : value
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const num = Number(value.trim())
+    if (Number.isFinite(num) && num > 0) {
+      return num > 1000000000000 ? Math.floor(num / 1000) : num
+    }
+    const parsed = Date.parse(value.trim())
+    if (Number.isFinite(parsed)) return Math.floor(parsed / 1000)
+  }
+  return null
+}
+
+/** 查询账号的主动重置次数 */
+async function getResetCredits (accountId) {
+  const account = storage.getAccount(PLATFORM, accountId)
+  if (!account) {
+    return { success: false, error: '账号不存在' }
+  }
+  if (account.auth_mode === 'apikey') {
+    return { success: false, error: 'API Key 账号不支持主动重置额度' }
+  }
+
+  const tokens = account.tokens || {}
+  let accessToken = tokens.access_token
+  let currentTokens = tokens
+  let currentAccount = account
+  if (_isCodexTokenExpired(accessToken)) {
+    if (!tokens.refresh_token) {
+      return { success: false, error: 'Token 已过期且缺少 refresh_token' }
+    }
+    const refreshed = await _refreshCodexToken(tokens.refresh_token, {
+      account: account.email || account.id,
+      source: 'reset-credits',
+      currentIdToken: tokens.id_token || ''
+    })
+    if (!refreshed.ok) {
+      return { success: false, error: '刷新 Token 失败: ' + (refreshed.error || '未知错误') }
+    }
+    accessToken = refreshed.access_token
+    const persisted = _persistRefreshedCodexTokens(accountId, currentAccount, currentTokens, refreshed)
+    currentTokens = persisted.nextTokens
+    currentAccount = persisted.nextAccount
+  }
+
+  const accId = _firstNonEmptyString(
+    currentAccount.account_id,
+    currentTokens.account_id,
+    _extractChatGptAccountId(accessToken)
+  ) || null
+
+  return _fetchResetCredits(accessToken, accId, currentAccount, accountId)
+}
+
+async function _fetchResetCredits (accessToken, accId, account, accountId) {
+  const http = require('./httpClient.cjs')
+  const headers = _buildCodexApiHeaders(accessToken, accId)
+  const res = await http.getJSON(CODEX_RESET_CREDITS_URL, headers)
+
+  if (res.ok) {
+    const snapshot = _parseCodexResetCreditsSnapshot(res.data || {})
+    return { success: true, ...snapshot }
+  }
+
+  // 401/403 时自动刷新 Token 并重试
+  if ((res.status === 401 || res.status === 403) && account.tokens && account.tokens.refresh_token) {
+    const refreshed = await _refreshCodexToken(account.tokens.refresh_token, {
+      account: account.email || account.id,
+      source: 'reset-credits-retry',
+      currentIdToken: account.tokens.id_token || ''
+    })
+    if (refreshed.ok && refreshed.access_token) {
+      const persisted = _persistRefreshedCodexTokens(accountId, account, account.tokens, refreshed)
+      const retryAccId = _firstNonEmptyString(
+        accId,
+        persisted.nextAccount.account_id,
+        persisted.nextTokens.account_id,
+        _extractChatGptAccountId(refreshed.access_token)
+      ) || null
+      const retryHeaders = _buildCodexApiHeaders(refreshed.access_token, retryAccId)
+      const retryRes = await http.getJSON(CODEX_RESET_CREDITS_URL, retryHeaders)
+      if (retryRes.ok) {
+        const snapshot = _parseCodexResetCreditsSnapshot(retryRes.data || {})
+        return { success: true, ...snapshot }
+      }
+    }
+  }
+
+  const errorMsg = _extractCodexQuotaError(res.status, res.raw, res.resHeaders).message
+  return { success: false, error: errorMsg }
+}
+
+/** 消耗一次主动重置次数 */
+async function consumeResetCredit (accountId) {
+  const account = storage.getAccount(PLATFORM, accountId)
+  if (!account) {
+    return { success: false, error: '账号不存在' }
+  }
+  if (account.auth_mode === 'apikey') {
+    return { success: false, error: 'API Key 账号不支持主动重置额度' }
+  }
+
+  const tokens = account.tokens || {}
+  let accessToken = tokens.access_token
+  let currentTokens = tokens
+  let currentAccount = account
+  if (_isCodexTokenExpired(accessToken)) {
+    if (!tokens.refresh_token) {
+      return { success: false, error: 'Token 已过期且缺少 refresh_token' }
+    }
+    const refreshed = await _refreshCodexToken(tokens.refresh_token, {
+      account: account.email || account.id,
+      source: 'consume-reset',
+      currentIdToken: tokens.id_token || ''
+    })
+    if (!refreshed.ok) {
+      return { success: false, error: '刷新 Token 失败: ' + (refreshed.error || '未知错误') }
+    }
+    accessToken = refreshed.access_token
+    const persisted = _persistRefreshedCodexTokens(accountId, currentAccount, currentTokens, refreshed)
+    currentTokens = persisted.nextTokens
+    currentAccount = persisted.nextAccount
+  }
+
+  const accId = _firstNonEmptyString(
+    currentAccount.account_id,
+    currentTokens.account_id,
+    _extractChatGptAccountId(accessToken)
+  ) || null
+
+  return _consumeResetCredit(accessToken, accId, currentAccount, accountId)
+}
+
+async function resyncAccountInfo (accountId) {
+  const account = storage.getAccount(PLATFORM, accountId)
+  if (!account) {
+    return { success: false, error: '账号不存在' }
+  }
+  if (account.auth_mode === 'apikey') {
+    return { success: false, error: 'API Key 账号不支持同步 ChatGPT 账号信息' }
+  }
+
+  const refreshResult = await refreshToken(accountId)
+  const latestAccount = storage.getAccount(PLATFORM, accountId) || account
+  const latestTokens = (latestAccount.tokens && typeof latestAccount.tokens === 'object') ? latestAccount.tokens : {}
+  const rawAccessToken = _firstNonEmptyString(latestTokens.access_token)
+  const idToken = _firstNonEmptyString(latestTokens.id_token)
+  const accessTokenForProfile = rawAccessToken && !_isCodexTokenExpired(rawAccessToken) ? rawAccessToken : ''
+
+  if (!accessTokenForProfile && !idToken && refreshResult && refreshResult.success === false) {
+    return { success: false, error: refreshResult.error || '缺少可用 Token，无法同步账号信息' }
+  }
+
+  let profile = null
+  try {
+    profile = await _fetchCodexProfile(accessTokenForProfile, idToken)
+  } catch (err) {
+    return {
+      success: false,
+      error: '同步账号信息失败: ' + (err && err.message ? err.message : String(err))
+    }
+  }
+
+  const nextPatch = _buildCodexProfilePatch(profile)
+  const tokenSubscriptionActiveUntil = _extractCodexSubscriptionActiveUntilFromTokens(latestTokens)
+  if (tokenSubscriptionActiveUntil) nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+  if (Object.keys(nextPatch).length > 0) {
+    nextPatch.invalid = false
+    storage.updateAccount(PLATFORM, accountId, nextPatch)
+  }
+
+  const quotaAccount = storage.getAccount(PLATFORM, accountId) || Object.assign({}, latestAccount, nextPatch)
+  const quotaResult = await _refreshCodexQuotaAsync(quotaAccount, accountId)
+  if (!quotaResult.success) {
+    return {
+      success: true,
+      warning: '账号资料已同步，但配额刷新失败: ' + (quotaResult.error || '未知错误'),
+      profile: nextPatch,
+      quota: null
+    }
+  }
+
+  return {
+    success: true,
+    warning: '',
+    message: '账号资料与配额已同步',
+    profile: nextPatch,
+    quota: quotaResult.quota
+  }
+}
+
+async function _consumeResetCredit (accessToken, accId, account, accountId) {
+  const http = require('./httpClient.cjs')
+  const body = JSON.stringify({ redeem_request_id: crypto.randomUUID() })
+  const headers = Object.assign(
+    _buildCodexApiHeaders(accessToken, accId),
+    { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  )
+
+  const res = await http.request(CODEX_RESET_CREDITS_CONSUME_URL, {
+    method: 'POST',
+    headers: headers,
+    body: body
+  })
+  let responseData = null
+  try { responseData = JSON.parse(res.body || '{}') } catch (_) { responseData = null }
+
+  if (res.ok) {
+    return { success: true, data: responseData }
+  }
+
+  // 401/403 时自动刷新 Token 并重试
+  if ((res.status === 401 || res.status === 403) && account.tokens && account.tokens.refresh_token) {
+    const refreshed = await _refreshCodexToken(account.tokens.refresh_token, {
+      account: account.email || account.id,
+      source: 'consume-reset-retry',
+      currentIdToken: account.tokens.id_token || ''
+    })
+    if (refreshed.ok && refreshed.access_token) {
+      const persisted = _persistRefreshedCodexTokens(accountId, account, account.tokens, refreshed)
+      const retryAccId = _firstNonEmptyString(
+        accId,
+        persisted.nextAccount.account_id,
+        persisted.nextTokens.account_id,
+        _extractChatGptAccountId(refreshed.access_token)
+      ) || null
+      const retryBody = JSON.stringify({ redeem_request_id: crypto.randomUUID() })
+      const retryHeaders = Object.assign(
+        _buildCodexApiHeaders(refreshed.access_token, retryAccId),
+        { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(retryBody) }
+      )
+      const retryRes = await http.request(CODEX_RESET_CREDITS_CONSUME_URL, {
+        method: 'POST',
+        headers: retryHeaders,
+        body: retryBody
+      })
+      let retryData = null
+      try { retryData = JSON.parse(retryRes.body || '{}') } catch (_) { retryData = null }
+      if (retryRes.ok) {
+        return { success: true, data: retryData }
+      }
+    }
+  }
+
+  const errorMsg = _extractCodexQuotaError(res.status, res.body, res.resHeaders).message
+  return { success: false, error: errorMsg }
+}
+
+function _extractCodexQuotaError (status, raw, resHeaders) {
   const shortRaw = String(raw || '').slice(0, 300)
   let code = ''
   let detailMessage = ''
@@ -5610,11 +6041,21 @@ function _extractCodexQuotaError (status, raw) {
     if (!detailMessage && typeof payload.error === 'string') detailMessage = payload.error
   } catch {}
 
+  const headers = resHeaders && typeof resHeaders === 'object' ? resHeaders : {}
+  const requestId = (headers['request-id'] || '').trim()
+  const xRequestId = (headers['x-request-id'] || '').trim()
+  const cfRay = (headers['cf-ray'] || '').trim()
+  const diagnostics = [requestId && ('request-id:' + requestId), xRequestId && ('x-request-id:' + xRequestId), cfRay && ('cf-ray:' + cfRay)]
+    .filter(Boolean).join(' ')
+
   const hasCode = typeof code === 'string' && code.trim().length > 0
   const base = status > 0 ? ('API 返回 ' + status) : '配额刷新失败'
-  const message = hasCode
+  let message = hasCode
     ? (base + ' [error_code:' + code.trim() + '] - ' + (detailMessage || shortRaw || '未知错误'))
     : (base + ' - ' + (detailMessage || shortRaw || '未知错误'))
+  if (diagnostics) {
+    message += ' [' + diagnostics + ']'
+  }
 
   const normalizedCode = String(code || '').trim().toLowerCase()
   const lowerMsg = String(message || '').toLowerCase()
@@ -5661,28 +6102,49 @@ function _persistCodexQuotaError (accountId, quotaError) {
   })
 }
 
-/** 刷新 Codex access_token */
+const CODEX_TOKEN_REFRESH_TIMEOUT_MS = 25000
+
+/** 刷新 Codex access_token，使用 JSON 请求体（对齐 Codex 官方格式） */
 async function _refreshCodexToken (refreshToken, context = {}) {
   const http = require('./httpClient.cjs')
   requestLogger.info('codex.token', '开始刷新 Token', context)
-  const res = await http.postForm(CODEX_TOKEN_URL, {
+  const body = JSON.stringify({
+    client_id: CODEX_CLIENT_ID,
     grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    client_id: CODEX_CLIENT_ID
+    refresh_token: refreshToken
   })
-  if (!res.ok || !res.data || !res.data.access_token) {
+  const res = await http.request(CODEX_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      Accept: 'application/json'
+    },
+    body: body,
+    timeout: CODEX_TOKEN_REFRESH_TIMEOUT_MS
+  }).catch(err => {
+    requestLogger.warn('codex.token', '刷新 Token 请求失败', {
+      ...context,
+      error: (err && err.message ? err.message : String(err)).slice(0, 200)
+    })
+    return { ok: false, status: 0, body: '', resHeaders: {} }
+  })
+  let data = null
+  try { data = JSON.parse(res.body || '{}') } catch (_) { data = null }
+  if (!res.ok || !data || !data.access_token) {
     requestLogger.warn('codex.token', '刷新 Token 失败', {
       ...context,
-      error: (res.raw || '').slice(0, 200)
+      status: res.status,
+      error: (res.body || '').slice(0, 200)
     })
-    return { ok: false, error: (res.raw || '').slice(0, 200) }
+    return { ok: false, error: (res.body || '').slice(0, 200) }
   }
   requestLogger.info('codex.token', '刷新 Token 成功', context)
   return {
     ok: true,
-    access_token: res.data.access_token,
-    id_token: res.data.id_token || '',
-    refresh_token: res.data.refresh_token || ''
+    access_token: data.access_token,
+    id_token: data.id_token || context.currentIdToken || '',
+    refresh_token: data.refresh_token || ''
   }
 }
 
@@ -6167,6 +6629,10 @@ async function _fetchCodexProfile (accessToken, idToken) {
       organizationId: '',
       accountName: '',
       accountStructure: '',
+      accountUserRole: '',
+      profilePictureUrl: '',
+      isZdr: null,
+      isOpenaiInternal: null,
       subscriptionActiveUntil: '',
       workspace: ''
     }
@@ -6212,6 +6678,10 @@ async function _fetchCodexProfile (accessToken, idToken) {
     ).trim(),
     accountName: '',
     accountStructure: '',
+    accountUserRole: '',
+    profilePictureUrl: '',
+    isZdr: null,
+    isOpenaiInternal: null,
     subscriptionActiveUntil: _normalizeOptionalJsonScalar(authClaim.chatgpt_subscription_active_until),
     workspace: ''
   }
@@ -6245,6 +6715,10 @@ async function _fetchCodexProfile (accessToken, idToken) {
       if (accountProfile.organizationId) profile.organizationId = accountProfile.organizationId
       if (accountProfile.accountName) profile.accountName = accountProfile.accountName
       if (accountProfile.accountStructure) profile.accountStructure = accountProfile.accountStructure
+      if (accountProfile.accountUserRole) profile.accountUserRole = accountProfile.accountUserRole
+      if (accountProfile.profilePictureUrl) profile.profilePictureUrl = accountProfile.profilePictureUrl
+      if (typeof accountProfile.isZdr === 'boolean') profile.isZdr = accountProfile.isZdr
+      if (typeof accountProfile.isOpenaiInternal === 'boolean') profile.isOpenaiInternal = accountProfile.isOpenaiInternal
       if (accountProfile.accountName) {
         profile.workspace = accountProfile.accountName
       }
@@ -6267,6 +6741,10 @@ function _buildCodexProfilePatch (profile) {
   if (profile.organizationId) patch.organization_id = profile.organizationId
   if (profile.accountName) patch.account_name = profile.accountName
   if (profile.accountStructure) patch.account_structure = profile.accountStructure
+  if (profile.accountUserRole) patch.account_user_role = profile.accountUserRole
+  if (profile.profilePictureUrl) patch.profile_picture_url = profile.profilePictureUrl
+  if (typeof profile.isZdr === 'boolean') patch.is_zdr = profile.isZdr
+  if (typeof profile.isOpenaiInternal === 'boolean') patch.is_openai_internal = profile.isOpenaiInternal
   if (profile.subscriptionActiveUntil) patch.subscription_active_until = profile.subscriptionActiveUntil
   if (profile.workspace) patch.workspace = profile.workspace
   return patch
@@ -6280,7 +6758,11 @@ function _parseAccountProfileFromCheckResponse (payload, hints) {
       accountId: '',
       organizationId: '',
       accountName: '',
-      accountStructure: ''
+      accountStructure: '',
+      accountUserRole: '',
+      profilePictureUrl: '',
+      isZdr: null,
+      isOpenaiInternal: null
     }
   }
 
@@ -6291,7 +6773,11 @@ function _parseAccountProfileFromCheckResponse (payload, hints) {
     accountId: _extractAccountRecordField(selected, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id']),
     organizationId: _extractAccountRecordField(selected, ['organization_id', 'org_id', 'workspace_id']),
     accountName: _extractAccountRecordField(selected, ['name', 'display_name', 'account_name', 'organization_name', 'workspace_name', 'title']),
-    accountStructure: _extractAccountRecordField(selected, ['structure', 'account_structure', 'kind', 'type', 'account_type'])
+    accountStructure: _extractAccountRecordField(selected, ['structure', 'account_structure', 'kind', 'type', 'account_type']),
+    accountUserRole: _extractAccountRecordField(selected, ['account_user_role', 'user_role', 'account_role', 'role']),
+    profilePictureUrl: _extractAccountRecordField(selected, ['profile_picture_url', 'avatar_url', 'picture']),
+    isZdr: _extractAccountRecordBoolean(selected, ['is_zdr', 'isZdr']),
+    isOpenaiInternal: _extractAccountRecordBoolean(selected, ['is_openai_internal', 'isOpenaiInternal'])
   }
 }
 
@@ -6450,6 +6936,23 @@ function _extractAccountRecordField (record, keys) {
     if (val) return val
   }
   return ''
+}
+
+function _extractAccountRecordBoolean (record, keys) {
+  if (!record || typeof record !== 'object' || !Array.isArray(keys)) return null
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i]
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue
+    const value = record[key]
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number' && Number.isFinite(value)) return value !== 0
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase()
+      if (normalized === 'true' || normalized === '1') return true
+      if (normalized === 'false' || normalized === '0') return false
+    }
+  }
+  return null
 }
 
 function _resolveWorkspaceTitleFromOrganizations (organizations, expectedOrgId) {
@@ -6867,27 +7370,7 @@ function _extractCodexJwtProfile (tokens) {
 
 function _normalizeCodexJsonImportRecord (raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
-  const accessToken = _firstNonEmptyString(raw.accessToken, raw.access_token, raw.token)
-  const user = raw.user && typeof raw.user === 'object' && !Array.isArray(raw.user) ? raw.user : {}
-  const account = raw.account && typeof raw.account === 'object' && !Array.isArray(raw.account) ? raw.account : {}
-  const looksLikeChatGptSession = _isChatGptSessionImportRecord(raw)
-  if (!looksLikeChatGptSession) return raw
-
-  return Object.assign({}, raw, {
-    type: raw.type || 'codex',
-    disabled: raw.disabled === true,
-    email: _normalizeCodexEmailValue(raw.email || user.email) || raw.email || '',
-    user_id: _firstNonEmptyString(raw.user_id, raw.userId, user.id),
-    plan_type: _firstNonEmptyString(raw.plan_type, raw.planType, account.planType),
-    account_id: _firstNonEmptyString(raw.account_id, raw.accountId, account.id),
-    account_structure: _firstNonEmptyString(raw.account_structure, raw.accountStructure, account.structure),
-    id_token: _firstNonEmptyString(raw.id_token, raw.idToken, accessToken),
-    access_token: accessToken,
-    refresh_token: _firstNonEmptyString(raw.refresh_token, raw.refreshToken),
-    expired: _firstNonEmptyString(raw.expired, raw.expires),
-    last_refresh: _firstNonEmptyString(raw.last_refresh, raw.lastRefresh) || new Date().toISOString(),
-    websockets: raw.websockets === true
-  })
+  return raw
 }
 
 function _isChatGptSessionImportRecord (raw) {
@@ -7722,6 +8205,7 @@ module.exports = {
   refreshToken,
   refreshQuota,
   refreshQuotaOrUsage,
+  resyncAccountInfo,
   exportAccounts,
   updateTags,
   getPlanDisplayName,
@@ -7735,6 +8219,8 @@ module.exports = {
   getDefaultOpenCodeAppPath,
   detectCodexAppPath,
   detectOpenCodeAppPath,
+  getResetCredits,
+  consumeResetCredit,
   _internal: {
     parseCodexQuota: _parseCodexQuota,
     extractCodexPlanType: _extractCodexPlanType,
@@ -7753,6 +8239,8 @@ module.exports = {
     getCodexWakeupScheduleDueAt: _getCodexWakeupScheduleDueAt,
     computeCodexWakeupNextRunAt: _computeCodexWakeupNextRunAt,
     buildCodexWakeupInstanceDir: _buildCodexWakeupInstanceDir,
+    parseCodexResetCreditsSnapshot: _parseCodexResetCreditsSnapshot,
+    buildCodexProfilePatch: _buildCodexProfilePatch,
     CODEX_QUOTA_SCHEMA_VERSION
   }
 }

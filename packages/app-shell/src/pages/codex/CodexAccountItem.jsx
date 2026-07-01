@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import Modal from '../../components/Modal'
 import QuotaBar from '../../components/QuotaBar'
 import { formatDate, formatResetTime, maskText, truncateEmail } from '../../utils/format'
 import { copyText } from '../../utils/hostBridge.js'
@@ -10,6 +11,7 @@ import {
   ShieldIcon,
   SyncIcon,
   RefreshIcon,
+  ResetCreditsIcon,
   TagIcon,
   TrashIcon,
   CopyIcon,
@@ -20,6 +22,7 @@ import {
 import {
   resolveQuotaErrorMeta,
   resolveCodexAccountDisplayName,
+  resolveCodexAccountRoleDisplay,
   resolveCodexIdentityDisplay,
   resolveCodexAddMethodDisplay,
   resolveCodexProviderLoginDisplay,
@@ -100,6 +103,7 @@ export default function CodexAccountItem ({
   onToggleSelect,
   onActivate,
   onRefresh,
+  onSync,
   onDelete,
   onEditTags,
   onReauthorize,
@@ -117,17 +121,83 @@ export default function CodexAccountItem ({
   const [launchingCli, setLaunchingCli] = useState(false)
   const [openingWakeup, setOpeningWakeup] = useState(false)
   const [idCopied, setIdCopied] = useState(false)
+  const [resetCredits, setResetCredits] = useState(null)
+  const [resetCreditsLoading, setResetCreditsLoading] = useState(false)
+  const [resetCreditsConsuming, setResetCreditsConsuming] = useState(false)
+  const [showResetCreditsConfirm, setShowResetCreditsConfirm] = useState(false)
+  const [resetCreditsLabelHasTip, setResetCreditsLabelHasTip] = useState(false)
+  const isApiKey = account.auth_mode === 'apikey'
+  const resetFetchedRef = useRef(false)
+  const resetCreditsLabelRef = useRef(null)
+
+  const reloadResetCredits = async () => {
+    if (!svc?.getResetCredits || isApiKey || !account.id) return null
+    setResetCreditsLoading(true)
+    try {
+      const res = await svc.getResetCredits(account.id)
+      if (res && res.success) {
+        const next = { available_count: res.available_count, next_expires_at: res.next_expires_at }
+        setResetCredits(next)
+        return next
+      }
+      return null
+    } finally {
+      setResetCreditsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!svc?.getResetCredits || isApiKey || !account.id) return
+    if (resetFetchedRef.current) return
+    resetFetchedRef.current = true
+    reloadResetCredits().catch(() => {})
+  }, [account.id, isApiKey, svc])
+
+  const consumeResetCredit = async () => {
+    if (!svc?.consumeResetCredit || resetCreditsConsuming || !account.id) return
+    setResetCreditsConsuming(true)
+    try {
+      const res = await svc.consumeResetCredit(account.id)
+      if (res && res.success) {
+        setShowResetCreditsConfirm(false)
+        try {
+          await onRefresh?.()
+        } catch {}
+        await reloadResetCredits()
+      } else {
+        alert((res && res.error) || '消耗重置次数失败')
+      }
+    } catch (err) {
+      alert(err && err.message ? err.message : '消耗重置次数失败')
+    }
+    setResetCreditsConsuming(false)
+  }
+
+  const handleOpenResetCreditsConfirm = (e) => {
+    stopFlip(e)
+    if (isApiKey || resetCreditsLoading || !svc?.consumeResetCredit) return
+    setShowResetCreditsConfirm(true)
+  }
+
+  const handleConsumeResetCredit = async (e) => {
+    if (e) stopFlip(e)
+    await consumeResetCredit()
+  }
 
   const handleRefreshWrap = async (e) => {
     stopFlip(e)
     await onRefresh()
+    try { await reloadResetCredits() } catch {}
   }
 
   const handleSyncWrap = async (e) => {
     stopFlip(e)
-    if (syncing) return
+    if (syncing || typeof onSync !== 'function') return
     setSyncing(true)
-    try { await new Promise(resolve => setTimeout(resolve, 600)) } catch {}
+    try {
+      await onSync()
+      try { await reloadResetCredits() } catch {}
+    } catch {}
     setSyncing(false)
   }
 
@@ -181,6 +251,19 @@ export default function CodexAccountItem ({
     }
   }
 
+  const resetCreditsLabelText = resetCredits && typeof resetCredits.available_count === 'number' && resetCredits.available_count > 0
+    ? `重置次数: ${resetCredits.available_count}${resetCredits.next_expires_at ? ' (最近到期: ' + formatDate(resetCredits.next_expires_at * 1000, 'M/D') + ')' : ''}`
+    : '暂无重置次数'
+
+  useEffect(() => {
+    setResetCreditsLabelHasTip(false)
+  }, [resetCreditsLabelText])
+
+  const handleResetCreditsLabelMouseEnter = () => {
+    const el = resetCreditsLabelRef.current
+    setResetCreditsLabelHasTip(!!el && el.scrollWidth > el.clientWidth)
+  }
+
   const planBadgeClass = (() => {
     const upper = (planName || '').toUpperCase()
     if (upper === 'PLUS') return 'badge-plus'
@@ -211,6 +294,7 @@ export default function CodexAccountItem ({
   const loginMethodDisplay = `${addMethodDisplay} | ${providerLoginDisplay}`
   const identityDisplay = resolveCodexIdentityDisplay(account)
   const subscriptionDisplay = resolveCodexSubscriptionDisplay(account)
+  const accountRoleDisplay = resolveCodexAccountRoleDisplay(account)
   const sharedBackFields = buildSharedAccountBackFields({
     addMethod: loginMethodDisplay,
     addedAt: account.added_at ? formatDate(account.added_at) : (account.created_at ? formatDate(account.created_at) : '-'),
@@ -224,177 +308,275 @@ export default function CodexAccountItem ({
   const tagPills = tagList.slice(0, 3)
   const hasMoreTags = tagList.length > tagPills.length
   const isRefreshBusy = globalLoading || refreshingIds.has(account.id)
+  const resetCreditsAvailableCount = Number(resetCredits?.available_count || 0)
+  const canConsumeResetCredits = !isApiKey &&
+    !resetCreditsLoading &&
+    !resetCreditsConsuming &&
+    !!account.id &&
+    !!svc?.consumeResetCredit &&
+    resetCreditsAvailableCount > 0
+  const resetCreditsTip = (() => {
+    if (isApiKey) return ''
+    if (resetCreditsConsuming) return '正在重置使用次数'
+    if (resetCreditsLoading) return '正在读取重置次数'
+    if (!resetCredits) return '暂未读取到重置次数'
+    if (resetCreditsAvailableCount > 0) return `重置使用次数（剩余 ${resetCreditsAvailableCount} 次）`
+    return '暂无重置次数'
+  })()
 
   return (
-    <div className={`account-card-container ${isCurrent ? 'current' : ''} ${isInvalid ? 'status-invalid' : ''} ${hasQuotaError ? 'status-quota-error' : ''} ${isSelected ? 'ag-selected' : ''}`}>
-      <div className={`account-card-inner ${flipped ? 'flipped' : ''}`}>
-        <div className='account-card-front account-card' onClick={openCard} style={{ cursor: 'pointer' }}>
-          <div className='account-card-row'>
-            <label className='ag-checkbox-wrap' onClick={stopFlip}>
-              <input type='checkbox' checked={!!isSelected} onChange={onToggleSelect} />
-              <span className='ag-checkbox-ui' />
-            </label>
-            <span className='account-email'>
-              {isPrivacyMode
-                ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
-                : truncateEmail(accountDisplay.text, 28)}
-            </span>
-            {planName && <span className={`badge ${planBadgeClass}`}>{planName}</span>}
-            {showQuotaErrorOnFront && (
-              <span className='codex-status-pill quota-error' title={quotaErrorMeta.rawMessage}>
-                {showReauthorizeAction ? '需重新授权' : (quotaErrorMeta.statusCode || '配额异常')}
+    <>
+      <div className={`account-card-container ${isCurrent ? 'current' : ''} ${isInvalid ? 'status-invalid' : ''} ${hasQuotaError ? 'status-quota-error' : ''} ${isSelected ? 'ag-selected' : ''}`}>
+        <div className={`account-card-inner ${flipped ? 'flipped' : ''}`}>
+          <div className='account-card-front account-card' onClick={openCard} style={{ cursor: 'pointer' }}>
+            <div className='account-card-row'>
+              <label className='ag-checkbox-wrap' onClick={stopFlip}>
+                <input type='checkbox' checked={!!isSelected} onChange={onToggleSelect} />
+                <span className='ag-checkbox-ui' />
+              </label>
+              <span className='account-email'>
+                {isPrivacyMode
+                  ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
+                  : truncateEmail(accountDisplay.text, 28)}
               </span>
-            )}
-            {isInvalid && <span className='badge badge-danger'>{statusLabels}</span>}
-            {isCurrent && <span className='badge badge-active'>当前</span>}
-          </div>
+              {planName && <span className={`badge ${planBadgeClass}`}>{planName}</span>}
+              {showQuotaErrorOnFront && (
+                <span className='codex-status-pill quota-error' title={quotaErrorMeta.rawMessage}>
+                  {showReauthorizeAction ? '需重新授权' : (quotaErrorMeta.statusCode || '配额异常')}
+                </span>
+              )}
+              {isInvalid && <span className='badge badge-danger'>{statusLabels}</span>}
+              {isCurrent && <span className='badge badge-active'>当前</span>}
+            </div>
 
-          <div className='account-card-quota'>
-            {(() => {
-              if (quotaItems.length === 0) {
-                return <div className='quota-empty-placeholder'>暂无配额数据</div>
-              }
+            <div className='account-card-quota'>
+              {(() => {
+                if (quotaItems.length === 0) {
+                  return <div className='quota-empty-placeholder'>暂无配额数据</div>
+                }
 
-              return (
-                <>
-                  {quotaItems.map(item => (
-                    <QuotaBar
-                      key={item.key}
-                      percentage={item.percentage}
-                      label={item.label}
-                      resetTime={item.resetTime ? formatResetTime(item.resetTime) : ''}
-                      requestsLeft={item.requestsLeft}
-                      requestsLimit={item.requestsLimit}
-                    />
-                  ))}
-                </>
-              )
-            })()}
-          </div>
+                return (
+                  <>
+                    {quotaItems.map(item => (
+                      <QuotaBar
+                        key={item.key}
+                        percentage={item.percentage}
+                        label={item.label}
+                        resetTime={item.resetTime ? formatResetTime(item.resetTime) : ''}
+                        requestsLeft={item.requestsLeft}
+                        requestsLimit={item.requestsLimit}
+                      />
+                    ))}
+                  </>
+                )
+              })()}
+            </div>
 
-          <div className='codex-card-bottom'>
             {creditsText && (
               <div className='codex-credits-line'>剩余额度: {creditsText}</div>
             )}
-            <div className='account-card-divider' />
-            <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
-            <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
-              <span className='action-icon-tip'>{launchCliTip || '以账号绑定实例启动 Codex CLI'}</span>
-              {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
-            </button>
-
-            <button className={`action-icon-btn ${openingWakeup ? 'is-loading' : ''}`} onClick={handleWakeupWrap}>
-              <span className='action-icon-tip'>配置或立即唤醒此账号</span>
-              {openingWakeup ? <SpinnerBtnIcon /> : <BellIcon size={16} />}
-            </button>
-
-            {showReauthorizeAction && (
-              <button className='action-icon-btn' onClick={handleReauthorizeWrap}>
-                <span className='action-icon-tip'>重新授权</span>
-                <ShieldIcon size={16} />
-              </button>
+            {!isApiKey && resetCredits && typeof resetCredits.available_count === 'number' && resetCredits.available_count > 0 && (
+              <div className='codex-reset-credits-line'>
+                <span
+                  className={`codex-reset-credits-label ${resetCreditsLabelHasTip ? 'has-tip' : ''}`}
+                  data-tip={resetCreditsLabelHasTip ? resetCreditsLabelText : undefined}
+                  onMouseEnter={handleResetCreditsLabelMouseEnter}
+                >
+                  <span ref={resetCreditsLabelRef} className='codex-reset-credits-text'>{resetCreditsLabelText}</span>
+                </span>
+              </div>
             )}
-            <button className={`action-icon-btn ${syncing ? 'is-loading' : ''}`} onClick={handleSyncWrap}>
-              <span className='action-icon-tip'>同步账号信息</span>
-              {syncing ? <SpinnerBtnIcon /> : <SyncIcon size={16} />}
-            </button>
-
-            {!isCurrent && (
-              <button className={`action-icon-btn primary ${switching ? 'is-loading' : ''}`} onClick={handleSwitchWrap}>
-                <span className='action-icon-tip'>设为当前</span>
-                {switching
-                  ? <SpinnerBtnIcon />
-                  : (
-                    <svg viewBox='0 0 1024 1024' width='16' height='16' aria-hidden='true' fill='currentColor'>
-                      <path d='M918.072889 966.769778c-26.908444 0-48.753778-30.378667-48.753778-67.697778V96.426667c0-37.319111 21.845333-67.697778 48.753778-67.697778s48.810667 30.378667 48.810667 67.697778v802.645333c0 37.319111-21.902222 67.697778-48.810667 67.697778z m-195.697778-411.477334l-563.768889 400.327112a63.886222 63.886222 0 0 1-34.702222 9.898666c-11.605333 0-22.755556-2.958222-32.426667-8.533333-22.129778-13.539556-35.100444-35.896889-34.531555-59.790222V97.28c0-24.917333 13.198222-47.900444 34.474666-60.074667 9.671111-5.518222 20.935111-8.476444 32.426667-8.476444 12.8 0 24.974222 3.527111 35.271111 10.24l562.915556 399.644444c19.626667 12.686222 31.744 35.100444 31.744 58.595556 0 23.495111-12.060444 45.738667-31.402667 58.083555zM549.944889 448.682667L241.834667 215.836444a55.978667 55.978667 0 0 0-58.766223-1.991111 58.311111 58.311111 0 0 0-29.240888 50.574223v466.602666c-0.398222 20.252444 10.410667 39.139556 28.956444 50.517334a56.718222 56.718222 0 0 0 58.311111-1.308445l309.418667-233.927111c15.872-10.069333 25.884444-28.728889 25.884444-48.526222 0-19.740444-10.126222-38.570667-26.453333-49.095111z' />
-                    </svg>
-                    )}
-              </button>
+            {!isApiKey && resetCredits && resetCredits.available_count === 0 && (
+              <div className='codex-reset-credits-line'>
+                <span
+                  className={`codex-reset-credits-label dimmed ${resetCreditsLabelHasTip ? 'has-tip' : ''}`}
+                  data-tip={resetCreditsLabelHasTip ? resetCreditsLabelText : undefined}
+                  onMouseEnter={handleResetCreditsLabelMouseEnter}
+                >
+                  <span ref={resetCreditsLabelRef} className='codex-reset-credits-text'>{resetCreditsLabelText}</span>
+                </span>
+              </div>
             )}
 
-            <button className={`action-icon-btn ${isRefreshBusy ? 'is-loading' : ''}`} disabled={isRefreshBusy} onClick={handleRefreshWrap}>
-              <span className='action-icon-tip'>提取最新配额详情</span>
-              {isRefreshBusy ? <SpinnerBtnIcon /> : <RefreshIcon size={16} />}
-            </button>
+            <div className='codex-card-bottom'>
+              <div className='account-card-divider' />
+              <div className='account-actions' style={{ justifyContent: 'flex-end', gap: 2, color: 'var(--text-secondary)' }}>
+                <button className={`action-icon-btn ${launchingCli ? 'is-loading' : ''}`} onClick={handleLaunchCliWrap}>
+                  <span className='action-icon-tip'>{launchCliTip || '以账号绑定实例启动 Codex CLI'}</span>
+                  {launchingCli ? <SpinnerBtnIcon /> : <CommandLineIcon size={16} />}
+                </button>
 
-            <button className='action-icon-btn' onClick={handleEditTagsWrap}>
-              <span className='action-icon-tip'>编辑标签</span>
-              <TagIcon size={16} />
-            </button>
+                {!isApiKey && (
+                  <button className={`action-icon-btn ${openingWakeup ? 'is-loading' : ''}`} onClick={handleWakeupWrap}>
+                    <span className='action-icon-tip'>配置或立即唤醒此账号</span>
+                    {openingWakeup ? <SpinnerBtnIcon /> : <BellIcon size={16} />}
+                  </button>
+                )}
 
-            <button className='action-icon-btn danger' onClick={handleDeleteWrap}>
-              <span className='action-icon-tip'>删除弃用此账号</span>
-              <TrashIcon size={16} />
-            </button>
+                {!isApiKey && (
+                  <button
+                    className={`action-icon-btn ${resetCreditsConsuming ? 'is-loading' : ''}`}
+                    onClick={handleOpenResetCreditsConfirm}
+                    disabled={!canConsumeResetCredits}
+                  >
+                    <span className='action-icon-tip'>{resetCreditsTip}</span>
+                    {resetCreditsConsuming
+                      ? <SpinnerBtnIcon />
+                      : <ResetCreditsIcon size={16} />}
+                  </button>
+                )}
+
+                {showReauthorizeAction && (
+                  <button className='action-icon-btn' onClick={handleReauthorizeWrap}>
+                    <span className='action-icon-tip'>重新授权</span>
+                    <ShieldIcon size={16} />
+                  </button>
+                )}
+                {!isApiKey && (
+                  <button className={`action-icon-btn ${syncing ? 'is-loading' : ''}`} onClick={handleSyncWrap} disabled={syncing || typeof onSync !== 'function'}>
+                    <span className='action-icon-tip'>重新同步账号资料并刷新配额</span>
+                    {syncing ? <SpinnerBtnIcon /> : <SyncIcon size={16} />}
+                  </button>
+                )}
+
+                {!isCurrent && (
+                  <button className={`action-icon-btn primary ${switching ? 'is-loading' : ''}`} onClick={handleSwitchWrap}>
+                    <span className='action-icon-tip'>设为当前</span>
+                    {switching
+                      ? <SpinnerBtnIcon />
+                      : (
+                        <svg viewBox='0 0 1024 1024' width='16' height='16' aria-hidden='true' fill='currentColor'>
+                          <path d='M918.072889 966.769778c-26.908444 0-48.753778-30.378667-48.753778-67.697778V96.426667c0-37.319111 21.845333-67.697778 48.753778-67.697778s48.810667 30.378667 48.810667 67.697778v802.645333c0 37.319111-21.902222 67.697778-48.810667 67.697778z m-195.697778-411.477334l-563.768889 400.327112a63.886222 63.886222 0 0 1-34.702222 9.898666c-11.605333 0-22.755556-2.958222-32.426667-8.533333-22.129778-13.539556-35.100444-35.896889-34.531555-59.790222V97.28c0-24.917333 13.198222-47.900444 34.474666-60.074667 9.671111-5.518222 20.935111-8.476444 32.426667-8.476444 12.8 0 24.974222 3.527111 35.271111 10.24l562.915556 399.644444c19.626667 12.686222 31.744 35.100444 31.744 58.595556 0 23.495111-12.060444 45.738667-31.402667 58.083555zM549.944889 448.682667L241.834667 215.836444a55.978667 55.978667 0 0 0-58.766223-1.991111 58.311111 58.311111 0 0 0-29.240888 50.574223v466.602666c-0.398222 20.252444 10.410667 39.139556 28.956444 50.517334a56.718222 56.718222 0 0 0 58.311111-1.308445l309.418667-233.927111c15.872-10.069333 25.884444-28.728889 25.884444-48.526222 0-19.740444-10.126222-38.570667-26.453333-49.095111z' />
+                        </svg>
+                        )}
+                  </button>
+                )}
+
+                {!isApiKey && (
+                  <button className={`action-icon-btn ${isRefreshBusy ? 'is-loading' : ''}`} disabled={isRefreshBusy} onClick={handleRefreshWrap}>
+                    <span className='action-icon-tip'>提取最新配额详情</span>
+                    {isRefreshBusy ? <SpinnerBtnIcon /> : <RefreshIcon size={16} />}
+                  </button>
+                )}
+
+                <button className='action-icon-btn' onClick={handleEditTagsWrap}>
+                  <span className='action-icon-tip'>编辑标签</span>
+                  <TagIcon size={16} />
+                </button>
+
+                <button className='action-icon-btn danger' onClick={handleDeleteWrap}>
+                  <span className='action-icon-tip'>删除弃用此账号</span>
+                  <TrashIcon size={16} />
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className='account-card-back account-card' onClick={closeCard}>
-          <div className='account-back-body'>
-            <div className='account-back-header'>
-              <div className='account-back-header-icon' />
-              <span className='account-back-header-email'>
-                {isPrivacyMode
-                  ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
-                  : accountDisplay.text}
-              </span>
-            </div>
+          <div className='account-card-back account-card' onClick={closeCard}>
+            <div className='account-back-body'>
+              <div className='account-back-header'>
+                <div className='account-back-header-icon' />
+                <span className='account-back-header-email'>
+                  {isPrivacyMode
+                    ? maskText(accountDisplay.text, accountDisplay.kind === 'email' ? 'email' : 'text')
+                    : accountDisplay.text}
+                </span>
+              </div>
 
-            <div className='account-card-details'>
-              <div className='account-detail-row'>
-                <span className='account-detail-label'>工作空间:</span>
-                <AutoTip text={workspaceDisplay.text}>
-                  {isPrivacyMode ? maskText(workspaceDisplay.text, 'text') : workspaceDisplay.text}
-                </AutoTip>
-              </div>
-              <div className='account-detail-row'>
-                <span className='account-detail-label'>订阅到期:</span>
-                <AutoTip text={subscriptionDisplay.title} style={subscriptionDisplay.color ? { color: subscriptionDisplay.color } : undefined}>
-                  {subscriptionDisplay.text}
-                </AutoTip>
-              </div>
-              {sharedBackFields.map((field) => (
-                <div className='account-detail-row' key={field.key}>
-                  <span className='account-detail-label'>{field.label}:</span>
-                  <AutoTip text={field.text} style={field.color ? { color: field.color } : undefined}>
-                    {field.text}
+              <div className='account-card-details'>
+                <div className='account-detail-row'>
+                  <span className='account-detail-label'>工作空间:</span>
+                  <AutoTip text={workspaceDisplay.text}>
+                    {isPrivacyMode ? maskText(workspaceDisplay.text, 'text') : workspaceDisplay.text}
                   </AutoTip>
                 </div>
-              ))}
-              <div className='account-detail-row'>
-                <span className='account-detail-label'>用户 ID:</span>
-                <div className='account-detail-value-with-copy'>
-                  <AutoTip text={identityDisplay.userId}>
-                    {isPrivacyMode ? maskText(identityDisplay.userId, 'id') : identityDisplay.userId}
+                <div className='account-detail-row'>
+                  <span className='account-detail-label'>订阅到期:</span>
+                  <AutoTip text={subscriptionDisplay.title} style={subscriptionDisplay.color ? { color: subscriptionDisplay.color } : undefined}>
+                    {subscriptionDisplay.text}
                   </AutoTip>
-                  <button className='btn-icon-sm' title='复制 ID' onClick={handleCopyId}>
-                    {idCopied ? <CheckIcon size={12} stroke='#10b981' /> : <CopyIcon size={12} />}
-                  </button>
+                </div>
+                {accountRoleDisplay && (
+                  <div className='account-detail-row'>
+                    <span className='account-detail-label'>账号角色:</span>
+                    <AutoTip text={accountRoleDisplay}>
+                      {accountRoleDisplay}
+                    </AutoTip>
+                  </div>
+                )}
+                {sharedBackFields.map((field) => (
+                  <div className='account-detail-row' key={field.key}>
+                    <span className='account-detail-label'>{field.label}:</span>
+                    <AutoTip text={field.text} style={field.color ? { color: field.color } : undefined}>
+                      {field.text}
+                    </AutoTip>
+                  </div>
+                ))}
+                <div className='account-detail-row'>
+                  <span className='account-detail-label'>用户 ID:</span>
+                  <div className='account-detail-value-with-copy'>
+                    <AutoTip text={identityDisplay.userId}>
+                      {isPrivacyMode ? maskText(identityDisplay.userId, 'id') : identityDisplay.userId}
+                    </AutoTip>
+                    <button className='btn-icon-sm' title='复制 ID' onClick={handleCopyId}>
+                      {idCopied ? <CheckIcon size={12} stroke='#10b981' /> : <CopyIcon size={12} />}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className='account-back-tags'>
-              <div className='account-tags-line' data-tip={tagTip}>
-                {tagPills.length > 0
-                  ? tagPills.map((tag, idx) => (
-                    <span
-                      className='account-tag-pill'
-                      key={`codex-tag-${account.id}-${idx}`}
-                      style={getStableCapsuleStyle(`codex:${account.id}:${tag}:${idx}`)}
-                    >
-                      {tag}
-                    </span>
-                  ))
-                  : <span className='account-tag-pill account-tag-pill-empty'>暂无标签</span>}
-                {hasMoreTags && <span className='account-tag-pill account-tag-pill-ellipsis'>...</span>}
+              <div className='account-back-tags'>
+                <div className='account-tags-line' data-tip={tagTip}>
+                  {tagPills.length > 0
+                    ? tagPills.map((tag, idx) => (
+                      <span
+                        className='account-tag-pill'
+                        key={`codex-tag-${account.id}-${idx}`}
+                        style={getStableCapsuleStyle(`codex:${account.id}:${tag}:${idx}`)}
+                      >
+                        {tag}
+                      </span>
+                    ))
+                    : <span className='account-tag-pill account-tag-pill-empty'>暂无标签</span>}
+                  {hasMoreTags && <span className='account-tag-pill account-tag-pill-ellipsis'>...</span>}
+                </div>
               </div>
+              <div className='account-back-hint'>点击卡片任意区域返回配额监控</div>
             </div>
-            <div className='account-back-hint'>点击卡片任意区域返回配额监控</div>
           </div>
         </div>
       </div>
-    </div>
+
+      <Modal
+        title='重置使用次数'
+        open={showResetCreditsConfirm}
+        onClose={() => setShowResetCreditsConfirm(false)}
+        contentClassName='codex-reset-confirm-modal'
+        footer={
+          <>
+            <button className='btn' type='button' onClick={() => setShowResetCreditsConfirm(false)}>
+              取消
+            </button>
+            <button
+              className={`btn btn-primary codex-reset-confirm-submit ${resetCreditsConsuming ? 'is-loading' : ''}`}
+              type='button'
+              onClick={handleConsumeResetCredit}
+              disabled={!canConsumeResetCredits}
+            >
+              {resetCreditsConsuming ? '重置中...' : '重置使用次数'}
+            </button>
+          </>
+        }
+      >
+        <div className='codex-reset-confirm-body'>
+          <p className='codex-reset-confirm-desc'>
+            重置速率限制后，继续不间断地工作。
+          </p>
+          <p className='codex-reset-confirm-meta'>
+            当前还有 {resetCreditsAvailableCount} 次重置可用。
+          </p>
+        </div>
+      </Modal>
+    </>
   )
 }

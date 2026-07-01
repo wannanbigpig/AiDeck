@@ -84,6 +84,17 @@ export function RefreshIcon(props) {
   )
 }
 
+/** 重置次数 / reset credits */
+export function ResetCreditsIcon(props) {
+  return (
+    <SvgWrap viewBox='0 0 1024 1024' strokeWidth='0' fill='currentColor' {...props}>
+      <path d='M504.366545 1023.767273A465.314909 465.314909 0 0 1 67.863273 396.474182l43.752727 16.290909A418.816 418.816 0 1 0 504.366545 139.636364V93.090909c256.977455 0 465.314909 208.337455 465.31491 465.314909 0 257.024-208.337455 465.361455-465.31491 465.361455z' />
+      <path d='M389.259636 115.898182l116.829091 116.363636V0h-0.930909z' />
+      <path d='M504.226909 558.545455m-139.636364 0a139.636364 139.636364 0 1 0 279.272728 0 139.636364 139.636364 0 1 0-279.272728 0Z' />
+    </SvgWrap>
+  )
+}
+
 /** 交换/同步账号 (User requested) */
 export function SyncIcon(props) {
   return (

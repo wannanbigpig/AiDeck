@@ -32,7 +32,6 @@ export default function GeminiAddAccountModal ({
   oauthRecovered,
   oauthPolling,
   onSubmitOAuthCallback,
-  onOpenSessionTokenPage,
   importJson,
   onImportJsonChange,
   jsonImportRequiredText,
@@ -152,24 +151,14 @@ export default function GeminiAddAccountModal ({
       {addTab === 'token' && (
         <>
           <div className='form-group' style={{ marginBottom: 0 }}>
-            <label className='form-label'>
-              账号 JSON 数据
-              <button
-                type='button'
-                className='link-button'
-                style={{ marginLeft: 10 }}
-                onClick={onOpenSessionTokenPage}
-              >
-                查看当前登录 Token
-              </button>
-            </label>
+            <label className='form-label'>账号 JSON 数据</label>
             <div className='form-hint'>
-              支持导入当前应用导出的 Codex 账号 JSON，也可按下方示例手动拼接。还可以打开当前登录 Token 页面，复制 chatgpt.com/api/auth/session 返回的 JSON 后导入，适用于网页版已登录、手机号验证暂时不便完成的场景。
+              支持导入当前应用导出的 Codex 账号 JSON，也可粘贴 auth.json 或按下方示例手动拼接。不支持 web 登录 session JSON；如果你已经有当前登录会话，请改用 API Key 添加流程。
             </div>
             <textarea
               className='form-textarea'
               style={{ marginTop: 8 }}
-              placeholder='粘贴当前应用导出的 JSON、按示例拼接的 JSON，或 https://chatgpt.com/api/auth/session 返回的 JSON'
+              placeholder='粘贴当前应用导出的 JSON、auth.json 或按示例拼接的 JSON'
               value={importJson}
               onChange={(e) => onImportJsonChange(e.target.value)}
             />

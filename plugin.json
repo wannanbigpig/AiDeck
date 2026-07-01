@@ -1,11 +1,8 @@
 {
   "main": "dist/index.html",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "preload": "preload/services.js",
   "logo": "apps/utools/public/logo.png",
-  "development": {
-    "main": "http://localhost:5173"
-  },
   "pluginSetting": {
     "height": 600
   },
