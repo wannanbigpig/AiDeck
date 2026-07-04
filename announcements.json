@@ -6,11 +6,11 @@
       "type": "feature",
       "priority": 350,
       "version": "1.0.7",
-      "releaseStatus": "reviewing",
-      "marketVersion": "1.0.6",
+      "releaseStatus": "available",
+      "marketVersion": "1.0.7",
       "title": "AiDeck v1.0.7 更新",
       "summary": "修复 uTools 升级白屏，并补齐 Codex 重置使用次数、账号同步和空账号会话入口体验。",
-      "content": "本次更新：\n1. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n2. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n3. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n4. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n5. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n6. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n7. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
+      "content": "本次更新：\n1. v1.0.7 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n3. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n4. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n5. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n6. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n7. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n8. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -29,13 +29,13 @@
         "zh-CN": {
           "title": "AiDeck v1.0.7 更新",
           "summary": "修复 uTools 升级白屏，并补齐 Codex 重置使用次数、账号同步和空账号会话入口体验。",
-          "content": "本次更新：\n1. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n2. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n3. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n4. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n5. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n6. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n7. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
+          "content": "本次更新：\n1. v1.0.7 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. 修复 uTools 生产构建与导入链路，`dist/plugin.json` 不再保留开发入口，并为历史页面 chunk 增加 fallback，降低旧缓存入口命中缺失 chunk 导致的白屏问题。\n3. Codex 账号卡片新增“重置使用次数”入口，可读取剩余重置次数、展示最近到期时间，并在确认后执行一次重置。\n4. 修复 Codex 重置次数相关接口刷新 token 后未持久化的问题，避免后续刷新重置次数或消耗重置次数时继续使用旧 token。\n5. 同步账号信息按钮改为真实执行“同步账号资料 + 刷新配额”，并补齐重置次数与资料字段的刷新。\n6. 修正重置次数最近到期时间的展示逻辑，不再把多次重置中的最远到期时间误当作最近到期时间显示。\n7. 调整 Codex JSON 导入说明与能力口径，不再支持 ChatGPT Web 登录 session JSON；请改用 OAuth、API Key 或 auth.json 导入。\n8. 优化 Codex 空账号状态下的会话管理入口，即使尚未添加账号，也可以直接进入会话管理页。",
           "actionLabel": "查看项目"
         },
         "en-US": {
           "title": "AiDeck v1.0.7 Update",
           "summary": "Fixes uTools upgrade white screens and improves Codex reset credits, account sync, and session entry visibility.",
-          "content": "Updates:\n1. Fixed the uTools production build and import path. `dist/plugin.json` no longer keeps the development entry, and legacy page chunk fallbacks are generated to reduce white screens caused by cached file:// entry scripts importing removed chunks.\n2. Added a “Reset Usage” action to Codex account cards. You can now load available reset credits, see the nearest expiration time, and confirm before consuming one.\n3. Fixed Codex reset-credit requests so refreshed tokens are persisted, preventing later refresh or consume actions from continuing to use stale tokens.\n4. The sync account action now performs a real “profile sync + quota refresh”, and also refreshes reset-credit and account-profile fields.\n5. Corrected the reset-credit expiration display so it shows the nearest expiration time instead of the farthest one.\n6. Aligned Codex JSON import guidance with actual behavior. ChatGPT Web session JSON is no longer supported; please use OAuth, API Key, or auth.json import instead.\n7. Improved the Codex empty state so session management remains directly accessible even before any account has been added.",
+          "content": "Updates:\n1. v1.0.7 is now available in the uTools marketplace. If you are still on an older build, please update and restart the plugin.\n2. Fixed the uTools production build and import path. `dist/plugin.json` no longer keeps the development entry, and legacy page chunk fallbacks are generated to reduce white screens caused by cached file:// entry scripts importing removed chunks.\n3. Added a “Reset Usage” action to Codex account cards. You can now load available reset credits, see the nearest expiration time, and confirm before consuming one.\n4. Fixed Codex reset-credit requests so refreshed tokens are persisted, preventing later refresh or consume actions from continuing to use stale tokens.\n5. The sync account action now performs a real “profile sync + quota refresh”, and also refreshes reset-credit and account-profile fields.\n6. Corrected the reset-credit expiration display so it shows the nearest expiration time instead of the farthest one.\n7. Aligned Codex JSON import guidance with actual behavior. ChatGPT Web session JSON is no longer supported; please use OAuth, API Key, or auth.json import instead.\n8. Improved the Codex empty state so session management remains directly accessible even before any account has been added.",
           "actionLabel": "View Project"
         }
       }
