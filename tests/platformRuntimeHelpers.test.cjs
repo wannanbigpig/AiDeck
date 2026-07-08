@@ -67,6 +67,18 @@ async function withMockGeminiHttpClient (mockClient, callback) {
   }
 }
 
+async function withMockCodexHttpClient (mockClient, callback) {
+  const modulePath = path.join(process.cwd(), 'packages/platforms/src/httpClient.cjs')
+  const resolved = require.resolve(modulePath)
+  const original = require(resolved)
+  require.cache[resolved].exports = mockClient
+  try {
+    return await callback()
+  } finally {
+    require.cache[resolved].exports = original
+  }
+}
+
 test('shouldEnableStandaloneTokenAutoRefresh 应按自动刷新配额间隔决定是否保留独立 token 轮询', async () => {
   const { shouldEnableStandaloneTokenAutoRefresh } = await loadRuntimeHelper('usePlatformTokenAutoRefresh.js')
 
@@ -365,6 +377,26 @@ test('Codex plan_type 提取应兼容账号记录和套餐对象', () => {
       current_plan: { slug: 'team' }
     }
   }, { accountId: 'acc-team' }), 'team')
+
+  assert.equal(codex._internal.extractCodexPlanType({
+    accounts: [
+      {
+        id: 'acc-shared',
+        organization_id: 'org-plus',
+        plan_type: 'plus'
+      },
+      {
+        id: 'acc-shared',
+        organization_id: 'org-team',
+        plan_type: 'team'
+      }
+    ],
+    default_account_id: 'acc-shared',
+    account_ordering: ['acc-shared']
+  }, {
+    accountId: 'acc-shared',
+    organizationId: 'org-team'
+  }), 'team')
 })
 
 test('Codex 重置次数快照应取最近到期时间，并忽略已使用次数', () => {
@@ -425,6 +457,100 @@ test('Codex accounts/check 账号信息应补全本地账号字段', () => {
     profilePictureUrl: 'https://example.com/avatar.png',
     isZdr: false,
     isOpenaiInternal: false
+  })
+})
+
+test('Codex accounts/check 在同 account_id 不同 organization_id 时应优先匹配 workspace', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+
+  assert.deepEqual(codex._internal.parseAccountProfileFromCheckResponse({
+    accounts: [
+      {
+        id: 'acc-shared',
+        organization_id: 'org-plus',
+        account_user_id: 'user-plus__acc-shared',
+        account_user_role: 'member',
+        structure: 'personal',
+        plan_type: 'plus',
+        name: 'Personal Workspace'
+      },
+      {
+        id: 'acc-shared',
+        organization_id: 'org-team',
+        account_user_id: 'user-team__acc-shared',
+        account_user_role: 'account-owner',
+        structure: 'team',
+        plan_type: 'team',
+        name: 'Team Workspace'
+      }
+    ],
+    default_account_id: 'acc-shared',
+    account_ordering: ['acc-shared']
+  }, {
+    accountId: 'acc-shared',
+    organizationId: 'org-team'
+  }), {
+    userId: 'user-team__acc-shared',
+    accountId: 'acc-shared',
+    organizationId: 'org-team',
+    accountName: 'Team Workspace',
+    accountStructure: 'team',
+    accountUserRole: 'account-owner',
+    profilePictureUrl: '',
+    isZdr: null,
+    isOpenaiInternal: null
+  })
+})
+
+test('Codex profile 拉取在同 account_id 不同 organization_id 时不应串错套餐', async () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const accessToken = buildFakeJwt({
+    sub: 'auth0|shared-user',
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'acc-shared',
+      chatgpt_organization_id: 'org-team',
+      chatgpt_plan_type: 'plus',
+      organizations: [
+        { id: 'org-plus', title: 'Personal Workspace' },
+        { id: 'org-team', title: 'Team Workspace' }
+      ]
+    }
+  })
+
+  await withMockCodexHttpClient({
+    async getJSON () {
+      return {
+        ok: true,
+        data: {
+          plan_type: 'plus',
+          accounts: [
+            {
+              id: 'acc-shared',
+              organization_id: 'org-plus',
+              structure: 'personal',
+              plan_type: 'plus',
+              name: 'Personal Workspace'
+            },
+            {
+              id: 'acc-shared',
+              organization_id: 'org-team',
+              structure: 'team',
+              plan_type: 'team',
+              name: 'Team Workspace'
+            }
+          ],
+          default_account_id: 'acc-shared',
+          account_ordering: ['acc-shared']
+        }
+      }
+    }
+  }, async () => {
+    const profile = await codex._internal.fetchCodexProfile(accessToken, '')
+    assert.equal(profile.planType, 'team')
+    assert.equal(profile.organizationId, 'org-team')
+    assert.equal(profile.accountStructure, 'team')
+    assert.equal(profile.accountName, 'Team Workspace')
+    assert.equal(profile.workspace, 'Team Workspace')
   })
 })
 
@@ -520,6 +646,49 @@ test('Codex 本地账号匹配应兼容 access_token 导入的账号', () => {
   })
 
   assert.equal(matched.id, 'imported-from-session')
+})
+
+test('Codex 本地账号匹配在同 account_id 不同 organization_id 时应优先匹配 workspace', () => {
+  const codex = require(path.join(process.cwd(), 'packages/platforms/src/codexService.impl.cjs'))
+  const accessToken = buildFakeJwt({
+    sub: 'auth0|shared-user',
+    'https://api.openai.com/auth': {
+      chatgpt_user_id: 'auth0|shared-user',
+      chatgpt_account_id: 'acc-shared',
+      chatgpt_organization_id: 'org-team'
+    },
+    email: 'shared@example.com'
+  })
+
+  const matched = codex._internal.findCodexAccountByLocalTokens([
+    {
+      id: 'plus-workspace',
+      email: 'shared@example.com',
+      user_id: 'auth0|shared-user',
+      account_id: 'acc-shared',
+      organization_id: 'org-plus',
+      tokens: {
+        access_token: 'stale-plus-token',
+        refresh_token: ''
+      }
+    },
+    {
+      id: 'team-workspace',
+      email: 'shared@example.com',
+      user_id: 'auth0|shared-user',
+      account_id: 'acc-shared',
+      organization_id: 'org-team',
+      tokens: {
+        access_token: 'stale-team-token',
+        refresh_token: ''
+      }
+    }
+  ], {
+    access_token: accessToken,
+    refresh_token: ''
+  })
+
+  assert.equal(matched.id, 'team-workspace')
 })
 
 test('Codex 订阅到期时间应从 token claim 提取', () => {

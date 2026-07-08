@@ -1,6 +1,6 @@
 {
   "main": "dist/index.html",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "preload": "preload/services.js",
   "logo": "apps/utools/public/logo.png",
   "pluginSetting": {

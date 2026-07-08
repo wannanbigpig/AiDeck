@@ -2,6 +2,13 @@
 
 本文档用于永久记录每次版本更新内容。消息中心的 `announcements.json` 只保留当前需要提示的最新版本更新公告；发布下一个版本时，应删除或替换上一版本的更新公告，但不要删除本文档中的历史记录。
 
+## v1.0.8
+
+- 修复 Codex 同一 `account_id` 下个人 `Plus` workspace 与团队 `Team` workspace 可能被错误归并的问题；账号资料、套餐和 workspace 名称现在会优先按 `account_id + organization_id` 精确匹配。
+- 修复 Codex `accounts/check` 资料解析和套餐提取链路，刷新配额、同步账号资料时不再把另一 workspace 的 `plan_type`、角色或 workspace 名称串到当前账号。
+- 补充同 `account_id`、不同 `organization_id` 场景的回归测试，覆盖套餐解析、workspace 资料解析和 profile 拉取链路。
+- 同步更新项目版本号、README 版本徽章和消息中心公告内容。
+
 ## v1.0.7
 
 - 修复 uTools 生产构建与导入链路：`dist/plugin.json` 不再保留开发入口，同时为历史页面 chunk 增加 fallback，降低 `file://` 插件因旧缓存入口命中缺失 chunk 导致的白屏问题。

@@ -5632,7 +5632,10 @@ async function _refreshCodexQuotaAsync (account, accountId) {
 
     // 4. 解析配额
     const quota = _parseCodexQuota(data)
-    const planType = _extractCodexPlanType(data, { accountId: accId }) || account.plan_type
+    const planType = _extractCodexPlanType(data, {
+      accountId: accId,
+      organizationId: _firstNonEmptyString(account.organization_id, hydratedProfile && hydratedProfile.organizationId)
+    }) || account.plan_type
     const cleanQuota = Object.assign({}, quota, {
       error: null,
       error_code: '',
@@ -6698,7 +6701,10 @@ async function _fetchCodexProfile (accessToken, idToken) {
     }
     const res = await http.getJSON('https://chatgpt.com/backend-api/wham/accounts/check', headers)
     if (res && res.ok && res.data && typeof res.data === 'object') {
-      profile.planType = _extractCodexPlanType(res.data, { accountId: profile.accountId }) || profile.planType
+      profile.planType = _extractCodexPlanType(res.data, {
+        accountId: profile.accountId,
+        organizationId: profile.organizationId
+      }) || profile.planType
       const responseSubscriptionActiveUntil = _normalizeOptionalJsonScalar(
         res.data.subscription_active_until ||
         res.data.chatgpt_subscription_active_until
@@ -6824,6 +6830,17 @@ function _selectCodexAccountRecord (payload, hints) {
 
   const hintAccountId = _firstNonEmptyString(hints && hints.accountId)
   const hintOrgId = _firstNonEmptyString(hints && hints.organizationId)
+  const exactIdentityMatch = _findCodexAccountRecordByIdentity(records, hintAccountId, hintOrgId)
+  if (exactIdentityMatch) return exactIdentityMatch
+
+  if (hintOrgId) {
+    const selected = records.find(function (record) {
+      const recordOrgId = _extractAccountRecordField(record, ['organization_id', 'org_id', 'workspace_id'])
+      return recordOrgId && recordOrgId === hintOrgId
+    }) || null
+    if (selected) return selected
+  }
+
   const preferredAccountIds = [
     hintAccountId,
     _firstNonEmptyString(payload && payload.default_account_id),
@@ -6843,14 +6860,6 @@ function _selectCodexAccountRecord (payload, hints) {
     if (selected) return selected
   }
 
-  if (hintOrgId) {
-    const selected = records.find(function (record) {
-      const recordOrgId = _extractAccountRecordField(record, ['organization_id', 'org_id', 'workspace_id'])
-      return recordOrgId && recordOrgId === hintOrgId
-    }) || null
-    if (selected) return selected
-  }
-
   return records[0]
 }
 
@@ -6860,6 +6869,17 @@ function _findCodexAccountRecordById (records, accountId) {
   return records.find(function (record) {
     const recordId = _extractAccountRecordField(record, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id'])
     return recordId && recordId === expected
+  }) || null
+}
+
+function _findCodexAccountRecordByIdentity (records, accountId, organizationId) {
+  const expectedAccountId = _firstNonEmptyString(accountId)
+  const expectedOrgId = _firstNonEmptyString(organizationId)
+  if (!expectedAccountId || !expectedOrgId || !Array.isArray(records)) return null
+  return records.find(function (record) {
+    const recordId = _extractAccountRecordField(record, ['id', 'account_id', 'chatgpt_account_id', 'workspace_id'])
+    const recordOrgId = _extractAccountRecordField(record, ['organization_id', 'org_id', 'workspace_id'])
+    return recordId && recordId === expectedAccountId && recordOrgId && recordOrgId === expectedOrgId
   }) || null
 }
 
@@ -6912,12 +6932,12 @@ function _pickCodexPlanTypeField (record) {
 }
 
 function _extractCodexPlanType (payload, hints) {
-  const direct = _pickCodexPlanTypeField(payload)
-  if (direct) return direct
-
   const selected = _selectCodexAccountRecord(payload, hints)
   const selectedPlan = _pickCodexPlanTypeField(selected)
   if (selectedPlan) return selectedPlan
+
+  const direct = _pickCodexPlanTypeField(payload)
+  if (direct) return direct
 
   const records = _collectAccountRecords(payload)
   for (let i = 0; i < records.length; i++) {
@@ -7078,6 +7098,45 @@ function _findCodexAccountByLocalTokens (accounts, tokens) {
     const accountTokens = (account.tokens && typeof account.tokens === 'object') ? account.tokens : {}
     if (refreshToken && accountTokens.refresh_token === refreshToken) return account
     if (accessToken && accountTokens.access_token === accessToken) return account
+  }
+
+  if (organizationId) {
+    let orgScopedMatch = null
+    let orglessIdentityMatch = null
+    let hasConflictingWorkspace = false
+
+    for (let i = 0; i < accounts.length; i++) {
+      const account = accounts[i] || {}
+      const accountUserId = _firstNonEmptyString(account.user_id, account.userId)
+      const accountEmail = String(account.email || '').toLowerCase()
+      const accountAccountId = _firstNonEmptyString(account.account_id)
+      const accountOrgId = _firstNonEmptyString(account.organization_id)
+
+      if (accountOrgId && accountOrgId === organizationId) {
+        if (accountId && accountAccountId === accountId) {
+          return account
+        }
+        if (!orgScopedMatch && (!email || !accountEmail || accountEmail === email)) {
+          orgScopedMatch = account
+        }
+      }
+
+      if (accountId && accountAccountId === accountId) {
+        if (accountOrgId && accountOrgId !== organizationId) {
+          hasConflictingWorkspace = true
+          continue
+        }
+        if (!accountOrgId && !orglessIdentityMatch) {
+          if ((userId && accountUserId === userId) || (email && accountEmail === email)) {
+            orglessIdentityMatch = account
+          }
+        }
+      }
+    }
+
+    if (orgScopedMatch) return orgScopedMatch
+    if (!hasConflictingWorkspace && orglessIdentityMatch) return orglessIdentityMatch
+    return null
   }
 
   for (let i = 0; i < accounts.length; i++) {
@@ -8226,6 +8285,7 @@ module.exports = {
     extractCodexPlanType: _extractCodexPlanType,
     extractCodexSubscriptionActiveUntilFromTokens: _extractCodexSubscriptionActiveUntilFromTokens,
     extractCodexJwtProfile: _extractCodexJwtProfile,
+    fetchCodexProfile: _fetchCodexProfile,
     findCodexAccountByLocalTokens: _findCodexAccountByLocalTokens,
     isCodexDarwinAppProcessArgs: _isCodexDarwinAppProcessArgs,
     normalizeCodexJsonImportRecord: _normalizeCodexJsonImportRecord,
