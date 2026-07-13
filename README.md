@@ -5,7 +5,7 @@
 <h1 align="center">AiDeck</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.8-blue?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-v1.0.9-blue?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-uTools%20%E6%8F%92%E4%BB%B6-green?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Node.js-25.9.0-83CD29?style=flat-square&logo=node.js" />
@@ -53,6 +53,7 @@
 - 支持从系统默认 Codex 配置目录探测并导入当前登录账号。
 - 支持 OAuth 授权、Token / JSON 导入和当前账号切换。
 - 配额展示支持 5 小时、每周、剩余额度，以及接口返回的额外模型额度。
+- Codex 设置提供“5 小时配额控制”，默认关闭；关闭时仍展示 5 小时配额，但不会触发自动切号或系统级预警，每周配额逻辑不受影响。
 - 旧配额快照会在进入 Codex 页面后自动静默刷新一次，补齐新配额结构。
 - Codex CLI 启动不会再执行全局切号：账号首次点击 CLI 按钮时创建独立 `CODEX_HOME` 实例并绑定到该账号，后续启动复用同一个实例目录。
 - Codex 账号卡片新增唤醒任务入口，每个账号可单独设置启用 / 停用、调度模式、提示词、预设或自定义模型和推理强度，也可立即通过账号绑定实例执行 `codex exec` 轻量唤醒并刷新配额。

@@ -38,8 +38,10 @@ import { formatImportSummary } from '../runtime/importSummary.js'
 import {
   resolveQuotaErrorMeta,
   shouldOfferReauthorizeAction,
+  resolveCodexCurrentAccount,
   normalizeCodexAdvancedSettings,
-  readCodexAdvancedSettings
+  readCodexAdvancedSettings,
+  shouldUseCodexHourlyQuota
 } from '../utils/codex'
 
 const CODEX_JSON_IMPORT_REQUIRED_TEXT = '支持导入当前应用导出的 Codex 账号 JSON、auth.json，或按下方示例手动拼接的账号 JSON。手动拼接时 tokens.access_token 或 tokens.refresh_token 至少一个必填（也支持顶层 access_token / refresh_token）。如果你已经有当前登录会话，请改用 API Key 添加流程，而不是导入 session JSON。'
@@ -446,7 +448,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
     const currentHourly = typeof currentQuota.hourly_percentage === 'number' ? currentQuota.hourly_percentage : null
     const currentWeekly = typeof currentQuota.weekly_percentage === 'number' ? currentQuota.weekly_percentage : null
 
-    const hitHourly = currentHourly !== null && currentHourly <= hourlyThreshold
+    const hitHourly = shouldUseCodexHourlyQuota(settings) && currentHourly !== null && currentHourly <= hourlyThreshold
     const hitWeekly = currentWeekly !== null && currentWeekly <= weeklyThreshold
 
     if (!hitHourly && !hitWeekly) return false
@@ -1102,6 +1104,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
       return 0
     }
   })
+  const currentAccount = resolveCodexCurrentAccount(accounts, currentId)
 
   return (
     <div>
@@ -1206,7 +1209,7 @@ export default function Codex ({ onActivity, searchQuery = '', onViewChange }) {
               <CodexAccountItem
                 key={account.id}
                 account={account}
-                isCurrent={account.id === currentId}
+                isCurrent={account === currentAccount}
                 isSelected={selectedIds.has(account.id)}
                 refreshingIds={quotaActions.runningIds}
                 globalLoading={loading}

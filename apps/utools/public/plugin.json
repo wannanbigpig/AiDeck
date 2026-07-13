@@ -1,6 +1,6 @@
 {
   "main": "index.html",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "preload": "preload/services.js",
   "logo": "logo.png",
   "development": {

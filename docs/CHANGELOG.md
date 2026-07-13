@@ -2,6 +2,14 @@
 
 本文档用于永久记录每次版本更新内容。消息中心的 `announcements.json` 只保留当前需要提示的最新版本更新公告；发布下一个版本时，应删除或替换上一版本的更新公告，但不要删除本文档中的历史记录。
 
+## v1.0.9
+
+- Codex 订阅到期时间改为优先读取具体 workspace 的 `entitlement.expires_at`，并在 Node 请求遇到 Cloudflare challenge 时通过原生 `fetch` 重试；远程资料缺失时仍保留 JWT claim 兜底。
+- 修复同邮箱个人 `Plus` 与团队 `Team` workspace 订阅时间串用，以及重复账号 ID 期间多张卡片同时显示“当前”的问题。
+- Codex 设置新增默认关闭的“5 小时配额控制”；关闭时仍展示 5 小时配额，但不参与自动切号和系统级预警，每周配额逻辑保持不变。
+- 补充 workspace 订阅解析、远程重试、唯一当前账号和 5 小时配额控制的回归测试。
+- 同步更新项目版本号、README 版本徽章和消息中心公告内容。
+
 ## v1.0.8
 
 - 修复 Codex 同一 `account_id` 下个人 `Plus` workspace 与团队 `Team` workspace 可能被错误归并的问题；账号资料、套餐和 workspace 名称现在会优先按 `account_id + organization_id` 精确匹配。

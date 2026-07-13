@@ -2,15 +2,15 @@
   "version": "1.0",
   "announcements": [
     {
-      "id": "ann-2026-07-aideck-1-0-8-update",
+      "id": "ann-2026-07-aideck-1-0-9-update",
       "type": "feature",
       "priority": 350,
-      "version": "1.0.8",
+      "version": "1.0.9",
       "releaseStatus": "available",
-      "marketVersion": "1.0.8",
-      "title": "AiDeck v1.0.8 更新",
-      "summary": "修复 Codex 同账号下 Plus 与 Team workspace 串号，套餐、角色和工作区展示恢复按 workspace 精确匹配。",
-      "content": "本次更新：\n1. v1.0.8 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. 修复 Codex 同一账号下个人 Plus workspace 与团队 Team workspace 可能被错误合并的问题；账号资料、套餐和 workspace 名称现在会优先按 `account_id + organization_id` 精确匹配。\n3. 修复 `wham/accounts/check` 返回多条 workspace 记录时的选择逻辑，刷新配额、同步账号资料和 profile 拉取不再串用另一 workspace 的 `plan_type`、角色或 workspace 名称。\n4. 补充同 `account_id`、不同 `organization_id` 场景的回归测试，降低后续再次出现 Plus / Team 串号回归的风险。",
+      "marketVersion": "1.0.9",
+      "title": "AiDeck v1.0.9 更新",
+      "summary": "修复 Codex workspace 订阅时间和当前账号串用，并新增可独立关闭的 5 小时配额控制。",
+      "content": "本次更新：\n1. v1.0.9 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. Codex 订阅到期时间现在优先读取具体 workspace 的远程 entitlement，修复同邮箱个人 Plus 与团队 Team 显示相同到期时间的问题。\n3. 修复账号资料归一化期间重复 ID 可能导致多张卡片同时显示“当前”的问题，现在只标记最近激活的账号。\n4. Codex 设置新增默认关闭的“5 小时配额控制”；关闭时仍展示 5 小时配额，但不会触发自动切号或系统级预警，每周配额逻辑不受影响。",
       "action": {
         "type": "url",
         "target": "https://github.com/wannanbigpig/AiDeck",
@@ -23,19 +23,19 @@
       "showOnce": true,
       "popup": true,
       "pinned": true,
-      "createdAt": "2026-07-08T00:00:00Z",
+      "createdAt": "2026-07-13T00:00:00Z",
       "expiresAt": null,
       "locales": {
         "zh-CN": {
-          "title": "AiDeck v1.0.8 更新",
-          "summary": "修复 Codex 同账号下 Plus 与 Team workspace 串号，套餐、角色和工作区展示恢复按 workspace 精确匹配。",
-          "content": "本次更新：\n1. v1.0.8 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. 修复 Codex 同一账号下个人 Plus workspace 与团队 Team workspace 可能被错误合并的问题；账号资料、套餐和 workspace 名称现在会优先按 `account_id + organization_id` 精确匹配。\n3. 修复 `wham/accounts/check` 返回多条 workspace 记录时的选择逻辑，刷新配额、同步账号资料和 profile 拉取不再串用另一 workspace 的 `plan_type`、角色或 workspace 名称。\n4. 补充同 `account_id`、不同 `organization_id` 场景的回归测试，降低后续再次出现 Plus / Team 串号回归的风险。",
+          "title": "AiDeck v1.0.9 更新",
+          "summary": "修复 Codex workspace 订阅时间和当前账号串用，并新增可独立关闭的 5 小时配额控制。",
+          "content": "本次更新：\n1. v1.0.9 已在 uTools 应用市场发布；如果你当前仍停留在旧版本，请更新并重启插件。\n2. Codex 订阅到期时间现在优先读取具体 workspace 的远程 entitlement，修复同邮箱个人 Plus 与团队 Team 显示相同到期时间的问题。\n3. 修复账号资料归一化期间重复 ID 可能导致多张卡片同时显示“当前”的问题，现在只标记最近激活的账号。\n4. Codex 设置新增默认关闭的“5 小时配额控制”；关闭时仍展示 5 小时配额，但不会触发自动切号或系统级预警，每周配额逻辑不受影响。",
           "actionLabel": "查看项目"
         },
         "en-US": {
-          "title": "AiDeck v1.0.8 Update",
-          "summary": "Fixes Codex Plus and Team workspace mix-ups under the same account so plans, roles, and workspace labels stay scoped correctly.",
-          "content": "Updates:\n1. v1.0.8 is now available in the uTools marketplace. If you are still on an older build, please update and restart the plugin.\n2. Fixed an issue where a personal Plus workspace and a team Team workspace under the same Codex account could be merged incorrectly. Account profile, plan, and workspace labels now prefer an exact `account_id + organization_id` match.\n3. Fixed workspace selection when `wham/accounts/check` returns multiple workspace records, so quota refresh, account sync, and profile hydration no longer borrow the other workspace's `plan_type`, role, or workspace name.\n4. Added regression coverage for the same `account_id` / different `organization_id` scenario to reduce future Plus / Team mix-up regressions.",
+          "title": "AiDeck v1.0.9 Update",
+          "summary": "Fixes Codex workspace subscription dates and current-account mix-ups, and adds independent control for the 5-hour quota.",
+          "content": "Updates:\n1. v1.0.9 is now available in the uTools marketplace. If you are still on an older build, please update and restart the plugin.\n2. Codex subscription expiry now prefers the remote entitlement for the selected workspace, fixing identical expiry dates shown for personal Plus and team Team workspaces under the same email.\n3. Fixed duplicate account IDs during profile normalization causing multiple cards to appear current; only the most recently activated account is now marked.\n4. Codex settings now include a 5-hour quota control that is off by default. When disabled, the quota remains visible but does not trigger automatic switching or system notifications; weekly quota behavior is unchanged.",
           "actionLabel": "View Project"
         }
       }

@@ -17,6 +17,7 @@ export const DEFAULT_CODEX_ADVANCED_SETTINGS = {
   autoRestartOpenCode: false,
   autoStartOpenCodeWhenClosed: false,
   autoSwitch: true,
+  hourlyQuotaControlEnabled: false,
   autoSwitchHourlyThreshold: 20,
   autoSwitchWeeklyThreshold: 1,
   autoSwitchPreferSameEmail: true,
@@ -34,6 +35,7 @@ export const CODEX_BOOLEAN_SETTING_KEYS = [
   'autoRestartOpenCode',
   'autoStartOpenCodeWhenClosed',
   'autoSwitch',
+  'hourlyQuotaControlEnabled',
   'autoSwitchPreferSameEmail',
   'quotaWarningEnabled'
 ]
@@ -157,6 +159,10 @@ export function readCodexAdvancedSettings () {
   return normalizeCodexAdvancedSettings(readSharedSetting(CODEX_SETTINGS_KEY, null))
 }
 
+export function shouldUseCodexHourlyQuota (settings) {
+  return settings && settings.hourlyQuotaControlEnabled === true
+}
+
 export function resolveQuotaErrorMeta(quotaError, fallbackMessage = '') {
   let rawMessage = ''
   let statusCode = ''
@@ -199,6 +205,18 @@ export function isCodexTeamLikePlan(planType) {
   if (!planType || typeof planType !== 'string') return false
   const upper = planType.toUpperCase()
   return upper.includes('TEAM') || upper.includes('BUSINESS') || upper.includes('ENTERPRISE') || upper.includes('EDU')
+}
+
+export function resolveCodexCurrentAccount (accounts, currentId) {
+  const expectedId = String(currentId || '').trim()
+  if (!expectedId || !Array.isArray(accounts)) return null
+  return accounts.reduce((selected, account) => {
+    if (!account || String(account.id || '') !== expectedId) return selected
+    if (!selected) return account
+    const selectedLastUsed = Number(selected.last_used || 0)
+    const accountLastUsed = Number(account.last_used || 0)
+    return accountLastUsed > selectedLastUsed ? account : selected
+  }, null)
 }
 
 export function decodeJwtPayload(token) {

@@ -199,6 +199,19 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
 
         </div>
 
+        <div className="settings-section">
+          <div className="settings-row">
+            <div className="settings-info">
+              <div className="settings-label">5 小时配额控制</div>
+              <div className="settings-desc">开启后，5 小时配额才会参与自动切号和系统级预警；关闭时仍保留配额展示。</div>
+            </div>
+            <ToggleSwitch
+              checked={settings.hourlyQuotaControlEnabled}
+              onChange={e => handleChange('hourlyQuotaControlEnabled', e.target.checked)}
+            />
+          </div>
+        </div>
+
         {/* CLI 设置 */}
         <div className="settings-section">
           <div className="settings-section-title">Codex CLI</div>
@@ -335,21 +348,23 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
 
           {settings.autoSwitch && (
             <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 14, paddingLeft: 4 }}>
-              <AutoSwitchThresholdSlider
-                title='5小时配额阈值'
-                description='当 5 小时剩余配额低于或等于该阈值时，尝试自动切换。'
-                value={settings.autoSwitchHourlyThreshold}
-                onChange={(nextValue) => handleChange('autoSwitchHourlyThreshold', nextValue)}
-                min={0}
-                max={30}
-                step={1}
-                accent='purple'
-                marks={[
-                  { value: 0, label: '0%' },
-                  { value: 15, label: '15%' },
-                  { value: 30, label: '30%' }
-                ]}
-              />
+              {settings.hourlyQuotaControlEnabled && (
+                <AutoSwitchThresholdSlider
+                  title='5小时配额阈值'
+                  description='当 5 小时剩余配额低于或等于该阈值时，尝试自动切换。'
+                  value={settings.autoSwitchHourlyThreshold}
+                  onChange={(nextValue) => handleChange('autoSwitchHourlyThreshold', nextValue)}
+                  min={0}
+                  max={30}
+                  step={1}
+                  accent='purple'
+                  marks={[
+                    { value: 0, label: '0%' },
+                    { value: 15, label: '15%' },
+                    { value: 30, label: '30%' }
+                  ]}
+                />
+              )}
 
               <AutoSwitchThresholdSlider
                 title='周配额阈值'
@@ -396,21 +411,23 @@ export default function CodexSettingsModal ({ open, onClose, toast, settings: ou
 
           {settings.quotaWarningEnabled && (
             <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 14, paddingLeft: 4 }}>
-              <AutoSwitchThresholdSlider
-                title='5小时配额预警阈值'
-                description='当前激活账号的 5 小时剩余配额低于或等于该阈值时发送系统通知。'
-                value={settings.quotaWarningHourlyThreshold}
-                onChange={(nextValue) => handleChange('quotaWarningHourlyThreshold', nextValue)}
-                min={0}
-                max={30}
-                step={1}
-                accent='purple'
-                marks={[
-                  { value: 0, label: '0%' },
-                  { value: 15, label: '15%' },
-                  { value: 30, label: '30%' }
-                ]}
-              />
+              {settings.hourlyQuotaControlEnabled && (
+                <AutoSwitchThresholdSlider
+                  title='5小时配额预警阈值'
+                  description='当前激活账号的 5 小时剩余配额低于或等于该阈值时发送系统通知。'
+                  value={settings.quotaWarningHourlyThreshold}
+                  onChange={(nextValue) => handleChange('quotaWarningHourlyThreshold', nextValue)}
+                  min={0}
+                  max={30}
+                  step={1}
+                  accent='purple'
+                  marks={[
+                    { value: 0, label: '0%' },
+                    { value: 15, label: '15%' },
+                    { value: 30, label: '30%' }
+                  ]}
+                />
+              )}
 
               <AutoSwitchThresholdSlider
                 title='周配额预警阈值'

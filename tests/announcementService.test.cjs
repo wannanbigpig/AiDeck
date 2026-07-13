@@ -160,7 +160,7 @@ test('announcementService 应在开发环境默认读取仓库根公告文件', 
     const localFile = service.getLocalAnnouncementFile()
     assert.equal(localFile, path.join(process.cwd(), 'announcements.json'))
     const state = await service.getAnnouncementState({ version: '1.0.1', locale: 'zh-CN' })
-    assert.ok(state.announcements.some(item => item.id === 'ann-2026-07-aideck-1-0-8-update'))
+    assert.ok(state.announcements.some(item => item.id === 'ann-2026-07-aideck-1-0-9-update'))
   })
 })
 

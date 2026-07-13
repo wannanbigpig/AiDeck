@@ -76,7 +76,7 @@ function buildCodexWarningItems (account, settings) {
   const hourly = toPercentage(quota.hourly_percentage)
   const weekly = toPercentage(quota.weekly_percentage)
 
-  if (hourly !== null) {
+  if (settings.hourlyQuotaControlEnabled === true && hourly !== null) {
     items.push({
       key: 'hourly',
       label: '5小时配额',

@@ -32,6 +32,8 @@ const PLATFORM = 'codex'
 
 // Codex (OpenAI) 配额 API
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const CODEX_SUBSCRIPTION_ACCOUNTS_URL = 'https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27'
+const CODEX_SUBSCRIPTIONS_URL = 'https://chatgpt.com/backend-api/subscriptions'
 const CODEX_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
 const CODEX_RESET_CREDITS_CONSUME_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume'
 const CODEX_QUOTA_SCHEMA_VERSION = 2
@@ -5632,7 +5634,22 @@ async function _refreshCodexQuotaAsync (account, accountId) {
 
     // 4. 解析配额
     const quota = _parseCodexQuota(data)
-    const planType = _extractCodexPlanType(data, {
+    let subscriptionSnapshot = null
+    if (hydratedProfile && hydratedProfile.subscriptionActiveUntil) {
+      subscriptionSnapshot = {
+        accountId: hydratedProfile.accountId || accId,
+        planType: hydratedProfile.planType || '',
+        subscriptionActiveUntil: hydratedProfile.subscriptionActiveUntil
+      }
+    } else {
+      try {
+        subscriptionSnapshot = await _fetchCodexSubscriptionStatus(accessToken, {
+          accountId: accId,
+          organizationId: _firstNonEmptyString(account.organization_id)
+        })
+      } catch {}
+    }
+    const planType = _firstNonEmptyString(subscriptionSnapshot && subscriptionSnapshot.planType) || _extractCodexPlanType(data, {
       accountId: accId,
       organizationId: _firstNonEmptyString(account.organization_id, hydratedProfile && hydratedProfile.organizationId)
     }) || account.plan_type
@@ -5647,11 +5664,17 @@ async function _refreshCodexQuotaAsync (account, accountId) {
       invalid: false,
       quota_error: null
     }
+    if (subscriptionSnapshot && subscriptionSnapshot.subscriptionActiveUntil) {
+      nextPatch.subscription_active_until = subscriptionSnapshot.subscriptionActiveUntil
+    }
     if (hydratedProfile) {
       Object.assign(nextPatch, _buildCodexProfilePatch(hydratedProfile))
     }
     const tokenSubscriptionActiveUntil = _extractCodexSubscriptionActiveUntilFromTokens(currentTokens)
-    if (tokenSubscriptionActiveUntil) nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+    // workspace entitlement 是订阅时间的权威来源；JWT claim 仅在远程资料未返回时兜底。
+    if (tokenSubscriptionActiveUntil && !nextPatch.subscription_active_until) {
+      nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+    }
     const nextAccountView = Object.assign({}, account, nextPatch)
     if (!hydratedProfile && _shouldHydrateCodexProfile(nextAccountView, planType)) {
       try {
@@ -5942,7 +5965,10 @@ async function resyncAccountInfo (accountId) {
 
   const nextPatch = _buildCodexProfilePatch(profile)
   const tokenSubscriptionActiveUntil = _extractCodexSubscriptionActiveUntilFromTokens(latestTokens)
-  if (tokenSubscriptionActiveUntil) nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+  // profile 已包含按具体 workspace 查询的 entitlement.expires_at，不能再被账号级 JWT claim 覆盖。
+  if (tokenSubscriptionActiveUntil && !nextPatch.subscription_active_until) {
+    nextPatch.subscription_active_until = tokenSubscriptionActiveUntil
+  }
   if (Object.keys(nextPatch).length > 0) {
     nextPatch.invalid = false
     storage.updateAccount(PLATFORM, accountId, nextPatch)
@@ -6734,7 +6760,103 @@ async function _fetchCodexProfile (accessToken, idToken) {
     }
   } catch {}
 
+  try {
+    const subscription = await _fetchCodexSubscriptionStatus(token, {
+      accountId: profile.accountId,
+      organizationId: profile.organizationId
+    })
+    if (subscription.planType) profile.planType = subscription.planType
+    if (subscription.subscriptionActiveUntil) {
+      profile.subscriptionActiveUntil = subscription.subscriptionActiveUntil
+    }
+  } catch {}
+
   return profile
+}
+
+async function _fetchCodexSubscriptionStatus (token, hints) {
+  const http = require('./httpClient.cjs')
+  const headers = _buildCodexApiHeaders(token, null)
+  headers['x-openai-target-path'] = '/backend-api/accounts/check/v4-2023-04-27'
+  headers['x-openai-target-route'] = '/backend-api/accounts/check/v4-2023-04-27'
+  const timezoneOffsetMin = -new Date().getTimezoneOffset()
+  const checkRes = await _getCodexSubscriptionJSON(
+    http,
+    CODEX_SUBSCRIPTION_ACCOUNTS_URL + '?timezone_offset_min=' + timezoneOffsetMin,
+    headers
+  )
+  if (!checkRes || !checkRes.ok) return { planType: '', subscriptionActiveUntil: '' }
+
+  const snapshot = _parseCodexSubscriptionStatus(checkRes.data, hints)
+  if (snapshot.subscriptionActiveUntil || !snapshot.accountId) return snapshot
+
+  const subscriptionsHeaders = _buildCodexApiHeaders(token, null)
+  subscriptionsHeaders['x-openai-target-path'] = '/backend-api/subscriptions'
+  subscriptionsHeaders['x-openai-target-route'] = '/backend-api/subscriptions'
+  const subscriptionsRes = await _getCodexSubscriptionJSON(
+    http,
+    CODEX_SUBSCRIPTIONS_URL + '?account_id=' + encodeURIComponent(snapshot.accountId),
+    subscriptionsHeaders
+  )
+  if (!subscriptionsRes || !subscriptionsRes.ok || !subscriptionsRes.data) return snapshot
+  return {
+    accountId: snapshot.accountId,
+    planType: _firstNonEmptyString(subscriptionsRes.data.subscription_plan, subscriptionsRes.data.plan_type, snapshot.planType),
+    subscriptionActiveUntil: _normalizeOptionalJsonScalar(
+      subscriptionsRes.data.active_until || subscriptionsRes.data.expires_at
+    ) || snapshot.subscriptionActiveUntil
+  }
+}
+
+// Cloudflare 会对 Node https.request 的订阅接口返回 challenge 页面，
+// 而 Codex 工具使用的 fetch/undici 可以正常拿到 JSON。保留 httpClient 以兼容测试和已有运行时，
+// 仅在它返回非 2xx 时用原生 fetch 重试，避免订阅刷新按钮静默落回旧 JWT 时间。
+async function _getCodexSubscriptionJSON (http, url, headers) {
+  const first = await http.getJSON(url, headers)
+  if (first && first.ok) return first
+  if (typeof globalThis.fetch !== 'function') return first
+
+  const response = await globalThis.fetch(url, { method: 'GET', headers })
+  const raw = await response.text()
+  let data = null
+  try {
+    data = JSON.parse(raw)
+  } catch {}
+  return {
+    ok: response.ok,
+    status: response.status,
+    data,
+    raw
+  }
+}
+
+function _parseCodexSubscriptionStatus (payload, hints) {
+  const records = _collectAccountRecords(payload)
+  const hintAccountId = _firstNonEmptyString(hints && hints.accountId)
+  const hintOrgId = _firstNonEmptyString(hints && hints.organizationId)
+  const selected = records.find(function (record) {
+    const account = record && record.account && typeof record.account === 'object' ? record.account : record
+    const accountId = _extractAccountRecordField(account, ['account_id', 'id', 'chatgpt_account_id', 'workspace_id'])
+    const orgId = _extractAccountRecordField(account, ['organization_id', 'org_id', 'workspace_id'])
+    return hintAccountId && hintOrgId && accountId === hintAccountId && orgId === hintOrgId
+  }) || records.find(function (record) {
+    const account = record && record.account && typeof record.account === 'object' ? record.account : record
+    const orgId = _extractAccountRecordField(account, ['organization_id', 'org_id', 'workspace_id'])
+    return hintOrgId && orgId === hintOrgId
+  }) || records.find(function (record) {
+    const account = record && record.account && typeof record.account === 'object' ? record.account : record
+    const accountId = _extractAccountRecordField(account, ['account_id', 'id', 'chatgpt_account_id', 'workspace_id'])
+    return hintAccountId && accountId === hintAccountId
+  }) || records[0]
+
+  if (!selected) return { accountId: hintAccountId, planType: '', subscriptionActiveUntil: '' }
+  const account = selected.account && typeof selected.account === 'object' ? selected.account : selected
+  const entitlement = selected.entitlement && typeof selected.entitlement === 'object' ? selected.entitlement : {}
+  return {
+    accountId: _extractAccountRecordField(account, ['account_id', 'id', 'chatgpt_account_id', 'workspace_id']) || hintAccountId,
+    planType: _firstNonEmptyString(entitlement.subscription_plan, _pickCodexPlanTypeField(account)),
+    subscriptionActiveUntil: _normalizeOptionalJsonScalar(entitlement.expires_at || account.expires_at)
+  }
 }
 
 function _buildCodexProfilePatch (profile) {
@@ -8284,6 +8406,7 @@ module.exports = {
     parseCodexQuota: _parseCodexQuota,
     extractCodexPlanType: _extractCodexPlanType,
     extractCodexSubscriptionActiveUntilFromTokens: _extractCodexSubscriptionActiveUntilFromTokens,
+    parseCodexSubscriptionStatus: _parseCodexSubscriptionStatus,
     extractCodexJwtProfile: _extractCodexJwtProfile,
     fetchCodexProfile: _fetchCodexProfile,
     findCodexAccountByLocalTokens: _findCodexAccountByLocalTokens,
